@@ -1,0 +1,25 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Node/data directories
+data/
+logs/
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+
+# Tooling
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+
+# Local configs/secrets
+config.local.json

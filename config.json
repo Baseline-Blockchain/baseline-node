@@ -1,0 +1,24 @@
+{
+  "data_dir": "./data",
+  "network": {
+    "seeds": [
+      "seed1.baseline.invalid:9333",
+      "seed2.baseline.invalid:9333"
+    ]
+  },
+  "rpc": {
+    "username": "rpcuser",
+    "password": "rpcpass",
+    "host": "127.0.0.1",
+    "port": 8832
+  },
+  "stratum": {
+    "host": "0.0.0.0",
+    "port": 3333
+  },
+  "mining": {
+    "pool_private_key": "CHANGE-ME",
+    "min_payout": 100000000,
+    "pool_fee_percent": 1.0
+  }
+}

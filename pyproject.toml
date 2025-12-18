@@ -1,0 +1,35 @@
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+src = ["baseline", "tests", "tools"]
+
+[tool.ruff.lint]
+select = [
+    "E",  # pycodestyle errors
+    "F",  # pyflakes
+    "W",  # pycodestyle warnings
+    "I",  # isort
+    "N",  # pep8-naming
+    "B",  # flake8-bugbear
+    "UP", # pyupgrade
+    "S",  # flake8-bandit
+    "PL", # pylint-inspired rules
+]
+ignore = [
+    "S101",  # assert statements acceptable in tests/utilities
+]
+extend-ignore = [
+    "E501",    # long lines are acceptable in serialized data/tests
+    "S104",    # binding to 0.0.0.0 is intentional for servers
+    "S105",    # demo credentials are placeholders
+    "S112",
+    "S608",
+    "PLR0911",
+    "PLR0912",
+    "PLR0913",
+    "PLR0915",
+    "PLR2004",
+    "B905",
+    "UP012",
+    "PLC0415",
+]
