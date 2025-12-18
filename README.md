@@ -27,7 +27,7 @@ Baseline is a compact Bitcoin-style cryptocurrency implemented purely in Python 
 
 ### 2. Generate keys + config
 
-A starter `config.json` lives at the repo root—copy it somewhere safe and tweak the highlighted fields:
+A starter `config.json` lives at the repo root and tweak the highlighted fields:
 
 1. **Pick RPC creds** (`rpc.username`/`rpc.password`) and keep them secret; all wallet tooling and miners authenticate with them.
 2. **Create the pool payout key** *before you ever mine*. This key is separate from the wallet: it controls who receives block rewards from your Stratum pool. Generate one with:
