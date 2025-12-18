@@ -236,3 +236,30 @@ class RPCTestCase(unittest.TestCase):
         result = self.handlers.dispatch("submitblock", [raw_hex])
         self.assertEqual(result["status"], "connected")
         self.assertEqual(result["hash"], block.block_hash())
+
+    def test_getblockchaininfo_returns_expected_fields(self) -> None:
+        result = self.handlers.dispatch("getblockchaininfo", [])
+        expected_fields = [
+            "chain", "blocks", "headers", "bestblockhash", "difficulty",
+            "time", "mediantime", "verificationprogress", "initialblockdownload",
+            "chainwork", "size_on_disk", "pruned", "warnings"
+        ]
+        for field in expected_fields:
+            self.assertIn(field, result)
+        self.assertEqual(result["chain"], "main")
+        self.assertEqual(result["blocks"], 0)  # Genesis only
+        self.assertFalse(result["pruned"])
+
+    def test_getnetworkinfo_returns_expected_fields(self) -> None:
+        result = self.handlers.dispatch("getnetworkinfo", [])
+        expected_fields = [
+            "version", "subversion", "protocolversion", "localservices",
+            "localservicesnames", "localrelay", "timeoffset", "connections",
+            "networkactive", "networks", "relayfee", "incrementalfee",
+            "localaddresses", "warnings"
+        ]
+        for field in expected_fields:
+            self.assertIn(field, result)
+        self.assertEqual(result["subversion"], "/Baseline:0.1.0/")
+        self.assertTrue(result["networkactive"])
+        self.assertIsInstance(result["networks"], list)

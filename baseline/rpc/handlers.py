@@ -11,6 +11,7 @@ from typing import Any
 from ..core.block import Block
 from ..core.chain import Chain, ChainError
 from ..core.tx import Transaction
+from ..core import difficulty
 from ..mempool import Mempool, MempoolError
 from ..mining.templates import TemplateBuilder
 from ..storage import BlockStore, StateDB
@@ -50,6 +51,7 @@ class RPCHandlers:
             "gettxout": self.gettxout,
             "sendrawtransaction": self.sendrawtransaction,
             "getblocktemplate": self.getblocktemplate,
+            "getblockchaininfo": self.getblockchaininfo,
             "getnetworkinfo": self.getnetworkinfo,
             "submitblock": self.submitblock,
         }
@@ -229,17 +231,103 @@ class RPCHandlers:
             raise RPCError(-26, str(exc)) from exc
         return {"status": result.get("status"), "hash": block.block_hash(), "height": result.get("height")}
 
+    def getblockchaininfo(self) -> dict[str, Any]:
+        best = self.state_db.get_best_tip()
+        if not best:
+            # No blocks yet, return genesis info
+            best_hash = self.chain.genesis_hash
+            height = 0
+            best_header = None
+        else:
+            best_hash, height = best
+            best_header = self.state_db.get_header(best_hash)
+        
+        # Calculate difficulty from current bits
+        current_difficulty = 1.0
+        if best_header:
+            target = difficulty.compact_to_target(best_header.bits)
+            max_target = difficulty.compact_to_target(self.chain.config.mining.initial_bits)
+            current_difficulty = max_target / target if target > 0 else 1.0
+        
+        # Calculate chainwork (cumulative work)
+        chainwork = 0
+        if best_header:
+            # Sum work from genesis to current tip
+            current_hash = best_hash
+            while current_hash and current_hash != "00" * 32:
+                header = self.state_db.get_header(current_hash)
+                if header is None:
+                    break
+                chainwork += difficulty.block_work(header.bits)
+                current_hash = header.prev_hash
+        
+        # Get block time and median time
+        block_time = int(time.time())
+        median_time = int(time.time())
+        if best_header:
+            block_time = best_header.timestamp
+            # Calculate median time past (simplified - just use current block time)
+            median_time = best_header.timestamp
+        
+        # Estimate size on disk (simplified)
+        size_on_disk = 0
+        if height > 0:
+            # Rough estimate: average block size * number of blocks
+            size_on_disk = height * 1000  # Assume 1KB average block size
+        
+        return {
+            "chain": "main",  # Could be made configurable
+            "blocks": height,
+            "headers": height,  # In this implementation, headers == blocks
+            "bestblockhash": best_hash,
+            "difficulty": current_difficulty,
+            "time": block_time,
+            "mediantime": median_time,
+            "verificationprogress": 1.0 if height > 0 else 0.0,  # Simplified
+            "initialblockdownload": False,  # Simplified
+            "chainwork": f"{chainwork:016x}",
+            "size_on_disk": size_on_disk,
+            "pruned": False,
+            "warnings": []
+        }
+
     def getnetworkinfo(self) -> dict[str, Any]:
         best = self.state_db.get_best_tip()
         connections = len(self.network.peers) if getattr(self.network, "peers", None) is not None else 0
+        
+        # Build networks array (simplified)
+        networks = [
+            {
+                "name": "ipv4",
+                "limited": False,
+                "reachable": True,
+                "proxy": "",
+                "proxy_randomize_credentials": False
+            },
+            {
+                "name": "ipv6", 
+                "limited": False,
+                "reachable": True,
+                "proxy": "",
+                "proxy_randomize_credentials": False
+            }
+        ]
+        
         return {
-            "version": "0.1.0",
+            "version": 10000,  # Version number format similar to Bitcoin Core
+            "subversion": "/Baseline:0.1.0/",
             "protocolversion": 1,
+            "localservices": "0000000000000001",  # NODE_NETWORK
+            "localservicesnames": ["NETWORK"],
+            "localrelay": True,
             "timeoffset": 0,
             "connections": connections,
-            "bestblockhash": best[0] if best else None,
-            "blocks": best[1] if best else 0,
-            "relayfee": self.chain.config.mining.pool_fee_percent,
+            "networkactive": True,
+            "networks": networks,
+            "relayfee": self.chain.config.mining.pool_fee_percent / 100000000,  # Convert to BTC/kB
+            "incrementalfee": 0.00001000,  # 1000 satoshis per kB
+            "localaddresses": [],  # Could be populated with actual local addresses
+            "warnings": []
         }
 
     def _require_wallet(self) -> WalletManager:
