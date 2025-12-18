@@ -42,7 +42,7 @@ class StratumSession:
         self.server = server
         self.reader = reader
         self.writer = writer
-        self.log = logging.getLogger("simplechain.stratum.session")
+        self.log = logging.getLogger("baseline.stratum.session")
         self.address = writer.get_extra_info("peername")
         self.session_id = server.next_session_id()
         self.worker_id: str | None = None
@@ -165,7 +165,7 @@ class StratumServer:
         self.builder = builder
         self.payouts = payout_tracker
         self.network = network
-        self.log = logging.getLogger("simplechain.stratum")
+        self.log = logging.getLogger("baseline.stratum")
         self.server: asyncio.AbstractServer | None = None
         self.sessions: dict[int, StratumSession] = {}
         self._session_seq = 0

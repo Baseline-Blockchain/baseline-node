@@ -33,7 +33,7 @@ class Peer:
         self.address = address
         self.outbound = outbound
         self.peer_id = peer_id
-        self.log = logging.getLogger(f"simplechain.peer[{address[0]}:{address[1]}]")
+        self.log = logging.getLogger(f"baseline.peer[{address[0]}:{address[1]}]")
         self.remote_version: dict[str, Any] | None = None
         self.handshake_complete = False
         self.got_version = False

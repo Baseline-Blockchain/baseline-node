@@ -28,7 +28,7 @@ def setup_logging(log_file: Path, *, level: int = logging.INFO) -> logging.Logge
 
     log_file.parent.mkdir(parents=True, exist_ok=True)
     formatter = UTCFormatter()
-    root = logging.getLogger("simplechain")
+    root = logging.getLogger("baseline")
     root.setLevel(level)
     root.handlers.clear()
 

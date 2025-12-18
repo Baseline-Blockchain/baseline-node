@@ -76,7 +76,7 @@ class Chain:
         self.config = config
         self.state_db = state_db
         self.block_store = block_store
-        self.log = logging.getLogger("simplechain.chain")
+        self.log = logging.getLogger("baseline.chain")
         self.max_target = difficulty.compact_to_target(self.config.mining.initial_bits)
         self.genesis_block = self._build_genesis_block()
         self.genesis_hash = self.genesis_block.block_hash()

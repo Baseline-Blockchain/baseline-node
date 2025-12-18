@@ -61,7 +61,7 @@ class Mempool:
         listeners: Sequence[Callable[[Transaction], None]] | None = None,
     ):
         self.chain = chain
-        self.log = logging.getLogger("simplechain.mempool")
+        self.log = logging.getLogger("baseline.mempool")
         self.max_weight = max_weight
         self.max_orphans = max_orphans
         self.min_fee_rate = min_fee_rate

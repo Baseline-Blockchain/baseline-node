@@ -18,7 +18,7 @@ class RPCServer:
     def __init__(self, config: NodeConfig, handlers: RPCHandlers):
         self.config = config
         self.handlers = handlers
-        self.log_prefix = "simplechain.rpc"
+        self.log_prefix = "baseline.rpc"
         self.host = config.rpc.host
         self.port = config.rpc.port
         self.max_request_bytes = config.rpc.max_request_bytes
@@ -65,7 +65,7 @@ class RPCServer:
                     401,
                     b"Unauthorized",
                     b"",
-                    extra_headers={"WWW-Authenticate": 'Basic realm="simplechain"'},
+                    extra_headers={"WWW-Authenticate": 'Basic realm="baseline"'},
                 )
                 return
             try:

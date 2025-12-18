@@ -24,7 +24,7 @@ class BaselineNode:
 
     def __init__(self, config: NodeConfig) -> None:
         self.config = config
-        self.log = logging.getLogger("simplechain.node")
+        self.log = logging.getLogger("baseline.node")
         self._tasks: dict[str, asyncio.Task] = {}
         self._stop_event = asyncio.Event()
         self._started = False

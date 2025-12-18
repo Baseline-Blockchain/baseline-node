@@ -39,7 +39,7 @@ class P2PServer:
         self.config = config
         self.chain = chain
         self.mempool = mempool
-        self.log = logging.getLogger("simplechain.p2p")
+        self.log = logging.getLogger("baseline.p2p")
         self.host = config.network.host
         self.listen_port = config.network.port
         self.max_peers = config.network.max_peers

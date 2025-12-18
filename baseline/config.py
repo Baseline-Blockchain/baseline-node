@@ -23,7 +23,7 @@ def _expand_path(value: str) -> Path:
 
 
 def default_data_dir() -> Path:
-    base = Path(os.getenv("SIMPLECHAIN_DATA", Path.home() / ".simplechain"))
+    base = Path(os.getenv("BASELINE_DATA", Path.home() / ".baseline"))
     return _expand_path(str(base))
 
 
