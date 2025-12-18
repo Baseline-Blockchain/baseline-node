@@ -25,28 +25,40 @@ Baseline is a compact Bitcoin-style cryptocurrency implemented purely in Python 
    ```
    No extra packages are required; the stdlib is enough.
 
-### 2. Generate keys + config
-
-A starter `config.json` lives at the repo root with reasonable defaults. Before launching your node, make two important changes:
-
-1. **Pick RPC creds** (`rpc.username`/`rpc.password`) and keep them secret; all wallet tooling and miners authenticate with them.
-2. **Create the pool payout key** *before you ever mine*. This key is separate from the wallet: it controls who receives block rewards from your Stratum pool. Generate one with:
+### 2. Install Baseline
    ```bash
-   python tools/wallet_cli.py generate-key
+   pip install -e .
    ```
-   It prints the 32-byte hex key *and* a WIF string. Replace `"CHANGE-ME"` in `config.json` with the hex value. Keep both hex + WIF offline—import the WIF into any wallet (Baseline or external) whenever you need to manually spend pool-held funds.
+   This exposes the `baseline-node`, `baseline-wallet`, and `baseline-miner` executables in your virtual environment.
 
-### 3. Launch the node
+### 3. Generate keys + config
+
+  A starter `config.json` lives at the repo root with reasonable defaults. Before launching your node, make two important changes:
+
+### 4. Pick RPC creds 
+  Modify `rpc.username` and `rpc.password` in `config.json` and keep them secret; all wallet tooling and miners authenticate with them.
+
+### 5. Set peers
+  In `network.seeds`, add reachable Baseline nodes as a list to help your node find peers.
+
+### 6. Create the pool payout key
+  This key is separate from the wallet: it controls who receives block rewards from your Stratum pool. Generate one with:
+  ```bash
+  baseline-wallet generate-key
+  ```
+  It prints the 32-byte hex key *and* a WIF string. Replace `"CHANGE-ME"` in `config.json` with the hex value. Keep both hex + WIF offline-import the WIF into any wallet (Baseline or external) whenever you need to manually spend pool-held funds.
+
+### 7. Launch the node
    ```bash
-   python run_node.py --config config.json --log-level info
+   baseline-node --config config.json --log-level info
    ```
    The runner initializes the append-only block store + SQLite chainstate, starts P2P sync, the Stratum pool, wallet, payout tracker, and the authenticated JSON-RPC server. Use Ctrl+C (or SIGTERM) for graceful shutdown.
 
-### 4. Initialize the wallet once the node is running
+### 8. Initialize the wallet once the node is running
    ```bash
-   python tools/wallet_cli.py --config config.json setup --encrypt
+   baseline-wallet --config config.json setup --encrypt
    ```
-   The CLI guides you through creating (and optionally encrypting) the deterministic wallet so you can request payout/operational addresses via `wallet_cli newaddress`. Wallet funds are distinct from the pool payout key, but you can sweep rewards into the wallet by importing the pool WIF or by mining directly to a wallet-derived address.
+   The CLI guides you through creating (and optionally encrypting) the deterministic wallet so you can request payout/operational addresses via `baseline-wallet newaddress`. Wallet funds are distinct from the pool payout key, but you can sweep rewards into the wallet by importing the pool WIF or by mining directly to a wallet-derived address.
 
 ## Wallet CLI (`tools/wallet_cli.py`)
 
@@ -54,23 +66,23 @@ The node writes `wallet/wallet.json` under the data dir and exposes it over JSON
 
 ```bash
 # show commands
-python tools/wallet_cli.py --config config.json --help
+baseline-wallet --config config.json --help
 
 # common flows
-python tools/wallet_cli.py --config config.json setup --encrypt   # first run, optionally encrypts wallet
-python tools/wallet_cli.py --config config.json newaddress payout
-python tools/wallet_cli.py --config config.json balance
-python tools/wallet_cli.py --config config.json send sc1example... 1.25  # prompts for passphrase if needed
-python tools/wallet_cli.py --config config.json dump /secure/backups/simplechain.json
-python tools/wallet_cli.py --config config.json importaddress sc1watch... --label "monitor" --rescan
-python tools/wallet_cli.py --config config.json importprivkey <WIF> --label "hot key" --rescan # imports a single private key - useful for pool payout key
+baseline-wallet --config config.json setup --encrypt   # first run, optionally encrypts wallet
+baseline-wallet --config config.json newaddress payout
+baseline-wallet --config config.json balance
+baseline-wallet --config config.json send bl1example... 1.25  # prompts for passphrase if needed
+baseline-wallet --config config.json dump /secure/backups/baseline-wallet.json
+baseline-wallet --config config.json importaddress bl1watch... --label "monitor" --rescan
+baseline-wallet --config config.json importprivkey <WIF> --label "hot key" --rescan  # imports a single private key - useful for pool payout key
 ```
 
 The CLI automatically prompts for passphrases when sending or during the `setup --encrypt` flow, so you rarely need to call `encryptwallet`/`walletpassphrase` manually. All commands ultimately talk to JSON-RPC via Basic Auth, so they work locally or against remote nodes.
 
 ## Mining
 
-Every node ships with a Stratum v1 pool so you can mine right away—ASICs connect via `stratum+tcp://<host>:3333` and authenticate with any `worker:password` pair. Steps:
+Every node ships with a Stratum v1 pool so you can mine right away-ASICs connect via `stratum+tcp://<host>:3333` and authenticate with any `worker:password` pair. Steps:
 
 1. Launch the node with your configured payout key (see Quick Start). The Stratum listener comes up automatically.
 2. Point miners:
@@ -84,7 +96,7 @@ Every node ships with a Stratum v1 pool so you can mine right away—ASICs conne
 This script is a CPU-only proof-of-concept that repeatedly fetches templates over RPC and submits solved blocks via `submitblock`:
 
 ```bash
-python tools/simple_miner.py --config config.json --attempts-per-template 500000
+baseline-miner --config config.json --attempts-per-template 500000
 ```
 
 It is intentionally simple—great for smoke testing, not for real hash-rate. For real deployments, point ASICs at the built-in Stratum endpoint.

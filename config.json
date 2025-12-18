@@ -1,14 +1,11 @@
 {
   "data_dir": "./data",
   "network": {
-    "seeds": [
-      "seed1.baseline.invalid:9333",
-      "seed2.baseline.invalid:9333"
-    ]
+    "seeds": []
   },
   "rpc": {
-    "username": "rpcuser",
-    "password": "rpcpass",
+    "username": "localuser",
+    "password": "localpass",
     "host": "127.0.0.1",
     "port": 8832
   },

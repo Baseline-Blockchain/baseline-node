@@ -1,3 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "baseline-node"
+version = "0.1.0"
+description = "Baseline SHA256d full node with wallet, RPC, and Stratum mining"
+readme = "README.md"
+authors = [{name = "Baseline Contributors"}]
+requires-python = ">=3.12"
+license = {text = "Proprietary"}
+dependencies = []
+
+[project.scripts]
+baseline-node = "run_node:main"
+baseline-wallet = "tools.wallet_cli:main"
+baseline-miner = "tools.simple_miner:main"
+
+[tool.setuptools.packages.find]
+include = ["baseline", "baseline.*", "tools", "tools.*"]
+
+[tool.setuptools]
+py-modules = ["run_node"]
+
 [tool.ruff]
 line-length = 110
 target-version = "py312"
