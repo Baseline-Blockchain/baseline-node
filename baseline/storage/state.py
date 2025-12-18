@@ -44,6 +44,7 @@ class HeaderData:
     timestamp: int
     merkle_root: str
     chainwork: str
+    version: int = 1
     status: int = 0  # 0=main chain, 1=side chain
 
 
@@ -93,6 +94,7 @@ class StateDB:
                     timestamp INTEGER NOT NULL,
                     merkle_root TEXT NOT NULL,
                     chainwork TEXT NOT NULL,
+                    version INTEGER NOT NULL DEFAULT 1,
                     status INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE INDEX IF NOT EXISTS headers_height_idx ON headers(height);
@@ -116,6 +118,12 @@ class StateDB:
                 CREATE TABLE IF NOT EXISTS block_undo (
                     hash TEXT PRIMARY KEY,
                     data BLOB NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS upgrades (
+                    name TEXT PRIMARY KEY,
+                    activation_height INTEGER,
+                    activation_time INTEGER
                 );
                 """
             )
@@ -461,3 +469,50 @@ class StateDB:
         self._ensure_open()
         with self._lock:
             self._conn.execute("VACUUM")
+
+    # Upgrade tracking methods
+    def set_upgrade_activation_height(self, upgrade_name: str, height: int) -> None:
+        """Record the activation height of an upgrade."""
+        self._ensure_open()
+        import time
+        with self.transaction() as conn:
+            conn.execute(
+                "INSERT INTO upgrades(name, activation_height, activation_time) VALUES (?, ?, ?) "
+                "ON CONFLICT(name) DO UPDATE SET "
+                "activation_height=excluded.activation_height, "
+                "activation_time=excluded.activation_time",
+                (upgrade_name, height, int(time.time())),
+            )
+
+    def get_upgrade_activation_height(self, upgrade_name: str) -> int | None:
+        """Get the activation height of an upgrade."""
+        self._ensure_open()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT activation_height FROM upgrades WHERE name=?",
+                (upgrade_name,)
+            ).fetchone()
+            return row["activation_height"] if row else None
+
+    def get_header_by_height(self, height: int) -> HeaderData | None:
+        """Get header by height (assumes main chain)."""
+        self._ensure_open()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT hash, prev_hash, height, bits, nonce, timestamp, merkle_root, chainwork, status "
+                "FROM headers WHERE height=? AND status=0 LIMIT 1",
+                (height,)
+            ).fetchone()
+            if not row:
+                return None
+            return HeaderData(
+                hash=row["hash"],
+                prev_hash=row["prev_hash"],
+                height=row["height"],
+                bits=row["bits"],
+                nonce=row["nonce"],
+                timestamp=row["timestamp"],
+                merkle_root=row["merkle_root"],
+                chainwork=row["chainwork"],
+                status=row["status"],
+            )

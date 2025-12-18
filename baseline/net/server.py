@@ -21,7 +21,9 @@ from ..core.tx import Transaction
 from ..mempool import Mempool, MempoolError
 from ..storage import BlockStoreError
 from . import protocol
+from .discovery import PeerDiscovery
 from .peer import Peer
+from .security import P2PSecurity
 
 
 @dataclass
@@ -48,6 +50,14 @@ class P2PServer:
         self.network_id = "simple-main"
         self.handshake_timeout = config.network.handshake_timeout
         self.idle_timeout = config.network.idle_timeout
+        
+        # Enhanced security and discovery
+        self.security = P2PSecurity()
+        self.discovery = PeerDiscovery(
+            data_dir=config.data_dir,
+            dns_seeds=getattr(config.network, 'dns_seeds', []),
+            manual_seeds=config.network.seeds
+        )
         self.seeds = tuple(config.network.seeds)
         self.peers: dict[str, Peer] = {}
         self.peer_tasks: set[asyncio.Task] = set()
@@ -83,6 +93,7 @@ class P2PServer:
         self._tasks.append(asyncio.create_task(self._dialer_loop(), name="p2p-dialer"))
         self._tasks.append(asyncio.create_task(self._heartbeat_loop(), name="p2p-heartbeat"))
         self._tasks.append(asyncio.create_task(self._sync_watchdog_loop(), name="p2p-sync-watchdog"))
+        self._tasks.append(asyncio.create_task(self._cleanup_loop(), name="p2p-cleanup"))
 
     async def stop(self) -> None:
         self._stop_event.set()
@@ -105,7 +116,21 @@ class P2PServer:
             writer.close()
             return
         host, port = peername[:2]
+        
+        # Security check for inbound connections
+        if not self.security.can_accept_connection(host):
+            self.log.debug("Rejected connection from %s (security policy)", host)
+            writer.close()
+            return
+        
         peer = self._build_peer(reader, writer, (host, port), outbound=False)
+        
+        # Add connection to security manager
+        if not self.security.add_connection(host, peer.peer_id):
+            self.log.debug("Rejected connection from %s (connection limit)", host)
+            writer.close()
+            return
+        
         self._run_peer(peer)
 
     def _build_peer(
@@ -148,7 +173,9 @@ class P2PServer:
         needed = self.target_outbound - self.outbound_count()
         if needed <= 0:
             return
-        candidates = self._pick_addresses(needed)
+        
+        # Use enhanced peer discovery
+        candidates = await self.discovery.discover_peers(needed)
         for host, port in candidates:
             await self._connect_outbound(host, port)
 
@@ -158,12 +185,27 @@ class P2PServer:
         key = (host, port)
         if key in self.active_addresses():
             return
+        
+        # Record connection attempt
+        self.discovery.record_connection_attempt(host, port)
+        
         try:
             reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=5)
         except (TimeoutError, OSError) as exc:
             self.log.debug("Failed to dial %s:%s: %s", host, port, exc)
+            self.discovery.record_connection_failure(host, port)
             return
+        
         peer = self._build_peer(reader, writer, (host, port), outbound=True)
+        
+        # Add connection to security manager
+        if not self.security.add_connection(host, peer.peer_id):
+            self.log.debug("Rejected outbound connection to %s:%s (connection limit)", host, port)
+            writer.close()
+            self.discovery.record_connection_failure(host, port)
+            return
+        
+        self.discovery.record_connection_success(host, port)
         self._run_peer(peer)
 
     def outbound_count(self) -> int:
@@ -615,3 +657,20 @@ class P2PServer:
             local_height,
         )
         asyncio.create_task(self._send_getblocks(peer))
+
+    async def _cleanup_loop(self) -> None:
+        """Periodic cleanup of expired data."""
+        while not self._stop_event.is_set():
+            try:
+                # Clean up security-related data
+                self.security.cleanup()
+                
+                # Clean up peer discovery data
+                self.discovery.cleanup_stale()
+                
+                self.log.debug("Completed periodic cleanup")
+            except Exception as exc:
+                self.log.error("Error during cleanup: %s", exc)
+            
+            # Run cleanup every 5 minutes
+            await asyncio.sleep(300)

@@ -75,6 +75,13 @@ class Peer:
         self.last_message = time.time()
 
     async def handle_message(self, message: dict[str, Any]) -> None:
+        # Security validation
+        should_accept, error_reason = self.manager.security.should_accept_message(self.peer_id, message)
+        if not should_accept:
+            self.log.warning("Message rejected: %s", error_reason)
+            self.manager.security.record_violation(self.peer_id)
+            return
+        
         msg_type = message.get("type")
         if msg_type == "version":
             await self._handle_version(message)
@@ -91,6 +98,11 @@ class Peer:
             if self.ping_nonce and message.get("nonce") == self.ping_nonce:
                 self.latency = time.time() - self.last_ping
                 self.ping_nonce = None
+        elif msg_type == "addr":
+            self.manager.discovery.handle_addr_message(message, self.address[0])
+        elif msg_type == "getaddr":
+            addr_msg = self.manager.discovery.create_addr_message()
+            await self.send_message(addr_msg)
         elif msg_type == "inv":
             await self.manager.handle_inv(self, message)
         elif msg_type == "getdata":
