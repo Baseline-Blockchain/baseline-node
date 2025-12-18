@@ -5,9 +5,11 @@ from pathlib import Path
 
 from baseline.config import NodeConfig
 from baseline.core import crypto
+from baseline.core.address import script_from_address
 from baseline.core.chain import Chain
+from baseline.core.tx import COIN
 from baseline.mempool import Mempool
-from baseline.storage import BlockStore, StateDB
+from baseline.storage import BlockStore, StateDB, UTXORecord
 from baseline.wallet import WalletLockedError, WalletManager
 
 
@@ -80,6 +82,34 @@ class WalletTests(unittest.TestCase):
         info = wallet.wallet_info()
         self.assertTrue(info["encrypted"])
         self.assertTrue(info["locked"])
+
+    def test_list_addresses_returns_known_entries(self) -> None:
+        wallet = WalletManager(self.wallet_path, self.state_db, self.block_store, self.mempool)
+        addr = wallet.get_new_address("label-1")
+        entries = wallet.list_addresses()
+        self.assertTrue(any(entry["address"] == addr and entry["label"] == "label-1" for entry in entries))
+
+    def test_address_balances_reports_spendable_and_watch_only(self) -> None:
+        wallet = WalletManager(self.wallet_path, self.state_db, self.block_store, self.mempool)
+        spend_addr = wallet.get_new_address("spendable")
+        watch_pub = crypto.generate_pubkey(9999)
+        watch_addr = crypto.address_from_pubkey(watch_pub)
+        wallet.import_address(watch_addr, label="watch", rescan=False)
+        record = UTXORecord(
+            txid="11" * 32,
+            vout=0,
+            amount=5 * COIN,
+            script_pubkey=script_from_address(spend_addr),
+            height=0,
+            coinbase=False,
+        )
+        self.state_db.add_utxo(record)
+        balances = wallet.address_balances()
+        spend_entry = next(entry for entry in balances if entry["address"] == spend_addr)
+        watch_entry = next(entry for entry in balances if entry["address"] == watch_addr)
+        self.assertAlmostEqual(spend_entry["balance"], 5.0)
+        self.assertFalse(spend_entry["watch_only"])
+        self.assertTrue(watch_entry["watch_only"])
 
     def _make_wif(self, priv_int: int, compressed: bool = False) -> str:
         priv_bytes = priv_int.to_bytes(32, "big")

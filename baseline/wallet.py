@@ -458,6 +458,43 @@ class WalletManager:
             "best_height": best[1] if best else -1,
         }
 
+    def list_addresses(self) -> list[dict[str, object]]:
+        result: list[dict[str, object]] = []
+        for address, meta in self.data.get("addresses", {}).items():
+            result.append(
+                {
+                    "address": address,
+                    "label": meta.get("label", ""),
+                    "watch_only": bool(meta.get("watch_only")),
+                    "external": bool(meta.get("external")),
+                    "created": meta.get("created"),
+                    "index": meta.get("index"),
+                }
+            )
+        return result
+
+    def address_balances(self, min_conf: int = 1) -> list[dict[str, object]]:
+        unspent = self.list_unspent(min_conf=min_conf)
+        totals: dict[str, int] = {}
+        for entry in unspent:
+            addr = entry.get("address")
+            if not addr:
+                continue
+            totals[addr] = totals.get(addr, 0) + coins_to_sats(entry["amount"])
+        result: list[dict[str, object]] = []
+        for addr, meta in self.data.get("addresses", {}).items():
+            sats = totals.get(addr, 0)
+            result.append(
+                {
+                    "address": addr,
+                    "balance": sats_to_coins(sats),
+                    "label": meta.get("label", ""),
+                    "watch_only": bool(meta.get("watch_only")),
+                    "spendable": not bool(meta.get("watch_only")),
+                }
+            )
+        return result
+
     def import_private_key(self, wif: str, label: str | None = None, rescan: bool = True) -> str:
         priv_int, compressed = self._decode_wif(wif)
         priv_bytes = priv_int.to_bytes(32, "big")

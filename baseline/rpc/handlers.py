@@ -58,6 +58,8 @@ class RPCHandlers:
                 {
                     "getnewaddress": self.getnewaddress,
                     "getbalance": self.getbalance,
+                    "listaddresses": self.listaddresses,
+                    "listaddressbalances": self.listaddressbalances,
                     "listunspent": self.listunspent,
                     "sendtoaddress": self.sendtoaddress,
                     "gettransaction": self.rpc_gettransaction,
@@ -263,6 +265,12 @@ class RPCHandlers:
 
     def getbalance(self, account: str | None = None, min_conf: int = 1) -> float:
         return self._wallet_call(lambda w: w.get_balance(int(min_conf)))
+
+    def listaddresses(self) -> list[dict[str, object]]:
+        return self._wallet_call(lambda w: w.list_addresses())
+
+    def listaddressbalances(self, min_conf: int = 1) -> list[dict[str, object]]:
+        return self._wallet_call(lambda w: w.address_balances(int(min_conf)))
 
     def listunspent(
         self,

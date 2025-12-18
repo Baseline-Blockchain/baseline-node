@@ -78,7 +78,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("newaddress", help="Generate a new receiving address").add_argument("label", nargs="?", default="")
 
+    sub.add_parser("listaddresses", help="List wallet-managed (and watch-only) addresses")
+
     sub.add_parser("balance", help="Show wallet balance").add_argument("--minconf", type=int, default=1)
+
+    balances = sub.add_parser("balances", help="Show balance for each wallet address")
+    balances.add_argument("--minconf", type=int, default=1)
 
     lu = sub.add_parser("listunspent", help="List spendable UTXOs")
     lu.add_argument("--minconf", type=int, default=1)
@@ -199,10 +204,16 @@ def main() -> None:
     elif args.command == "newaddress":
         result = client.call("getnewaddress", [args.label] if args.label else [])
         print(result)
+    elif args.command == "listaddresses":
+        result = client.call("listaddresses", [])
+        print(json.dumps(result, indent=2))
     elif args.command == "balance":
         params = [] if args.minconf == 1 else [None, args.minconf]
         result = client.call("getbalance", params)
         print(result)
+    elif args.command == "balances":
+        result = client.call("listaddressbalances", [args.minconf])
+        print(json.dumps(result, indent=2))
     elif args.command == "listunspent":
         params = [args.minconf, args.maxconf]
         if args.addresses:

@@ -158,6 +158,15 @@ class RPCTestCase(unittest.TestCase):
         balance = self.handlers.dispatch("getbalance", [])
         self.assertAlmostEqual(balance, 10.0, places=8)
 
+    def test_listaddressbalances_via_rpc(self) -> None:
+        address = self.handlers.dispatch("getnewaddress", ["bal"])
+        payment = self._build_payment_tx(address, 5 * COIN)
+        self._mine_block(self.chain.genesis_hash, [payment])
+        self.wallet.sync_chain()
+        entries = self.handlers.dispatch("listaddressbalances", [])
+        entry = next(item for item in entries if item["address"] == address)
+        self.assertAlmostEqual(entry["balance"], 5.0, places=8)
+
     def test_wallet_sendtoaddress_records_transaction(self) -> None:
         recv_address = self.handlers.dispatch("getnewaddress", [])
         payment = self._build_payment_tx(recv_address, 5 * COIN)
@@ -201,6 +210,11 @@ class RPCTestCase(unittest.TestCase):
         self.assertEqual(res, "address imported")
         entry = self.wallet.data["addresses"][watch_addr]
         self.assertTrue(entry["watch_only"])
+
+    def test_listaddresses_rpc_returns_wallet_entries(self) -> None:
+        addr = self.handlers.dispatch("getnewaddress", ["payout"])
+        entries = self.handlers.dispatch("listaddresses", [])
+        self.assertTrue(any(entry["address"] == addr and entry["label"] == "payout" for entry in entries))
 
     def test_walletinfo_reports_state(self) -> None:
         info = self.handlers.dispatch("walletinfo", [])

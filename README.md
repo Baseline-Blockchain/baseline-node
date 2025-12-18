@@ -58,7 +58,7 @@ Baseline is a compact Bitcoin-style cryptocurrency implemented purely in Python 
    ```bash
    baseline-wallet --config config.json setup --encrypt
    ```
-   The CLI guides you through creating (and optionally encrypting) the deterministic wallet so you can request payout/operational addresses via `baseline-wallet newaddress`. Wallet funds are distinct from the pool payout key, but you can sweep rewards into the wallet by importing the pool WIF or by mining directly to a wallet-derived address.
+   The CLI guides you through creating (and optionally encrypting) the deterministic wallet so you can request payout/operational addresses via `baseline-wallet newaddress`. The wallet auto-creates an initial receiving address; view it (and any later ones) with `baseline-wallet --config config.json listaddresses`, and see per-address balances with `baseline-wallet --config config.json balances`. Wallet funds are distinct from the pool payout key, but you can sweep rewards into the wallet by importing the pool WIF or by mining directly to a wallet-derived address.
 
 ## Wallet CLI (`tools/wallet_cli.py`)
 
@@ -71,7 +71,8 @@ baseline-wallet --config config.json --help
 # common flows
 baseline-wallet --config config.json setup --encrypt   # first run, optionally encrypts wallet
 baseline-wallet --config config.json newaddress payout
-baseline-wallet --config config.json balance
+baseline-wallet --config config.json listaddresses     # list wallet + watch-only addresses
+baseline-wallet --config config.json balances          # show balance per address
 baseline-wallet --config config.json send bl1example... 1.25  # prompts for passphrase if needed
 baseline-wallet --config config.json dump /secure/backups/baseline-wallet.json
 baseline-wallet --config config.json importaddress bl1watch... --label "monitor" --rescan

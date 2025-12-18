@@ -31,7 +31,7 @@ def default_data_dir() -> Path:
 class P2PConfig:
     host: str = "0.0.0.0"
     port: int = 9333
-    seeds: tuple[str, ...] = ("seed.simplechain.invalid:9333",)
+    seeds: tuple[str, ...] = ()
     max_peers: int = 64
     min_peers: int = 8
     target_outbound: int = 8
@@ -41,8 +41,6 @@ class P2PConfig:
     def validate(self) -> None:
         if not (1 <= self.port <= 65535):
             raise ConfigError(f"Invalid P2P port {self.port}")
-        if not self.seeds:
-            raise ConfigError("At least one seed is required")
         if self.max_peers < self.min_peers:
             raise ConfigError("max_peers must be >= min_peers")
 
