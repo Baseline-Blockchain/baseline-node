@@ -14,7 +14,7 @@ from ..core.tx import Transaction
 from ..mempool import Mempool, MempoolError
 from ..mining.templates import TemplateBuilder
 from ..storage import BlockStore, StateDB
-from ..wallet import WalletError, WalletLockedError, WalletManager
+from ..wallet import WalletError, WalletLockedError, WalletManager, coins_to_sats
 
 
 class RPCError(Exception):
@@ -280,8 +280,30 @@ class RPCHandlers:
     ) -> list[dict[str, object]]:
         return self._wallet_call(lambda w: w.list_unspent(int(min_conf), int(max_conf), addresses))
 
-    def sendtoaddress(self, address: str, amount: float, comment: str | None = None, comment_to: str | None = None) -> str:
-        return self._wallet_call(lambda w: w.send_to_address(address, amount))
+    def sendtoaddress(
+        self,
+        address: str,
+        amount: float,
+        comment: str | None = None,
+        comment_to: str | None = None,
+        options: dict[str, Any] | None = None,
+    ) -> str:
+        opts = options or {}
+        from_addresses = opts.get("fromaddresses")
+        change_address = opts.get("changeaddress")
+        fee_override = opts.get("fee")
+        fee_sats = None
+        if fee_override is not None:
+            fee_sats = coins_to_sats(fee_override)
+        return self._wallet_call(
+            lambda w: w.send_to_address(
+                address,
+                amount,
+                fee=fee_sats if fee_sats is not None else 1_000,
+                from_addresses=from_addresses,
+                change_address=change_address,
+            )
+        )
 
     def rpc_gettransaction(self, txid: str, include_watchonly: bool = False) -> dict[str, Any]:
         result = self._wallet_call(lambda w: w.get_transaction(txid))

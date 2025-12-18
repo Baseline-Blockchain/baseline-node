@@ -98,6 +98,9 @@ def build_parser() -> argparse.ArgumentParser:
     send.add_argument("amount", type=float)
     send.add_argument("--passphrase", help="Wallet passphrase (omit to be prompted)")
     send.add_argument("--unlock-time", type=int, default=90, help="Seconds to keep wallet unlocked for signing")
+    send.add_argument("--from-address", action="append", dest="from_addresses", help="Restrict inputs to this address (repeatable)")
+    send.add_argument("--change-address", help="Force change to return to this wallet address")
+    send.add_argument("--fee", type=float, help="Custom fee in BLINE (defaults to 0.00001)")
 
     tx = sub.add_parser("tx", help="Inspect a wallet transaction")
     tx.add_argument("txid")
@@ -222,7 +225,17 @@ def main() -> None:
         print(json.dumps(result, indent=2))
     elif args.command == "send":
         unlocked = maybe_unlock_for_signing(client, args.passphrase, args.unlock_time)
-        txid = client.call("sendtoaddress", [args.address, args.amount])
+        options: dict[str, Any] = {}
+        if args.from_addresses:
+            options["fromaddresses"] = args.from_addresses
+        if args.change_address:
+            options["changeaddress"] = args.change_address
+        if args.fee is not None:
+            options["fee"] = args.fee
+        params: list[Any] = [args.address, args.amount]
+        if options:
+            params.extend(["", "", options])
+        txid = client.call("sendtoaddress", params)
         print(txid)
         if unlocked:
             client.call("walletlock")

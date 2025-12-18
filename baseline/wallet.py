@@ -266,16 +266,40 @@ class WalletManager:
             raise ValueError("Missing private key for address")
         return priv
 
-    def send_to_address(self, dest_address: str, amount: Decimal | float | str | int, fee: int = 1_000) -> str:
+    def send_to_address(
+        self,
+        dest_address: str,
+        amount: Decimal | float | str | int,
+        *,
+        fee: int = 1_000,
+        from_addresses: Sequence[str] | None = None,
+        change_address: str | None = None,
+    ) -> str:
         amount_sats = coins_to_sats(amount)
         if amount_sats <= 0:
             raise ValueError("Amount must be positive")
         unspent = self.list_unspent()
         entries = self.data.get("addresses", {})
+        allowed_set: set[str] | None = None
+        if from_addresses:
+            allowed_set = set()
+            for addr in from_addresses:
+                meta = entries.get(addr)
+                if meta is None:
+                    raise ValueError(f"Address {addr} not found in wallet")
+                if meta.get("watch_only"):
+                    raise ValueError(f"Address {addr} is watch-only and cannot spend")
+                allowed_set.add(addr)
+        if change_address:
+            change_meta = entries.get(change_address)
+            if change_meta is None or change_meta.get("watch_only"):
+                raise ValueError("Change address must belong to wallet and be spendable")
         spendable = []
         for entry in unspent:
             meta = entries.get(entry["address"])
             if not meta or meta.get("watch_only"):
+                continue
+            if allowed_set and entry["address"] not in allowed_set:
                 continue
             spendable.append(entry)
         if not spendable:
@@ -292,16 +316,16 @@ class WalletManager:
         inputs = [TxInput(prev_txid=entry["txid"], prev_vout=entry["vout"], script_sig=b"", sequence=0xFFFFFFFF) for entry in selected]
         outputs = [TxOutput(value=amount_sats, script_pubkey=script_from_address(dest_address))]
         change = total - amount_sats - fee
-        change_address = selected[0]["address"]
-        if not change_address:
+        chosen_change = change_address or selected[0]["address"]
+        if not chosen_change:
             for addr, meta in entries.items():
                 if not meta.get("watch_only"):
-                    change_address = addr
+                    chosen_change = addr
                     break
-        if not change_address:
+        if not chosen_change:
             raise ValueError("No address available for change output")
         if change > 0:
-            outputs.append(TxOutput(value=change, script_pubkey=script_from_address(change_address)))
+            outputs.append(TxOutput(value=change, script_pubkey=script_from_address(chosen_change)))
         tx = Transaction(version=1, inputs=inputs, outputs=outputs, lock_time=0)
         for idx, entry in enumerate(selected):
             address = entry["address"]
