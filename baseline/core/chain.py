@@ -81,6 +81,7 @@ class Chain:
         self.genesis_block = self._build_genesis_block()
         self.genesis_hash = self.genesis_block.block_hash()
         self._ensure_genesis()
+        self.log.info("Current block height %s", self.state_db.get_best_tip()[1] if self.state_db.get_best_tip() else 0)
 
     def _build_genesis_block(self) -> Block:
         coinbase_script = self._encode_coinbase_script(height=0, extra=GENESIS_MESSAGE)
