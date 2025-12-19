@@ -1,6 +1,6 @@
 # Baseline
 
-Baseline is a compact Bitcoin-style cryptocurrency implemented purely in Python 3.12+. It exists to prove you can run a security-first, production-ready chain with ASIC-friendly mining, exchange-grade RPCs, and HD wallets without dragging in huge dependencies.
+Baseline is a minimalist, Bitcoin-style payments chain—built for simple transfers, predictable rules, and clean integration. No smart-contract complexity. Just money.
 
 ## Network Parameters
 
