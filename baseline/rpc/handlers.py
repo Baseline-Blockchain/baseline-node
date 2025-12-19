@@ -4,6 +4,7 @@ JSON-RPC method handlers for Baseline.
 
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -11,9 +12,10 @@ from typing import Any
 from ..core import difficulty
 from ..core.block import Block
 from ..core.chain import Chain, ChainError
-from ..core.tx import Transaction
+from ..core.tx import COIN, Transaction
 from ..mempool import Mempool, MempoolError
 from ..mining.templates import TemplateBuilder
+from ..policy import MIN_RELAY_FEE_RATE
 from ..storage import BlockStore, StateDB
 from ..time_sync import TimeManager
 from ..wallet import WalletError, WalletLockedError, WalletManager, coins_to_sats
@@ -48,6 +50,10 @@ class RPCHandlers:
         self.wallet = wallet
         self.time_manager = time_manager
         self._methods = {
+            "getblockcount": self.getblockcount,
+            "getbestblockhash": self.getbestblockhash,
+            "getdifficulty": self.getdifficulty,
+            "getrawmempool": self.getrawmempool,
             "getblockhash": self.getblockhash,
             "getblock": self.getblock,
             "getrawtransaction": self.getrawtransaction,
@@ -56,6 +62,7 @@ class RPCHandlers:
             "getblocktemplate": self.getblocktemplate,
             "getblockchaininfo": self.getblockchaininfo,
             "getnetworkinfo": self.getnetworkinfo,
+            "getmininginfo": self.getmininginfo,
             "submitblock": self.submitblock,
             "gettimesyncinfo": self.gettimesyncinfo,
         }
@@ -67,6 +74,7 @@ class RPCHandlers:
                     "listaddresses": self.listaddresses,
                     "listaddressbalances": self.listaddressbalances,
                     "listunspent": self.listunspent,
+                    "getreceivedbyaddress": self.getreceivedbyaddress,
                     "sendtoaddress": self.sendtoaddress,
                     "gettransaction": self.rpc_gettransaction,
                     "listtransactions": self.listtransactions,
@@ -91,6 +99,34 @@ class RPCHandlers:
             raise RPCError(-32602, f"Invalid parameters for {method}: {exc}") from exc
 
     # RPC method implementations -------------------------------------------------
+
+    def getblockcount(self) -> int:
+        best = self.state_db.get_best_tip()
+        return best[1] if best else 0
+
+    def getbestblockhash(self) -> str:
+        best = self.state_db.get_best_tip()
+        if not best:
+            return self.chain.genesis_hash
+        return best[0]
+
+    def getdifficulty(self) -> float:
+        return self._current_difficulty()
+
+    def getrawmempool(self, verbose: bool = False) -> Any:
+        with self.mempool.lock:
+            entries = dict(self.mempool.entries)
+        if not verbose:
+            return list(entries.keys())
+        result = {}
+        for txid, entry in entries.items():
+            result[txid] = {
+                "size": entry.size,
+                "fee": entry.fee / COIN,
+                "time": int(entry.time),
+                "depends": list(entry.depends),
+            }
+        return result
 
     def getblockhash(self, height: int) -> str:
         header = self.state_db.get_main_header_at_height(int(height))
@@ -247,11 +283,7 @@ class RPCHandlers:
             best_header = self.state_db.get_header(best_hash)
 
         # Calculate difficulty from current bits
-        current_difficulty = 1.0
-        if best_header:
-            target = difficulty.compact_to_target(best_header.bits)
-            max_target = difficulty.compact_to_target(self.chain.config.mining.initial_bits)
-            current_difficulty = max_target / target if target > 0 else 1.0
+        current_difficulty = self._current_difficulty()
 
         # Calculate chainwork (cumulative work)
         chainwork = 0
@@ -273,11 +305,7 @@ class RPCHandlers:
             # Calculate median time past (simplified - just use current block time)
             median_time = best_header.timestamp
 
-        # Estimate size on disk (simplified)
-        size_on_disk = 0
-        if height > 0:
-            # Rough estimate: average block size * number of blocks
-            size_on_disk = height * 1000  # Assume 1KB average block size
+        size_on_disk = self._chain_storage_bytes()
 
         return {
             "chain": "main",  # Could be made configurable
@@ -327,10 +355,28 @@ class RPCHandlers:
             "connections": connections,
             "networkactive": True,
             "networks": networks,
-            "relayfee": self.chain.config.mining.pool_fee_percent / 100000000,  # Convert to BTC/kB
-            "incrementalfee": 0.00001000,  # 1000 satoshis per kB
+            "relayfee": MIN_RELAY_FEE_RATE / COIN,
+            "incrementalfee": MIN_RELAY_FEE_RATE / COIN,
             "localaddresses": [],  # Could be populated with actual local addresses
             "warnings": []
+        }
+
+    def getmininginfo(self) -> dict[str, Any]:
+        height = self.getblockcount()
+        difficulty_value = self._current_difficulty()
+        target_spacing = max(1, self.chain.config.mining.block_interval_target)
+        network_hash_ps = difficulty_value * (2 ** 32) / target_spacing
+        with self.mempool.lock:
+            pooled_tx = len(self.mempool.entries)
+        return {
+            "blocks": height,
+            "currentblockweight": 0,
+            "currentblocktx": 0,
+            "difficulty": difficulty_value,
+            "networkhashps": network_hash_ps,
+            "pooledtx": pooled_tx,
+            "chain": "main",
+            "warnings": ""
         }
 
     def _require_wallet(self) -> WalletManager:
@@ -397,6 +443,16 @@ class RPCHandlers:
                 comment_to=comment_to,
             )
         )
+
+    def getreceivedbyaddress(self, address: str, min_conf: int = 1) -> float:
+        def _received(wallet: WalletManager) -> float:
+            balances = wallet.address_balances(int(min_conf))
+            for entry in balances:
+                if entry["address"] == address:
+                    return float(entry["balance"])
+            return 0.0
+
+        return self._wallet_call(_received)
 
     def rpc_gettransaction(self, txid: str, include_watchonly: bool = False) -> dict[str, Any]:
         result = self._wallet_call(lambda w: w.get_transaction(txid))
@@ -485,3 +541,30 @@ class RPCHandlers:
             "system_time": time.time(),
             "synchronized_time": status.get("synchronized_time", time.time())
         }
+
+    def _current_difficulty(self) -> float:
+        best = self.state_db.get_best_tip()
+        if not best:
+            return 1.0
+        header = self.state_db.get_header(best[0])
+        if header is None:
+            return 1.0
+        target = difficulty.compact_to_target(header.bits)
+        max_target = difficulty.compact_to_target(self.chain.config.mining.initial_bits)
+        return max_target / target if target > 0 else 1.0
+
+    def _chain_storage_bytes(self) -> int:
+        total = 0
+        paths: list[Path] = [
+            getattr(self.block_store, "data_path", None),
+            getattr(self.block_store, "index_path", None),
+            getattr(self.state_db, "db_path", None),
+        ]
+        db_path = getattr(self.state_db, "db_path", None)
+        if db_path:
+            for suffix in ("-wal", "-shm"):
+                paths.append(Path(f"{db_path}{suffix}"))
+        for path in paths:
+            if isinstance(path, Path) and path.exists():
+                total += path.stat().st_size
+        return total
