@@ -505,7 +505,7 @@ class StateDB:
 
     # Address index helpers -----------------------------------------------------
 
-    def index_block_addresses(self, block: "Block", height: int) -> None:
+    def index_block_addresses(self, block: Block, height: int) -> None:
         self._ensure_open()
         entries: list[tuple[str, str, int, int, int]] = []
         for tx in block.transactions:
@@ -527,7 +527,7 @@ class StateDB:
                     (address, txid, vout, amount, h),
                 )
 
-    def remove_block_address_index(self, block: "Block") -> None:
+    def remove_block_address_index(self, block: Block) -> None:
         self._ensure_open()
         txids = [tx.txid() for tx in block.transactions]
         if not txids:

@@ -8,8 +8,6 @@ import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-import os
-
 from ..config import ConfigError, NodeConfig
 from ..storage import BlockStore, HeaderData, StateDB, UTXORecord
 from ..time_sync import synchronized_time_int

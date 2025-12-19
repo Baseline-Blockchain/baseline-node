@@ -4,7 +4,7 @@ JSON-RPC method handlers for Baseline.
 
 from __future__ import annotations
 
-import os
+import logging
 import time
 from pathlib import Path
 from typing import Any
@@ -382,8 +382,8 @@ class RPCHandlers:
         if stop_event is not None and hasattr(stop_event, "is_set"):
             try:
                 networkactive = not stop_event.is_set()
-            except Exception:
-                pass
+            except Exception as exc:
+                logging.getLogger("baseline.rpc").debug("stop_event check failed: %s", exc)
 
         # Build networks array (simplified)
         networks = [
