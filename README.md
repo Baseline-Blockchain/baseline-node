@@ -40,7 +40,7 @@ Adjustments are clamped to 4× faster/slower than expected so that hash-rate spi
   A starter `config.json` lives at the repo root with reasonable defaults. Before launching your node, make two important changes:
 
 - Pick RPC creds: Modify `rpc.username` and `rpc.password` in `config.json` and keep them secret; all wallet tooling and miners authenticate with them.
-- Set peers: In `network.seeds`, add reachable Baseline nodes as a list to help your node find peers.
+- Set peers: In `network.seeds`, add reachable Baseline nodes as a list to help your node find peers or **leave it empty** to start a private testnet.
 
 ### 4. Create the pool payout key
   This key is separate from the wallet: it controls who receives block rewards from your Stratum pool. Generate one with:
