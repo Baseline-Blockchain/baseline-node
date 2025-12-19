@@ -28,6 +28,7 @@ class BaselineNode:
         self.log = logging.getLogger("baseline.node")
         self._tasks: dict[str, asyncio.Task] = {}
         self._stop_event = asyncio.Event()
+        self._shutdown_requested = False
         self._started = False
         blocks_dir = self.config.data_dir / "blocks"
         chainstate_path = self.config.data_dir / "chainstate" / "state.sqlite3"
@@ -47,6 +48,7 @@ class BaselineNode:
     async def start(self) -> None:
         if self._started:
             return
+        self._shutdown_requested = False
         self.log.info("Starting node; data_dir=%s", self.config.data_dir)
         try:
             self.block_store.check()
@@ -80,7 +82,9 @@ class BaselineNode:
 
     async def stop(self) -> None:
         if not self._started:
+            self._shutdown_requested = True
             return
+        self._shutdown_requested = True
         self.log.info("Stopping node...")
         self._stop_event.set()
         for name, task in list(self._tasks.items()):
@@ -101,6 +105,7 @@ class BaselineNode:
             self.time_manager = None
         if self.network:
             await self.network.stop()
+        self._started = False
 
     def close(self) -> None:
         """Release long-lived resources."""
@@ -118,15 +123,22 @@ class BaselineNode:
             await self.stop()
 
     def request_shutdown(self) -> None:
+        self._shutdown_requested = True
         self.log.warning("Shutdown requested")
         self._stop_event.set()
 
     async def _housekeeping(self) -> None:
         while not self._stop_event.is_set():
             await asyncio.sleep(5)
+            if self._shutdown_requested:
+                break
             await self._run_payout_cycle()
+            if self._shutdown_requested:
+                break
             if self.wallet:
-                await asyncio.to_thread(self.wallet.sync_chain)
+                self.wallet.sync_chain(self._wallet_should_abort, 200)
+                if self._shutdown_requested:
+                    break
                 self.wallet.tick()
             self._monitor_time_sync()
 
@@ -181,7 +193,7 @@ class BaselineNode:
         wallet_path = self.config.data_dir / "wallet" / "wallet.json"
         wallet_path.parent.mkdir(parents=True, exist_ok=True)
         self.wallet = WalletManager(wallet_path, self.state_db, self.block_store, self.mempool)
-        self.wallet.sync_chain()
+        self.wallet.sync_chain(self._wallet_should_abort)
 
     def _initialize_rpc(self) -> None:
         if not (self.chain and self.mempool):
@@ -249,3 +261,6 @@ class BaselineNode:
         drift_rate = status.get("drift_rate")
         if drift_rate is not None and abs(drift_rate) > 1e-6:  # More than 1 microsecond per second
             self.log.info("Clock drift rate: %.2e s/s", drift_rate)
+
+    def _wallet_should_abort(self) -> bool:
+        return self._shutdown_requested

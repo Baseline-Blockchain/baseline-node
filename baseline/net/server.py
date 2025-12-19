@@ -153,12 +153,15 @@ class P2PServer:
         task.add_done_callback(_cleanup)
 
     async def _dialer_loop(self) -> None:
-        while not self._stop_event.is_set():
-            try:
-                await self._maintain_outbound()
-            except Exception:
-                self.log.exception("Dialer loop error")
-            await asyncio.sleep(5)
+        try:
+            while not self._stop_event.is_set():
+                try:
+                    await self._maintain_outbound()
+                except Exception:
+                    self.log.exception("Dialer loop error")
+                await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            pass
 
     async def _maintain_outbound(self) -> None:
         needed = self.target_outbound - self.outbound_count()
@@ -227,32 +230,38 @@ class P2PServer:
         return hosts
 
     async def _heartbeat_loop(self) -> None:
-        while not self._stop_event.is_set():
-            now = time.time()
-            for peer in list(self.peers.values()):
-                if now - peer.last_message > self.idle_timeout:
-                    self.log.info("Peer %s timed out", peer.peer_id)
-                    await peer.close()
-                    continue
-                if peer.ping_nonce is None:
-                    await peer.ping()
-            await asyncio.sleep(15)
+        try:
+            while not self._stop_event.is_set():
+                now = time.time()
+                for peer in list(self.peers.values()):
+                    if now - peer.last_message > self.idle_timeout:
+                        self.log.info("Peer %s timed out", peer.peer_id)
+                        await peer.close()
+                        continue
+                    if peer.ping_nonce is None:
+                        await peer.ping()
+                await asyncio.sleep(15)
+        except asyncio.CancelledError:
+            pass
 
     async def _sync_watchdog_loop(self) -> None:
-        while not self._stop_event.is_set():
-            now = time.time()
-            if self.header_sync_active and now - self._header_last_time > self._header_timeout:
-                self.log.warning("Header sync stalled; restarting")
-                self.header_sync_active = False
-                if self.header_peer:
-                    self.header_peer = None
-                self._try_start_header_sync()
-            if self.sync_active and now - self._block_last_time > self._block_timeout:
-                self.log.warning("Block sync stalled; restarting header sync")
-                self.sync_active = False
-                self.sync_peer = None
-                self._try_start_header_sync()
-            await asyncio.sleep(10)
+        try:
+            while not self._stop_event.is_set():
+                now = time.time()
+                if self.header_sync_active and now - self._header_last_time > self._header_timeout:
+                    self.log.warning("Header sync stalled; restarting")
+                    self.header_sync_active = False
+                    if self.header_peer:
+                        self.header_peer = None
+                    self._try_start_header_sync()
+                if self.sync_active and now - self._block_last_time > self._block_timeout:
+                    self.log.warning("Block sync stalled; restarting header sync")
+                    self.sync_active = False
+                    self.sync_peer = None
+                    self._try_start_header_sync()
+                await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            pass
 
     async def on_peer_ready(self, peer: Peer) -> None:
         if len(self.peers) >= self.max_peers:
@@ -679,17 +688,20 @@ class P2PServer:
 
     async def _cleanup_loop(self) -> None:
         """Periodic cleanup of expired data."""
-        while not self._stop_event.is_set():
-            try:
-                # Clean up security-related data
-                self.security.cleanup()
+        try:
+            while not self._stop_event.is_set():
+                try:
+                    # Clean up security-related data
+                    self.security.cleanup()
 
-                # Clean up peer discovery data
-                self.discovery.cleanup()
+                    # Clean up peer discovery data
+                    self.discovery.cleanup()
 
-                self.log.debug("Completed periodic cleanup")
-            except Exception as exc:
-                self.log.error("Error during cleanup: %s", exc)
+                    self.log.debug("Completed periodic cleanup")
+                except Exception as exc:
+                    self.log.error("Error during cleanup: %s", exc)
 
-            # Run cleanup every 5 minutes
-            await asyncio.sleep(300)
+                # Run cleanup every 5 minutes
+                await asyncio.sleep(300)
+        except asyncio.CancelledError:
+            pass

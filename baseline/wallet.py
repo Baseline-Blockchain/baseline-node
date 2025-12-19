@@ -9,7 +9,7 @@ import json
 import secrets
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from decimal import ROUND_DOWN, Decimal
 from pathlib import Path
@@ -384,19 +384,31 @@ class WalletManager:
             self.data.setdefault("transactions", {})[txid] = entry
             self._save()
 
-    def sync_chain(self) -> None:
+    def sync_chain(
+        self,
+        should_abort: Callable[[], bool] | None = None,
+        max_blocks: int | None = None,
+    ) -> bool:
         best = self.state_db.get_best_tip()
         if not best:
-            return
+            return True
         best_height = best[1]
         start = int(self.data.get("processed_height", -1)) + 1
         if start > best_height:
-            return
+            return True
+
+        def aborted() -> bool:
+            return bool(should_abort and should_abort())
+
         script_map = self._script_map()
         scripts = {script.hex(): addr for addr, script in script_map.items()}
         outputs: dict[str, dict] = self.data.setdefault("outputs", {})
         txs: dict[str, dict] = self.data.setdefault("transactions", {})
+        blocks_processed = 0
+        dirty = False
         for height in range(start, best_height + 1):
+            if aborted():
+                break
             header = self.state_db.get_main_header_at_height(height)
             if header is None:
                 continue
@@ -442,8 +454,14 @@ class WalletManager:
                     "comment": comment,
                     "comment_to": comment_to,
                 }
-        self.data["processed_height"] = best_height
-        self._save()
+            self.data["processed_height"] = height
+            dirty = True
+            blocks_processed += 1
+            if max_blocks and blocks_processed >= max_blocks:
+                break
+        if dirty:
+            self._save()
+        return self.data.get("processed_height", -1) >= best_height
 
     def get_transaction(self, txid: str) -> dict[str, object] | None:
         txs: dict[str, dict] = self.data.get("transactions", {})

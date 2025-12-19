@@ -8,6 +8,7 @@ import asyncio
 import base64
 import contextlib
 import json
+import time
 from typing import Any
 
 from ..config import NodeConfig
@@ -26,6 +27,7 @@ class RPCServer:
         self.password = config.rpc.password
         self.server: asyncio.AbstractServer | None = None
         self._stop_event = asyncio.Event()
+        self._start_time = time.time()
 
     async def start(self) -> None:
         if self.server:
@@ -52,11 +54,25 @@ class RPCServer:
                 await self._write_response(writer, 400, b"Bad Request", b"")
                 return
             method, _path, _version = parts
+            method = method.upper()
             headers = await self._read_headers(reader)
             if headers is None:
                 await self._write_response(writer, 400, b"Bad Request", b"")
                 return
-            if method.upper() != "POST":
+            if method == "GET":
+                if not self._check_auth(headers.get("authorization")):
+                    await self._write_response(
+                        writer,
+                        401,
+                        b"Unauthorized",
+                        b"",
+                        extra_headers={"WWW-Authenticate": 'Basic realm="baseline"'},
+                    )
+                    return
+                panel = self._render_status_panel()
+                await self._write_response(writer, 200, b"OK", panel, content_type="text/plain; charset=utf-8")
+                return
+            if method != "POST":
                 await self._write_response(writer, 405, b"Method Not Allowed", b"")
                 return
             if not self._check_auth(headers.get("authorization")):
@@ -176,3 +192,98 @@ class RPCServer:
         writer.write(b"\r\n")
         writer.write(body)
         await writer.drain()
+
+    def _render_status_panel(self) -> bytes:
+        stats = self._collect_status_metrics()
+        rows = [
+            ("Height", f"{stats['height']:,}"),
+            ("Best Block", stats["best_block"]),
+            ("Chain Tip Age", stats["last_block_age"]),
+            ("Mempool", f"{stats['mempool']} tx ({stats['orphans']} orphans)"),
+            ("Peers", f"{stats['peers']} (in {stats['inbound']}/out {stats['outbound']})"),
+            ("Sync State", stats["sync_state"]),
+            ("RPC Uptime", stats["uptime"]),
+            ("Wallet", "enabled" if stats["wallet_enabled"] else "disabled"),
+            ("NTP", stats["ntp_status"]),
+        ]
+        label_width = max(len(label) for label, _ in rows)
+        value_width = max(len(value) for _, value in rows)
+        inner_width = label_width + 3 + value_width  # "label : value"
+        title = " Baseline RPC Status "
+        box_width = max(inner_width, len(title))
+        border = "+" + "-" * (box_width + 2) + "+"
+        title_line = f"| {title.center(box_width)} |"
+        content_lines = []
+        for label, value in rows:
+            line = f"{label.ljust(label_width)} : {value}"
+            content_lines.append(f"| {line.ljust(box_width)} |")
+        panel = "\n".join([border, title_line, border] + content_lines + [border])
+        return panel.encode("utf-8")
+
+    def _collect_status_metrics(self) -> dict[str, Any]:
+        state_db = self.handlers.state_db
+        best = state_db.get_best_tip()
+        height = best[1] if best else 0
+        best_hash = best[0] if best else self.handlers.chain.genesis_hash
+        best_header = state_db.get_header(best_hash)
+        now = time.time()
+        if best_header:
+            age_seconds = max(0, now - best_header.timestamp)
+            last_block_age = self._format_duration(age_seconds)
+        else:
+            last_block_age = "n/a"
+        with self.handlers.mempool.lock:
+            mempool_size = len(self.handlers.mempool.entries)
+            orphan_size = len(self.handlers.mempool.orphans)
+        network = getattr(self.handlers, "network", None)
+        peers = len(network.peers) if network else 0
+        outbound = sum(1 for peer in network.peers.values() if peer.outbound) if network else 0
+        inbound = max(0, peers - outbound)
+        sync_state = "offline"
+        if network:
+            if network.header_sync_active:
+                sync_state = f"headers ({network.sync_remote_height:,})"
+            elif network.sync_active:
+                sync_state = f"blocks ({network.sync_remote_height:,})"
+            else:
+                sync_state = "steady"
+        uptime = self._format_duration(now - self._start_time)
+        wallet_enabled = self.handlers.wallet is not None
+        ntp = self.handlers.time_manager.get_sync_status() if self.handlers.time_manager else None
+        ntp_status = "disabled"
+        if ntp:
+            if ntp["synchronized"]:
+                ntp_status = f"sync'd ({ntp['offset']:+.3f}s)"
+            else:
+                ntp_status = f"drift {ntp['offset']:+.3f}s"
+        short_hash = f"{best_hash[:16]}...{best_hash[-4:]}" if len(best_hash) > 24 else best_hash
+        return {
+            "height": height,
+            "best_block": short_hash,
+            "last_block_age": last_block_age,
+            "mempool": mempool_size,
+            "orphans": orphan_size,
+            "peers": peers,
+            "inbound": inbound,
+            "outbound": outbound,
+            "sync_state": sync_state,
+            "uptime": uptime,
+            "wallet_enabled": wallet_enabled,
+            "ntp_status": ntp_status,
+        }
+
+    def _format_duration(self, seconds: float) -> str:
+        seconds = int(seconds)
+        days, rem = divmod(seconds, 86400)
+        hours, rem = divmod(rem, 3600)
+        minutes, secs = divmod(rem, 60)
+        parts = []
+        if days:
+            parts.append(f"{days}d")
+        if hours:
+            parts.append(f"{hours}h")
+        if minutes:
+            parts.append(f"{minutes}m")
+        if not parts:
+            parts.append(f"{secs}s")
+        return " ".join(parts)

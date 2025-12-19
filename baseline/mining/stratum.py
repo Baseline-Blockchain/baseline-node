@@ -360,26 +360,29 @@ class StratumServer:
             await self._submit_block(block, job)
 
     async def _template_loop(self) -> None:
-        while not self._stop_event.is_set():
-            await self._template_event.wait()
-            self._template_event.clear()
-            clean = self._need_clean
-            self._need_clean = False
-            try:
-                template = await asyncio.to_thread(self.builder.build_template)
-            except Exception:
-                self.log.exception("Failed to build template")
-                await asyncio.sleep(1)
-                self._template_event.set()
-                continue
-            job_id = f"{int(time.time())}-{self._job_seq}"
-            self._job_seq += 1
-            job = TemplateJob(job_id=job_id, template=template, created=time.time(), clean=clean)
-            self._jobs[job_id] = job
-            self._latest_job = job
-            self._trim_jobs()
-            await self._broadcast_job(job, clean)
-            self._last_template_time = time.time()
+        try:
+            while not self._stop_event.is_set():
+                await self._template_event.wait()
+                self._template_event.clear()
+                clean = self._need_clean
+                self._need_clean = False
+                try:
+                    template = await asyncio.to_thread(self.builder.build_template)
+                except Exception:
+                    self.log.exception("Failed to build template")
+                    await asyncio.sleep(1)
+                    self._template_event.set()
+                    continue
+                job_id = f"{int(time.time())}-{self._job_seq}"
+                self._job_seq += 1
+                job = TemplateJob(job_id=job_id, template=template, created=time.time(), clean=clean)
+                self._jobs[job_id] = job
+                self._latest_job = job
+                self._trim_jobs()
+                await self._broadcast_job(job, clean)
+                self._last_template_time = time.time()
+        except asyncio.CancelledError:
+            pass
 
     async def _broadcast_job(self, job: TemplateJob, clean: bool) -> None:
         to_remove: list[int] = []
@@ -411,30 +414,36 @@ class StratumServer:
         return list(self._jobs.keys())
 
     async def _tip_monitor_loop(self) -> None:
-        while not self._stop_event.is_set():
-            best = self.state_db.get_best_tip()
-            if best and (self._chain_tip is None or best[0] != self._chain_tip[0]):
-                self._chain_tip = best
-                self._need_clean = True
-                self._template_event.set()
-            elif not best:
-                self._chain_tip = None
-            else:
-                self._chain_tip = best
-            # refresh template timestamp periodically
-            if time.time() - self._last_template_time > 30:
-                self._template_event.set()
-            await asyncio.sleep(2)
+        try:
+            while not self._stop_event.is_set():
+                best = self.state_db.get_best_tip()
+                if best and (self._chain_tip is None or best[0] != self._chain_tip[0]):
+                    self._chain_tip = best
+                    self._need_clean = True
+                    self._template_event.set()
+                elif not best:
+                    self._chain_tip = None
+                else:
+                    self._chain_tip = best
+                # refresh template timestamp periodically
+                if time.time() - self._last_template_time > 30:
+                    self._template_event.set()
+                await asyncio.sleep(2)
+        except asyncio.CancelledError:
+            pass
 
     async def _session_gc_loop(self) -> None:
         timeout = self.config.stratum.session_timeout
-        while not self._stop_event.is_set():
-            now = time.time()
-            for session_id, session in list(self.sessions.items()):
-                if now - session.last_activity > timeout:
-                    await session.close()
-                    self.sessions.pop(session_id, None)
-            await asyncio.sleep(5)
+        try:
+            while not self._stop_event.is_set():
+                now = time.time()
+                for session_id, session in list(self.sessions.items()):
+                    if now - session.last_activity > timeout:
+                        await session.close()
+                        self.sessions.pop(session_id, None)
+                await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            pass
 
     async def _submit_block(self, block: Block, job: TemplateJob) -> None:
         def _add_block() -> dict[str, object]:

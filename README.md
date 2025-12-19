@@ -58,6 +58,7 @@ Baseline targets **Python 3.12 or newer** (3.12/3.13 verified). Make sure your `
    baseline-node --config config.json --log-level info
    ```
    The runner initializes the append-only block store + SQLite chainstate, starts P2P sync, the Stratum pool, wallet, payout tracker, and the authenticated JSON-RPC server. Use Ctrl+C (or SIGTERM) for graceful shutdown.
+   Point a browser or `curl` at `http://127.0.0.1:8832/` (with your RPC username/password) to view the built-in status panel—it summarizes height, peers, mempool size, and uptime at a glance.
 
 ### 6. Initialize the wallet once the node is running
    ```bash

@@ -431,6 +431,7 @@ class PeerDiscovery:
         self.peer_exchange = PeerExchange(self.address_book)
         self.manual_seeds = manual_seeds
         self.log = logging.getLogger("baseline.peer_discovery")
+        self._warned_no_dns = False
 
         # Error tracking for recovery
         self.error_count = 0
@@ -474,8 +475,9 @@ class PeerDiscovery:
                     if dns_addresses:
                         self.address_book.add_addresses(dns_addresses)
                         self.log.info("Discovered %d addresses from DNS seeds", len(dns_addresses))
-                    elif not self.manual_seeds and not self.address_book.addresses:
-                        self.log.warning("No addresses discovered from DNS seeds")
+                    elif not self.manual_seeds and not self.address_book.addresses and not self._warned_no_dns:
+                        self.log.info("DNS seeds returned no peers; operating without public connections")
+                        self._warned_no_dns = True
                     else:
                         self.log.debug(
                             "DNS seeds returned no new addresses; reusing %d cached/manual entries",

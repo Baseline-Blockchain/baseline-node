@@ -3,6 +3,10 @@
 Baseline exposes a Bitcoin-like JSON-RPC server over HTTP with Basic Auth. Configure credentials in config.rpc. The server listens on 
 pc.host:rpc.port (default 127.0.0.1:8832).
 
+## Status Panel
+
+Performing an authenticated `GET /` against the RPC endpoint (e.g. `http://127.0.0.1:8832/`) returns a plain-text dashboard instead of JSON. The panel uses the same Basic Auth credentials and shows the current height, best block hash, peer counts, mempool size, sync status, uptime, wallet/NT P status, and other quick diagnostics. It's a handy way to confirm a node is healthy from a browser or terminal without making individual RPC calls.
+
 ## Request Format
 
 `ash
