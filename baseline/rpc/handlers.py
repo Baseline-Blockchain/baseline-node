@@ -18,7 +18,7 @@ from ..mining.templates import TemplateBuilder
 from ..policy import MIN_RELAY_FEE_RATE
 from ..storage import BlockStore, StateDB
 from ..time_sync import TimeManager
-from ..wallet import WalletError, WalletLockedError, WalletManager, coins_to_sats
+from ..wallet import WalletError, WalletLockedError, WalletManager, coins_to_liners
 
 
 class RPCError(Exception):
@@ -140,7 +140,7 @@ class RPCHandlers:
                 "txid": row["txid"],
                 "outputIndex": row["vout"],
                 "script": row["script_pubkey"].hex(),
-                "satoshis": row["amount"],
+                "liners": row["amount"],
                 "height": row["height"],
             }
             for row in rows
@@ -150,8 +150,8 @@ class RPCHandlers:
         addresses = self._parse_address_list(options)
         balance, received = self.state_db.get_address_balance(addresses)
         return {
-            "balance_satoshi": balance,
-            "received_satoshi": received,
+            "balance_liners": balance,
+            "received_liners": received,
             "balance": balance / COIN,
             "received": received / COIN,
         }
@@ -519,14 +519,14 @@ class RPCHandlers:
         from_addresses = opts.get("fromaddresses")
         change_address = opts.get("changeaddress")
         fee_override = opts.get("fee")
-        fee_sats = None
+        fee_liners = None
         if fee_override is not None:
-            fee_sats = coins_to_sats(fee_override)
+            fee_liners = coins_to_liners(fee_override)
         return self._wallet_call(
             lambda w: w.send_to_address(
                 address,
                 amount,
-                fee=fee_sats if fee_sats is not None else 1_000,
+                fee=fee_liners if fee_liners is not None else 1_000,
                 from_addresses=from_addresses,
                 change_address=change_address,
                 comment=comment,

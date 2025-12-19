@@ -231,7 +231,7 @@ class RPCTestCase(unittest.TestCase):
         self.wallet.sync_chain()
         utxos = self.handlers.dispatch("getaddressutxos", [{"addresses": [recv_address]}])
         self.assertEqual(len(utxos), 1)
-        self.assertEqual(utxos[0]["satoshis"], 5 * COIN)
+        self.assertEqual(utxos[0]["liners"], 5 * COIN)
         balance = self.handlers.dispatch("getaddressbalance", [{"addresses": [recv_address]}])
         self.assertAlmostEqual(balance["balance"], 5.0)
         self.assertAlmostEqual(balance["received"], 5.0)

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from .core.tx import Transaction
 
-MIN_RELAY_FEE_RATE = 1_000  # satoshis per kB
+MIN_RELAY_FEE_RATE = 1_000  # liners per kB
 MAX_STANDARD_TX_SIZE = 100_000
 MAX_SCRIPT_SIG_SIZE = 1_650
 MAX_SCRIPTPUBKEY_SIZE = 10_000

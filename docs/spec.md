@@ -1,6 +1,6 @@
 # Baseline Protocol Specification
 
-This document captures the normative behavior implemented by the current Baseline node. Unless noted otherwise, all values are expressed in consensus (satoshi) units and hashes are serialized in big-endian hexadecimal.
+This document captures the normative behavior implemented by the current Baseline node. Unless noted otherwise, all values are expressed in consensus (liner) units and hashes are serialized in big-endian hexadecimal.
 
 ## 1. Cryptography & Hashing
 
@@ -11,7 +11,7 @@ This document captures the normative behavior implemented by the current Baselin
 ## 2. Transaction Model
 
 - Inputs reference previous transaction outputs by `txid` (little-endian on wire) and `vout` index.
-- Outputs lock satoshis to scripts. Only Pay-to-PubKey-Hash (25‑byte `OP_DUP OP_HASH160 <20 bytes> OP_EQUALVERIFY OP_CHECKSIG`) scripts are considered standard and mineable.
+- Outputs lock liners to scripts. Only Pay-to-PubKey-Hash (25‑byte `OP_DUP OP_HASH160 <20 bytes> OP_EQUALVERIFY OP_CHECKSIG`) scripts are considered standard and mineable.
 - Coin creation occurs exclusively in the first transaction (coinbase) of each block.
 
 ### Validation Rules
@@ -24,12 +24,12 @@ This document captures the normative behavior implemented by the current Baselin
 
 ## 3. Monetary Policy
 
-- Initial subsidy: 50 BLINE (= 5 000 000 000 satoshis).
+- Initial subsidy: 50 BLINE (= 5 000 000 000 liners).
 - Halving interval: 150 000 blocks (~34.7 days at 20 s/block).
 - Maximum halvings considered: 32 (after which subsidy stays at zero).
 - Theoretical supply cap: 15 000 000 BLINE (50 * 150 000 * (1 - 2^-32)).
 - Transaction fees (input minus output sum) accrue entirely to the miner of the block that includes the transaction. No burning or redistribution occurs.
-- Relay/miner fee floor: 1 000 satoshis per kB (rounded up) as implemented in `baseline/policy.py`.
+- Relay/miner fee floor: 1 000 liners per kB (rounded up) as implemented in `baseline/policy.py`.
 - Nodes verify that local `MiningConfig` values match these constants at startup. Any deviation causes initialization to fail unless `allow_consensus_overrides=true` is explicitly set for private testnets, in which case the node logs a warning and may diverge from mainnet.
 
 ### Premine

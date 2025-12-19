@@ -30,17 +30,17 @@ class WalletLockedError(WalletError):
     """Raised when a wallet operation requires an unlocked wallet."""
 
 
-def coins_to_sats(amount: Decimal | float | str | int) -> int:
+def coins_to_liners(amount: Decimal | float | str | int) -> int:
     if isinstance(amount, int):
         return amount
     quantized = Decimal(str(amount)).quantize(Decimal("0.00000001"), rounding=ROUND_DOWN)
-    sats = int((quantized * COIN).to_integral_value(rounding=ROUND_DOWN))
-    if sats < 0:
+    liners = int((quantized * COIN).to_integral_value(rounding=ROUND_DOWN))
+    if liners < 0:
         raise ValueError("Amount must be positive")
-    return sats
+    return liners
 
 
-def sats_to_coins(value: int) -> float:
+def liners_to_coins(value: int) -> float:
     return float(Decimal(value) / COIN)
 
 
@@ -237,7 +237,7 @@ class WalletManager:
                     "txid": utxo.txid,
                     "vout": utxo.vout,
                     "address": addr,
-                    "amount": sats_to_coins(utxo.amount),
+                    "amount": liners_to_coins(utxo.amount),
                     "confirmations": confirmations,
                     "scriptPubKey": utxo.script_pubkey.hex(),
                     "height": utxo.height,
@@ -248,8 +248,8 @@ class WalletManager:
 
     def get_balance(self, min_conf: int = 1) -> float:
         unspent = self.list_unspent(min_conf=min_conf)
-        total = sum(coins_to_sats(entry["amount"]) for entry in unspent)
-        return sats_to_coins(total)
+        total = sum(coins_to_liners(entry["amount"]) for entry in unspent)
+        return liners_to_coins(total)
 
     def _lookup_privkey(self, address: str) -> int:
         entries = self.data.get("addresses", {})
@@ -277,8 +277,8 @@ class WalletManager:
         comment: str | None = None,
         comment_to: str | None = None,
     ) -> str:
-        amount_sats = coins_to_sats(amount)
-        if amount_sats <= 0:
+        amount_liners = coins_to_liners(amount)
+        if amount_liners <= 0:
             raise ValueError("Amount must be positive")
         unspent = self.list_unspent()
         entries = self.data.get("addresses", {})
@@ -310,14 +310,14 @@ class WalletManager:
         total = 0
         for entry in spendable:
             selected.append(entry)
-            total += coins_to_sats(entry["amount"])
-            if total >= amount_sats + fee:
+            total += coins_to_liners(entry["amount"])
+            if total >= amount_liners + fee:
                 break
-        if total < amount_sats + fee:
+        if total < amount_liners + fee:
             raise ValueError("Insufficient funds")
         inputs = [TxInput(prev_txid=entry["txid"], prev_vout=entry["vout"], script_sig=b"", sequence=0xFFFFFFFF) for entry in selected]
-        outputs = [TxOutput(value=amount_sats, script_pubkey=script_from_address(dest_address))]
-        change = total - amount_sats - fee
+        outputs = [TxOutput(value=amount_liners, script_pubkey=script_from_address(dest_address))]
+        change = total - amount_liners - fee
         chosen_change = change_address or selected[0]["address"]
         if not chosen_change:
             for addr, meta in entries.items():
@@ -344,7 +344,7 @@ class WalletManager:
             raise ValueError(f"Transaction rejected: {exc}") from exc
         self._record_transaction(
             tx.txid(),
-            amount=-amount_sats,
+            amount=-amount_liners,
             category="send",
             addresses=[dest_address],
             blockhash=None,
@@ -474,10 +474,10 @@ class WalletManager:
             confirmations = best[1] - entry["height"] + 1
         result = dict(entry)
         result["txid"] = txid
-        result["amount"] = sats_to_coins(entry["amount"])
+        result["amount"] = liners_to_coins(entry["amount"])
         result["confirmations"] = confirmations
         if entry.get("fee") is not None:
-            result["fee"] = sats_to_coins(entry["fee"])
+            result["fee"] = liners_to_coins(entry["fee"])
         result.setdefault("comment", "")
         result.setdefault("comment_to", "")
         return result
@@ -496,7 +496,7 @@ class WalletManager:
                 {
                     "txid": txid,
                     "category": entry["category"],
-                    "amount": sats_to_coins(entry["amount"]),
+                    "amount": liners_to_coins(entry["amount"]),
                     "time": entry["time"],
                     "confirmations": confirmations,
                     "addresses": entry.get("addresses", []),
@@ -538,14 +538,14 @@ class WalletManager:
             addr = entry.get("address")
             if not addr:
                 continue
-            totals[addr] = totals.get(addr, 0) + coins_to_sats(entry["amount"])
+            totals[addr] = totals.get(addr, 0) + coins_to_liners(entry["amount"])
         result: list[dict[str, object]] = []
         for addr, meta in self.data.get("addresses", {}).items():
-            sats = totals.get(addr, 0)
+            liners = totals.get(addr, 0)
             result.append(
                 {
                     "address": addr,
-                    "balance": sats_to_coins(sats),
+                    "balance": liners_to_coins(liners),
                     "label": meta.get("label", ""),
                     "watch_only": bool(meta.get("watch_only")),
                     "spendable": not bool(meta.get("watch_only")),

@@ -28,7 +28,7 @@ When a worker submits a share above the network difficulty, the Stratum server c
 1. **Share submission** → `record_share(worker_id, address, difficulty)` accumulates per-worker virtual shares.
 2. **Block found** → `record_block(height, coinbase_txid, reward)` snapshots shares, subtracts pool fee (`mining.pool_fee_percent`), and adds the entry to `pending_blocks`.
 3. **Maturity** → `process_maturity(best_height)` waits `mining.coinbase_maturity` blocks (5 by default) before moving pending rewards to worker balances. Fees + rounding dust accumulate in `pool_balance`.
-4. **Payout transaction** → `create_payout_transaction(state_db)` sweeps matured coinbase UTXOs into a multi-output transaction once enough workers exceed `mining.min_payout` (denominated in satoshis). The tx is signed with `mining.pool_private_key` and broadcast through the mempool.
+4. **Payout transaction** → `create_payout_transaction(state_db)` sweeps matured coinbase UTXOs into a multi-output transaction once enough workers exceed `mining.min_payout` (denominated in liners). The tx is signed with `mining.pool_private_key` and broadcast through the mempool.
 
 ### Ledger Anatomy
 
@@ -74,5 +74,5 @@ Monitor this file (or expose it via tooling) to audit payouts.
 
 - **Dedicated payout key**: keep `pool_private_key` offline. Use the wallet CLI to generate WIF backups.
 - **Worker registration**: Stratum auto-registers workers when the first share arrives, using the address they provide in the mining protocol.
-- **Fee accounting**: `pool_balance` grows with fees and leftover satoshis. Periodically sweep it to the operator wallet by crafting a manual transaction.
-- **Tx fees**: payout transactions include a flat 1,000 sat fee. Bump it manually (editing `PayoutTracker.tx_fee`) if mempools get congested.
+- **Fee accounting**: `pool_balance` grows with fees and leftover liners. Periodically sweep it to the operator wallet by crafting a manual transaction.
+- **Tx fees**: payout transactions include a flat 1,000 liner fee. Bump it manually (editing `PayoutTracker.tx_fee`) if mempools get congested.
