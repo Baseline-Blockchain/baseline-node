@@ -68,7 +68,7 @@ Monitor this file (or expose it via tooling) to audit payouts.
 
 - Coinbase outputs require `mining.coinbase_maturity` confirmations before being spendable.
 - Once matured, payouts call into the wallet/mempool; set `min_payout` high enough to avoid dust and keep transactions under ~100 kB.
-- To monitor rewards, import the pool’s private key into a watch-only wallet or decode the payout transaction via `listtransactions` (memo fields propagate).
+- To monitor rewards, import the pool’s private key into a watch-only wallet or decode the payout transaction via `listtransactions`.
 
 ## Operational Tips
 
