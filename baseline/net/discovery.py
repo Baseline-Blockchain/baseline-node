@@ -35,7 +35,7 @@ class PeerAddress:
         """Check if address is stale (not seen for max_age seconds)."""
         return time.time() - self.last_seen > max_age
     
-    def should_retry(self, min_retry_delay: float = 3600) -> bool:
+    def should_retry(self, min_retry_delay: float = 30) -> bool:
         """Check if we should retry connecting to this address."""
         if self.last_attempt == 0:
             return True
