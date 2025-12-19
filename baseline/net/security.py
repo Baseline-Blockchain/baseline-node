@@ -215,7 +215,7 @@ class MessageValidator:
     @classmethod
     def _validate_version(cls, message: dict[str, Any]) -> tuple[bool, str]:
         """Validate version message."""
-        required_fields = ["network_id", "services", "height", "listen_port"]
+        required_fields = ["network", "services", "height", "port"]
         for field in required_fields:
             if field not in message:
                 return False, f"Missing required field: {field}"
@@ -223,7 +223,7 @@ class MessageValidator:
         if not isinstance(message.get("height"), int) or message["height"] < 0:
             return False, "Invalid height"
             
-        if not isinstance(message.get("listen_port"), int) or not (1 <= message["listen_port"] <= 65535):
+        if not isinstance(message.get("port"), int) or not (1 <= message["port"] <= 65535):
             return False, "Invalid listen port"
             
         return True, ""
