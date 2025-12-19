@@ -63,7 +63,7 @@ ame, it, start_time, 	imeout, and 	hreshold fields.
 ## Current Status
 
 - No upgrades are defined. UpgradeManager reports no active bits.
-- Consensus parameters (coinbase_maturity, lock_interval_target, 
+- Consensus parameters (coinbase_maturity, lock_interval_target, 
 etarget_interval, initial_bits, subsidy_halving_interval) are locked at startup. Nodes refuse to run if the config deviates unless mining.allow_consensus_overrides=true is explicitly set (testnet/dev-only).
 
 ## Responsibilities
