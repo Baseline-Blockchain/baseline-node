@@ -38,20 +38,20 @@ Adjustments are clamped to 4× faster/slower than expected so that hash-rate spi
 - Pick RPC creds: Modify `rpc.username` and `rpc.password` in `config.json` and keep them secret; all wallet tooling and miners authenticate with them.
 - Set peers: In `network.seeds`, add reachable Baseline nodes as a list to help your node find peers.
 
-### 6. Create the pool payout key
+### 4. Create the pool payout key
   This key is separate from the wallet: it controls who receives block rewards from your Stratum pool. Generate one with:
   ```bash
   baseline-wallet generate-key
   ```
   It prints the 32-byte hex key *and* a WIF string. Replace `"CHANGE-ME"` in `config.json` with the hex value. Keep both hex + WIF offline-import the WIF into any wallet (Baseline or external) whenever you need to manually spend pool-held funds.
 
-### 7. Launch the node
+### 5. Launch the node
    ```bash
    baseline-node --config config.json --log-level info
    ```
    The runner initializes the append-only block store + SQLite chainstate, starts P2P sync, the Stratum pool, wallet, payout tracker, and the authenticated JSON-RPC server. Use Ctrl+C (or SIGTERM) for graceful shutdown.
 
-### 8. Initialize the wallet once the node is running
+### 6. Initialize the wallet once the node is running
    ```bash
    baseline-wallet --config config.json setup --encrypt
    ```
