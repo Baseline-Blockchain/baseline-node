@@ -394,6 +394,8 @@ class RPCHandlers:
                 fee=fee_sats if fee_sats is not None else 1_000,
                 from_addresses=from_addresses,
                 change_address=change_address,
+                comment=comment,
+                comment_to=comment_to,
             )
         )
 

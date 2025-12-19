@@ -98,10 +98,10 @@ class SecurityTests(unittest.TestCase):
         # Valid version message
         valid_version = {
             "type": "version",
-            "network_id": "test-net",
+            "network": "test-net",
             "services": 1,
             "height": 100,
-            "listen_port": 9333
+            "port": 9333,
         }
         is_valid, error = MessageValidator.validate_message(valid_version)
         self.assertTrue(is_valid)
@@ -110,9 +110,9 @@ class SecurityTests(unittest.TestCase):
         # Invalid version message (missing field)
         invalid_version = {
             "type": "version",
-            "network_id": "test-net",
+            "network": "test-net",
             "services": 1,
-            # Missing height and listen_port
+            # Missing height and port
         }
         is_valid, error = MessageValidator.validate_message(invalid_version)
         self.assertFalse(is_valid)

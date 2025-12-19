@@ -274,6 +274,8 @@ class WalletManager:
         fee: int = 1_000,
         from_addresses: Sequence[str] | None = None,
         change_address: str | None = None,
+        comment: str | None = None,
+        comment_to: str | None = None,
     ) -> str:
         amount_sats = coins_to_sats(amount)
         if amount_sats <= 0:
@@ -348,6 +350,8 @@ class WalletManager:
             blockhash=None,
             height=None,
             fee=fee,
+            comment=comment,
+            comment_to=comment_to,
         )
         return tx.txid()
 
@@ -362,6 +366,8 @@ class WalletManager:
         height: int | None,
         fee: int | None,
         timestamp: int | None = None,
+        comment: str | None = None,
+        comment_to: str | None = None,
     ) -> None:
         entry = {
             "amount": amount,
@@ -371,6 +377,8 @@ class WalletManager:
             "blockhash": blockhash,
             "height": height,
             "fee": fee,
+            "comment": comment or "",
+            "comment_to": comment_to or "",
         }
         with self.lock:
             self.data.setdefault("transactions", {})[txid] = entry
@@ -421,6 +429,8 @@ class WalletManager:
                 entry = txs.get(txid)
                 timestamp = header.timestamp
                 fee = entry.get("fee") if entry else None
+                comment = entry.get("comment", "") if entry else ""
+                comment_to = entry.get("comment_to", "") if entry else ""
                 txs[txid] = {
                     "amount": delta,
                     "category": category,
@@ -429,6 +439,8 @@ class WalletManager:
                     "blockhash": header.hash,
                     "height": height,
                     "fee": fee,
+                    "comment": comment,
+                    "comment_to": comment_to,
                 }
         self.data["processed_height"] = best_height
         self._save()
@@ -448,6 +460,8 @@ class WalletManager:
         result["confirmations"] = confirmations
         if entry.get("fee") is not None:
             result["fee"] = sats_to_coins(entry["fee"])
+        result.setdefault("comment", "")
+        result.setdefault("comment_to", "")
         return result
 
     def list_transactions(self, count: int = 10, skip: int = 0) -> list[dict[str, object]]:
@@ -468,6 +482,8 @@ class WalletManager:
                     "time": entry["time"],
                     "confirmations": confirmations,
                     "addresses": entry.get("addresses", []),
+                    "comment": entry.get("comment", ""),
+                    "comment_to": entry.get("comment_to", ""),
                 }
             )
         return result

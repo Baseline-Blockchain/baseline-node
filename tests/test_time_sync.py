@@ -3,12 +3,13 @@ Tests for NTP time synchronization functionality.
 """
 
 import asyncio
+import socket
 import time
 import unittest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
-from baseline.config import NTPConfig
-from baseline.time_sync import NTPClient, NTPResponse, TimeManager, synchronized_time_int
+from baseline.config import NTPConfig, ConfigError
+from baseline.time_sync import NTPClient, NTPResponse, NTPError, TimeManager, synchronized_time_int
 
 
 class TestNTPConfig(unittest.TestCase):
@@ -30,23 +31,23 @@ class TestNTPConfig(unittest.TestCase):
 
         # Test invalid sync interval
         config.sync_interval = -1
-        with self.assertRaises(Exception):  # ConfigError inherits from Exception
+        with self.assertRaises(ConfigError):
             config.validate()
 
         # Test invalid timeout
         config.sync_interval = 300
         config.timeout = 0
-        with self.assertRaises(Exception):  # ConfigError inherits from Exception
+        with self.assertRaises(ConfigError):
             config.validate()
 
 
-class TestNTPClient(unittest.TestCase):
+class TestNTPClient(unittest.IsolatedAsyncioTestCase):
     """Test NTP client functionality."""
 
     def setUp(self):
         self.client = NTPClient(servers=["test.ntp.org"], timeout=1.0)
 
-    @patch('socket.socket')
+    @patch("socket.socket")
     async def test_query_server_success(self, mock_socket):
         """Test successful NTP server query."""
         # Mock socket behavior
@@ -62,7 +63,7 @@ class TestNTPClient(unittest.TestCase):
         response_data[40:44] = struct_time.to_bytes(4, 'big')
         response_data[44:48] = frac_time.to_bytes(4, 'big')
         
-        mock_sock.recv.return_value = bytes(response_data)
+        mock_sock.recvfrom.return_value = (bytes(response_data), ("test.ntp.org", 123))
         
         response = await self.client.query_server("test.ntp.org")
         
@@ -73,12 +74,12 @@ class TestNTPClient(unittest.TestCase):
 
     async def test_query_server_timeout(self):
         """Test NTP server query timeout."""
-        with patch('socket.socket') as mock_socket:
+        with patch("socket.socket") as mock_socket:
             mock_sock = MagicMock()
             mock_socket.return_value = mock_sock
-            mock_sock.recv.side_effect = socket.timeout()
+            mock_sock.recvfrom.side_effect = socket.timeout()
             
-            with self.assertRaises(Exception):
+            with self.assertRaises(NTPError):
                 await self.client.query_server("nonexistent.ntp.org")
 
     async def test_sync_time_multiple_servers(self):
@@ -91,7 +92,7 @@ class TestNTPClient(unittest.TestCase):
             NTPResponse(offset=0.15, delay=0.06, server="server2.ntp.org", timestamp=time.time())
         ]
         
-        with patch.object(client, 'query_server', side_effect=responses):
+        with patch.object(client, "query_server", side_effect=responses):
             result = await client.sync_time(max_servers=2)
             
             self.assertIsInstance(result, NTPResponse)
@@ -186,26 +187,5 @@ class TestSynchronizedTimeFunctions(unittest.TestCase):
         self.assertAlmostEqual(timestamp, current_time, delta=2)
 
 
-if __name__ == '__main__':
-    # Run async tests
-    import sys
-    
-    async def run_async_tests():
-        """Run async test methods."""
-        test_client = TestNTPClient()
-        test_client.setUp()
-        
-        try:
-            # These would normally be run by an async test runner
-            print("Running async NTP client tests...")
-            # await test_client.test_query_server_success()
-            # await test_client.test_sync_time_multiple_servers()
-            print("Async tests completed (mocked)")
-        except Exception as e:
-            print(f"Async test failed: {e}")
-    
-    # Run sync tests
-    unittest.main(verbosity=2, exit=False)
-    
-    # Run async tests
-    asyncio.run(run_async_tests())
+if __name__ == "__main__":
+    unittest.main()
