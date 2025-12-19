@@ -42,7 +42,7 @@ Genesis plus the first ~7 500 blocks can be mined privately to preallocate 2.5
 - Block weight limit: `4_000_000` (no witness, so weight ≈ serialized size * 4 ⇒ 1 MB max).
 - Timestamp constraints:
   - Must be strictly greater than the median of the previous 11 blocks (`median_time_past`).
-  - Must not exceed `synchronized_time + 2 hours`.
+- Must not exceed `synchronized_time + 15 minutes`.
 - Proof-of-work: header hash interpreted as uint256 must be ≤ target encoded by `bits`.
 - Difficulty adjusts every `retarget_interval` (=20) blocks relative to the most recent ancestor 19 blocks prior:
 
@@ -80,10 +80,11 @@ new_target ≤ max_target (set by genesis bits 0x207fffff)
 - Pool fee: `mining.pool_fee_percent` (default 1%) skimmed from block rewards before distribution.
 - Payouts triggered when worker balances exceed `mining.min_payout` (default 1 BLINE) by constructing signed multi-output transactions spending matured coinbase UTXOs.
 
-## 8. Wallet & RPC
+## 8. Wallet, Address Index & RPC
 
 - Deterministic HD wallet with PBKDF2 + XOR encryption for seeds.
-- RPC surface mirrors Bitcoin Core for core methods (`getblockchaininfo`, `sendtoaddress`, etc.) plus `gettimesyncinfo`.
+- Built-in address index tracks per-address UTXOs and transaction history so RPC methods such as `getaddressutxos`, `getaddressbalance`, and `getaddresstxids` require no external indexer.
+- RPC surface mirrors Bitcoin Core for core methods (`getblockchaininfo`, `sendtoaddress`, etc.) plus Baseline-specific endpoints like `gettimesyncinfo`.
 
 ## 9. Time Synchronization
 
@@ -96,5 +97,6 @@ new_target ≤ max_target (set by genesis bits 0x207fffff)
 - Enforced standardness: only P2PKH outputs are acceptable to mempool/miners.
 - Append-only block store implemented in `baseline/storage/blockstore.py`.
 - No SegWit, no scripts beyond legacy P2PKH, no compact blocks, no BIP37, etc.
+- Native address index exposed over JSON-RPC instead of optional addrindex patches.
 
 This spec should be treated as authoritative for clients wishing to interoperate with the current implementation. Future upgrades should update both the implementation and this document.

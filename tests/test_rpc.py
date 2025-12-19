@@ -224,6 +224,20 @@ class RPCTestCase(unittest.TestCase):
         info = self.handlers.dispatch("walletinfo", [])
         self.assertTrue(info["encrypted"])
 
+    def test_address_index_rpcs(self) -> None:
+        recv_address = self.handlers.dispatch("getnewaddress", [])
+        payment = self._build_payment_tx(recv_address, 5 * COIN)
+        self._mine_block(self.chain.genesis_hash, [payment])
+        self.wallet.sync_chain()
+        utxos = self.handlers.dispatch("getaddressutxos", [{"addresses": [recv_address]}])
+        self.assertEqual(len(utxos), 1)
+        self.assertEqual(utxos[0]["satoshis"], 5 * COIN)
+        balance = self.handlers.dispatch("getaddressbalance", [{"addresses": [recv_address]}])
+        self.assertAlmostEqual(balance["balance"], 5.0)
+        self.assertAlmostEqual(balance["received"], 5.0)
+        txids = self.handlers.dispatch("getaddresstxids", [{"addresses": [recv_address]}])
+        self.assertIn(payment.txid(), txids)
+
     def test_importprivkey_via_rpc(self) -> None:
         priv = 424242
         priv_bytes = priv.to_bytes(32, "big")

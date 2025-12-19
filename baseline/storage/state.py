@@ -11,6 +11,12 @@ import threading
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from ..core.address import address_from_script
+
+if TYPE_CHECKING:
+    from ..core.block import Block
 
 __all__ = [
     "StateDB",
@@ -125,6 +131,29 @@ class StateDB:
                     activation_height INTEGER,
                     activation_time INTEGER
                 );
+
+                CREATE TABLE IF NOT EXISTS address_history (
+                    address TEXT NOT NULL,
+                    txid TEXT NOT NULL,
+                    vout INTEGER NOT NULL,
+                    amount INTEGER NOT NULL,
+                    height INTEGER NOT NULL,
+                    PRIMARY KEY(address, txid, vout)
+                );
+                CREATE INDEX IF NOT EXISTS address_history_addr_height_idx
+                    ON address_history(address, height);
+
+                CREATE TABLE IF NOT EXISTS address_utxos (
+                    address TEXT NOT NULL,
+                    txid TEXT NOT NULL,
+                    vout INTEGER NOT NULL,
+                    amount INTEGER NOT NULL,
+                    height INTEGER NOT NULL,
+                    script_pubkey BLOB NOT NULL,
+                    PRIMARY KEY(txid, vout)
+                );
+                CREATE INDEX IF NOT EXISTS address_utxos_address_idx
+                    ON address_utxos(address);
                 """
             )
 
@@ -370,11 +399,13 @@ class StateDB:
                     1 if record.coinbase else 0,
                 ),
             )
+            self._upsert_address_utxo(conn, record)
 
     def remove_utxo(self, txid: str, vout: int) -> bool:
         self._ensure_open()
         with self.transaction() as conn:
             cur = conn.execute("DELETE FROM utxos WHERE txid=? AND vout=?", (txid, vout))
+            conn.execute("DELETE FROM address_utxos WHERE txid=? AND vout=?", (txid, vout))
             return cur.rowcount > 0
 
     def get_utxo(self, txid: str, vout: int) -> UTXORecord | None:
@@ -430,6 +461,7 @@ class StateDB:
         with self.transaction() as conn:
             for txid, vout in spent:
                 conn.execute("DELETE FROM utxos WHERE txid=? AND vout=?", (txid, vout))
+                conn.execute("DELETE FROM address_utxos WHERE txid=? AND vout=?", (txid, vout))
             for utxo in created:
                 conn.execute(
                     """
@@ -450,6 +482,7 @@ class StateDB:
                         1 if utxo.coinbase else 0,
                     ),
                 )
+                self._upsert_address_utxo(conn, utxo)
 
     def run_startup_checks(self) -> None:
         self._ensure_open()
@@ -469,6 +502,135 @@ class StateDB:
         self._ensure_open()
         with self._lock:
             self._conn.execute("VACUUM")
+
+    # Address index helpers -----------------------------------------------------
+
+    def index_block_addresses(self, block: "Block", height: int) -> None:
+        self._ensure_open()
+        entries: list[tuple[str, str, int, int, int]] = []
+        for tx in block.transactions:
+            txid = tx.txid()
+            for vout, txout in enumerate(tx.outputs):
+                address = self._address_from_script(txout.script_pubkey)
+                if not address:
+                    continue
+                entries.append((address, txid, vout, txout.value, height))
+        if not entries:
+            return
+        with self.transaction() as conn:
+            for address, txid, vout, amount, h in entries:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO address_history(address, txid, vout, amount, height)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (address, txid, vout, amount, h),
+                )
+
+    def remove_block_address_index(self, block: "Block") -> None:
+        self._ensure_open()
+        txids = [tx.txid() for tx in block.transactions]
+        if not txids:
+            return
+        with self.transaction() as conn:
+            for txid in txids:
+                conn.execute("DELETE FROM address_history WHERE txid=?", (txid,))
+
+    def get_address_utxos(self, addresses: Sequence[str]) -> list[dict[str, Any]]:
+        self._ensure_open()
+        if not addresses:
+            return []
+        placeholders = ",".join("?" for _ in addresses)
+        query = (
+            "SELECT address, txid, vout, amount, height, script_pubkey "
+            f"FROM address_utxos WHERE address IN ({placeholders}) ORDER BY height, txid, vout"
+        )
+        with self._lock:
+            rows = self._conn.execute(query, tuple(addresses)).fetchall()
+        return [
+            {
+                "address": row["address"],
+                "txid": row["txid"],
+                "vout": row["vout"],
+                "amount": row["amount"],
+                "height": row["height"],
+                "script_pubkey": row["script_pubkey"],
+            }
+            for row in rows
+        ]
+
+    def get_address_balance(self, addresses: Sequence[str]) -> tuple[int, int]:
+        self._ensure_open()
+        if not addresses:
+            return 0, 0
+        placeholders = ",".join("?" for _ in addresses)
+        params = tuple(addresses)
+        with self._lock:
+            balance = self._conn.execute(
+                f"SELECT COALESCE(SUM(amount), 0) as total FROM address_utxos WHERE address IN ({placeholders})",
+                params,
+            ).fetchone()["total"]
+            received = self._conn.execute(
+                f"SELECT COALESCE(SUM(amount), 0) as total FROM address_history WHERE address IN ({placeholders})",
+                params,
+            ).fetchone()["total"]
+        return int(balance or 0), int(received or 0)
+
+    def get_address_txids(
+        self,
+        addresses: Sequence[str],
+        start: int | None = None,
+        end: int | None = None,
+    ) -> list[str]:
+        self._ensure_open()
+        if not addresses:
+            return []
+        placeholders = ",".join("?" for _ in addresses)
+        params: list[Any] = list(addresses)
+        query = (
+            "SELECT txid, MIN(height) as height FROM address_history "
+            f"WHERE address IN ({placeholders})"
+        )
+        if start is not None:
+            query += " AND height >= ?"
+            params.append(int(start))
+        if end is not None:
+            query += " AND height <= ?"
+            params.append(int(end))
+        query += " GROUP BY txid ORDER BY height"
+        with self._lock:
+            rows = self._conn.execute(query, tuple(params)).fetchall()
+        return [row["txid"] for row in rows]
+
+    def _upsert_address_utxo(self, conn: sqlite3.Connection, record: UTXORecord) -> None:
+        address = self._address_from_script(record.script_pubkey)
+        if not address:
+            return
+        conn.execute(
+            """
+            INSERT INTO address_utxos(address, txid, vout, amount, height, script_pubkey)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(txid, vout) DO UPDATE SET
+                address=excluded.address,
+                amount=excluded.amount,
+                height=excluded.height,
+                script_pubkey=excluded.script_pubkey
+            """,
+            (
+                address,
+                record.txid,
+                record.vout,
+                record.amount,
+                record.height,
+                record.script_pubkey,
+            ),
+        )
+
+    def _address_from_script(self, script: bytes) -> str | None:
+        try:
+            return address_from_script(script)
+        except Exception:
+            return None
 
     # Upgrade tracking methods
     def set_upgrade_activation_height(self, upgrade_name: str, height: int) -> None:

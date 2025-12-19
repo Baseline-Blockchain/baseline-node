@@ -170,6 +170,7 @@ class Chain:
                 )
             )
         self.state_db.apply_utxo_changes([], created)
+        self.state_db.index_block_addresses(self.genesis_block, 0)
         header = HeaderData(
             hash=genesis_hash,
             prev_hash=None,
@@ -274,6 +275,7 @@ class Chain:
     def _connect_main(self, block: Block, block_hash: str, height: int, chainwork: int, validation: ValidationResult) -> None:
         spent, created = self._collect_utxo_changes(validation)
         self.state_db.apply_utxo_changes(spent, created)
+        self.state_db.index_block_addresses(block, height)
         self.state_db.store_undo_data(block_hash, validation.spent)
         self.state_db.set_header_status(block_hash, 0)
         self.state_db.set_best_tip(block_hash, height)
@@ -527,6 +529,7 @@ class Chain:
                 self.state_db.remove_utxo(txid, index)
         for record in undo:
             self.state_db.add_utxo(record)
+        self.state_db.remove_block_address_index(block)
         self.state_db.delete_undo_data(block_hash)
         self.state_db.set_header_status(block_hash, 1)
         self.state_db.upsert_chain_tip(block_hash, header.height, header.chainwork)

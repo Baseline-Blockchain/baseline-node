@@ -7,11 +7,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import shutil
 import signal
 import sys
 from pathlib import Path
 
-from baseline.config import ConfigError, load_config
+from baseline.config import ConfigError, NodeConfig, load_config
 from baseline.logging import setup_logging
 from baseline.node import BaselineNode
 
@@ -23,6 +24,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-level", default="info", help="Log level (debug, info, warning, error)")
     parser.add_argument("--rpc-user", help="Override RPC username")
     parser.add_argument("--rpc-password", help="Override RPC password")
+    parser.add_argument(
+        "--reset-chainstate",
+        action="store_true",
+        help="Delete blocks/chainstate/peers/logs before starting (wallet and payouts untouched)",
+    )
     return parser.parse_args()
 
 
@@ -47,6 +53,22 @@ def install_signal_handlers(node: BaselineNode) -> None:
             signal.signal(getattr(signal, sig_name), _handler)
 
 
+def reset_chainstate(config: NodeConfig) -> None:
+    """Remove chain data while preserving wallet/payout files."""
+    targets = ["blocks", "chainstate", "peers", "logs"]
+    for name in targets:
+        path = config.data_dir / name
+        try:
+            if path.is_dir():
+                shutil.rmtree(path)
+            elif path.exists():
+                path.unlink()
+        except FileNotFoundError:
+            continue
+    config.ensure_data_layout()
+    print(f"[baseline-node] Chainstate reset complete under {config.data_dir}")
+
+
 def main() -> None:
     args = parse_args()
     overrides = build_overrides(args)
@@ -60,6 +82,9 @@ def main() -> None:
     except ConfigError as exc:
         print(f"Config error: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
+
+    if args.reset_chainstate:
+        reset_chainstate(config)
 
     log_level = getattr(logging, args.log_level.upper(), logging.INFO)
     logger = setup_logging(config.log_file or (config.data_dir / "logs" / "node.log"), level=log_level)

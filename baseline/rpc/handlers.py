@@ -54,6 +54,9 @@ class RPCHandlers:
             "getbestblockhash": self.getbestblockhash,
             "getdifficulty": self.getdifficulty,
             "getrawmempool": self.getrawmempool,
+            "getaddressutxos": self.getaddressutxos,
+            "getaddressbalance": self.getaddressbalance,
+            "getaddresstxids": self.getaddresstxids,
             "getblockhash": self.getblockhash,
             "getblock": self.getblock,
             "getrawtransaction": self.getrawtransaction,
@@ -127,6 +130,35 @@ class RPCHandlers:
                 "depends": list(entry.depends),
             }
         return result
+
+    def getaddressutxos(self, options: Any) -> list[dict[str, Any]]:
+        addresses = self._parse_address_list(options)
+        rows = self.state_db.get_address_utxos(addresses)
+        return [
+            {
+                "address": row["address"],
+                "txid": row["txid"],
+                "outputIndex": row["vout"],
+                "script": row["script_pubkey"].hex(),
+                "satoshis": row["amount"],
+                "height": row["height"],
+            }
+            for row in rows
+        ]
+
+    def getaddressbalance(self, options: Any) -> dict[str, float]:
+        addresses = self._parse_address_list(options)
+        balance, received = self.state_db.get_address_balance(addresses)
+        return {
+            "balance_satoshi": balance,
+            "received_satoshi": received,
+            "balance": balance / COIN,
+            "received": received / COIN,
+        }
+
+    def getaddresstxids(self, options: Any) -> list[str]:
+        addresses, start, end = self._parse_address_list_with_range(options)
+        return self.state_db.get_address_txids(addresses, start=start, end=end)
 
     def getblockhash(self, height: int) -> str:
         header = self.state_db.get_main_header_at_height(int(height))
@@ -396,6 +428,31 @@ class RPCHandlers:
             raise RPCError(-4, str(exc)) from exc
         except ValueError as exc:
             raise RPCError(-3, str(exc)) from exc
+
+    def _parse_address_list(self, options: Any) -> list[str]:
+        if isinstance(options, dict):
+            addresses = options.get("addresses")
+        else:
+            addresses = options
+        if isinstance(addresses, str):
+            addresses = [addresses]
+        if not isinstance(addresses, list) or not addresses:
+            raise RPCError(-8, "addresses must be a non-empty list")
+        normalized = [str(addr) for addr in addresses]
+        return normalized
+
+    def _parse_address_list_with_range(self, options: Any) -> tuple[list[str], int | None, int | None]:
+        start = None
+        end = None
+        if isinstance(options, dict):
+            addresses = options.get("addresses")
+            if "start" in options:
+                start = int(options["start"])
+            if "end" in options:
+                end = int(options["end"])
+        else:
+            addresses = options
+        return self._parse_address_list(addresses), start, end
 
     def getnewaddress(self, label: str | None = None) -> str:
         return self._wallet_call(lambda w: w.get_new_address(label))

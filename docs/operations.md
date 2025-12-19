@@ -25,6 +25,21 @@ This guide collects day-two tasks for running a Baseline node in production.
 
 For disaster recovery, keep wallet dump + pool private key (hex/WIF) offline, plus `config.json` and payout ledger.
 
+## Resetting Chainstate
+
+Need to resync from scratch without touching wallet/payout data? Run:
+
+```bash
+baseline-node --config config.json --reset-chainstate
+```
+
+This deletes `blocks/`, `chainstate/`, `peers/`, and `logs/` under the configured `data_dir`, then recreates the directory layout. Wallets, payouts, and custom configs remain untouched. Use this when:
+
+- Upgrading from older builds that lacked the address index.
+- Recovering after corruption or to force a clean sync.
+
+Always stop the node first. If you want to keep logs, copy them out before running the reset command.
+
 ## Monitoring
 
 - **RPC checks**: poll `getblockchaininfo`, `getnetworkinfo`, and `gettimesyncinfo` to ensure sync, peer counts, and NTP health.

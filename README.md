@@ -61,6 +61,12 @@ Adjustments are clamped to 4× faster/slower than expected so that hash-rate spi
    ```
    The CLI guides you through creating (and optionally encrypting) the deterministic wallet so you can request payout/operational addresses via `baseline-wallet newaddress`. The wallet auto-creates an initial receiving address; view it (and any later ones) with `baseline-wallet --config config.json listaddresses`, and see per-address balances with `baseline-wallet --config config.json balances`. Wallet funds are distinct from the pool payout key, but you can sweep rewards into the wallet by importing the pool WIF or by mining directly to a wallet-derived address.
 
+**TIP: Need to resync from scratch?** Stop the node and run:
+```bash
+baseline-node --config config.json --reset-chainstate
+```
+This wipes blocks/chainstate/peers/logs while preserving wallets and payout data, then restarts the node with a clean slate.
+
 ## Wallet CLI (`tools/wallet_cli.py`)
 
 The node writes `wallet/wallet.json` under the data dir and exposes it over JSON-RPC. For friendlier use, run the helper CLI:
@@ -109,6 +115,7 @@ It is intentionally simple—great for smoke testing, not for real hash-rate. Fo
 - **P2P**: Header-first initial block download with watchdog retries, strict message framing (length + checksum), peer scoring/banning, addr/inv relay, and persisted address books.
 - **Persistence**: Append-only block files plus fsyncs; headers, UTXOs, and metadata are transactional via SQLite with periodic sanity checks.
 - **Consensus safeguards**: Subsidy, maturity, and retarget parameters are hard-locked; nodes refuse to start if `config.json` deviates (unless explicitly overriding for testnets), preventing accidental forks.
+- **Address index**: SQLite maintains per-address UTXOs and history so explorers/wallets can query `getaddress*` RPCs without extra indexers.
 - **Wallet security**: PBKDF2-HMAC-SHA256 creates an XOR pad for the seed. Locked wallets never hold plaintext on disk; unlock state stays only in RAM and expires automatically.
 - **JSON-RPC & Stratum**: Bitcoin-style error codes, request size limits, and Basic Auth keep RPC friendly for exchanges and explorers. Stratum tracks vardiff, session heartbeats, and bans misbehaving miners to avoid DoS.
 - **Upgrades**: `docs/governance.md` outlines the Baseline Improvement Proposal process and version-bit activation flow; no upgrades are active by default.
