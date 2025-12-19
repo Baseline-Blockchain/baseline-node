@@ -17,6 +17,8 @@ class RealNetworkIntegrationTests(unittest.TestCase):
     BASE_P2P_PORT = 19440
     BASE_RPC_PORT = 18400
     BASE_STRATUM_PORT = 20400
+    INITIAL_BLOCKS = 12
+    POST_SYNC_BLOCKS = 6
 
     def test_three_node_cluster_sync_and_resync(self) -> None:
         asyncio.run(self._run_cluster_flow())
@@ -40,7 +42,8 @@ class RealNetworkIntegrationTests(unittest.TestCase):
                 await self._wait_for(lambda: len(follower.network.peers) >= 1, 10.0, "follower missing peer")
                 await self._wait_for(lambda: len(miner.network.peers) >= 1, 10.0, "miner missing peer")
 
-                await self._mine_blocks(miner, 3, nodes[:3])
+                await self._mine_blocks(miner, self.INITIAL_BLOCKS, nodes[:3])
+                self._assert_all_tips_match(nodes[:3])
 
                 seed_tip = seed.chain.state_db.get_best_tip()
                 follower_tip = follower.chain.state_db.get_best_tip()
@@ -98,7 +101,8 @@ class RealNetworkIntegrationTests(unittest.TestCase):
                 self.assertIsNotNone(newcomer_tip)
                 self.assertEqual(newcomer_tip[0], seed_tip[0], "newcomer failed to sync existing chain")
 
-                await self._mine_blocks(miner, 1, nodes)
+                await self._mine_blocks(miner, self.POST_SYNC_BLOCKS, nodes)
+                self._assert_all_tips_match(nodes)
             finally:
                 await self._stop_nodes(nodes)
 
@@ -173,6 +177,14 @@ class RealNetworkIntegrationTests(unittest.TestCase):
     def _node_height(self, node: BaselineNode) -> int:
         best = node.chain.state_db.get_best_tip() if node.chain else None
         return best[1] if best else 0
+
+    def _assert_all_tips_match(self, nodes: list[BaselineNode]) -> None:
+        tips = []
+        for node in nodes:
+            best = node.chain.state_db.get_best_tip()
+            self.assertIsNotNone(best, f"{node} missing best tip")
+            tips.append(best[0])
+        self.assertEqual(len(set(tips)), 1, f"tip mismatch across nodes: {tips}")
 
     async def _wait_for(self, predicate, timeout: float, message: str) -> None:
         deadline = time.time() + timeout
