@@ -122,6 +122,7 @@ Additional operational docs live under [`docs/`](docs):
 - [`rpc.md`](docs/rpc.md) – JSON-RPC surface area with example calls.
 - [`operations.md`](docs/operations.md) – backups, monitoring, troubleshooting, and upgrade workflows.
 - [`spec.md`](docs/spec.md) – formal protocol specification derived from the current implementation.
+- [`governance.md`](docs/governance.md) – upgrade governance model and Baseline Improvement Proposal process.
 
 ## Code Quality
 

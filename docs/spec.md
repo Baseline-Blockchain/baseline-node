@@ -84,7 +84,6 @@ new_target ≤ max_target (set by genesis bits 0x207fffff)
 
 - Deterministic HD wallet with PBKDF2 + XOR encryption for seeds.
 - RPC surface mirrors Bitcoin Core for core methods (`getblockchaininfo`, `sendtoaddress`, etc.) plus `gettimesyncinfo`.
-- Wallet RPC supports memo fields (`comment`, `comment_to`) persisted through rescan and sync.
 
 ## 9. Time Synchronization
 
