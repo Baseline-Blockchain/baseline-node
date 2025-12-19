@@ -111,6 +111,17 @@ It is intentionally simple—great for smoke testing, not for real hash-rate. Fo
 - **Wallet security**: PBKDF2-HMAC-SHA256 creates an XOR pad for the seed. Locked wallets never hold plaintext on disk; unlock state stays only in RAM and expires automatically.
 - **JSON-RPC & Stratum**: Bitcoin-style error codes, request size limits, and Basic Auth keep RPC friendly for exchanges and explorers. Stratum tracks vardiff, session heartbeats, and bans misbehaving miners to avoid DoS.
 
+## Documentation
+
+Additional operational docs live under [`docs/`](docs):
+
+- [`prerequisites.md`](docs/prerequisites.md) – runtime requirements, hardware sizing, networking basics.
+- [`configuration.md`](docs/configuration.md) – `config.json` reference, environment overrides, NTP guidance.
+- [`networking.md`](docs/networking.md) – peer discovery, seeds, and connection policies.
+- [`mining-and-payouts.md`](docs/mining-and-payouts.md) – Stratum usage, share accounting, payout lifecycle.
+- [`rpc.md`](docs/rpc.md) – JSON-RPC surface area with example calls.
+- [`operations.md`](docs/operations.md) – backups, monitoring, troubleshooting, and upgrade workflows.
+
 ## Code Quality
 
 Ruff enforces a strict lint profile defined in `pyproject.toml`. Install it and run checks before committing:

@@ -2,7 +2,7 @@
 Configuration helpers for the Baseline node.
 
 The config loader prefers deterministic defaults, then merges user provided JSON
-configuration files and environment overrides prefixed with ``SIMPLECHAIN_``.
+configuration files and environment overrides prefixed with ``BASELINE_``.
 """
 
 from __future__ import annotations
@@ -172,14 +172,14 @@ def load_config(path: Path | None = None, *, overrides: dict[str, Any] | None = 
                 base[key] = value
         return base
 
-    cfg_path = path or (_expand_path(os.getenv("SIMPLECHAIN_CONFIG", str(default_data_dir() / "config.json"))))
+    cfg_path = path or (_expand_path(os.getenv("BASELINE_CONFIG", str(default_data_dir() / "config.json"))))
     base: dict[str, Any] = {}
     if Path(cfg_path).exists():
         with open(cfg_path, "rb") as fh:
             base = json.load(fh)
 
     env_overrides: dict[str, Any] = {}
-    prefix = "SIMPLECHAIN_"
+    prefix = "BASELINE_"
     for key, value in os.environ.items():
         if not key.startswith(prefix):
             continue
