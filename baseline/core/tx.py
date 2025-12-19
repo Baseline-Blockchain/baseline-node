@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from . import crypto
 
 COIN = 100_000_000
-MAX_MONEY = 21_000_000 * COIN
+MAX_MONEY = 15_000_000 * COIN
 
 
 class TxSerializationError(Exception):
