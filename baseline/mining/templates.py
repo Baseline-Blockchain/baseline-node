@@ -4,16 +4,15 @@ Block template construction and helper utilities for Stratum mining.
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
 
-from ..time_sync import synchronized_time_int
 from ..core import crypto, difficulty
 from ..core.block import Block, BlockHeader
 from ..core.chain import Chain, UTXOView
 from ..core.tx import Transaction, encode_varint
 from ..mempool import Mempool
 from ..storage import UTXORecord
+from ..time_sync import synchronized_time_int
 
 COINBASE_FLAGS = b"/Baseline/"
 EXTRANONCE2_SIZE = 4

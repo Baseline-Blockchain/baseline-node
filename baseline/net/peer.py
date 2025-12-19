@@ -81,7 +81,7 @@ class Peer:
             self.log.warning("Message rejected: %s", error_reason)
             self.manager.security.record_violation(self.peer_id)
             return
-        
+
         msg_type = message.get("type")
         if msg_type == "version":
             await self._handle_version(message)

@@ -6,11 +6,11 @@ from pathlib import Path
 
 from baseline.config import NodeConfig
 from baseline.core import crypto
+from baseline.core.chain import Chain
 from baseline.core.tx import COIN, Transaction, TxInput, TxOutput
 from baseline.mempool import Mempool
-from baseline.storage import BlockStore, StateDB, UTXORecord
 from baseline.mining.templates import TemplateBuilder
-from baseline.core.chain import Chain
+from baseline.storage import BlockStore, StateDB, UTXORecord
 
 
 class TPSTestCase(unittest.TestCase):

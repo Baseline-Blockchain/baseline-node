@@ -5,14 +5,12 @@ Blockchain management for Baseline.
 from __future__ import annotations
 
 import logging
-import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from ..time_sync import synchronized_time_int
-
 from ..config import NodeConfig
 from ..storage import BlockStore, HeaderData, StateDB, UTXORecord
+from ..time_sync import synchronized_time_int
 from . import crypto, difficulty, script
 from .block import MAX_BLOCK_WEIGHT, Block, BlockHeader, merkle_root_hash
 from .fork import ForkManager
@@ -84,11 +82,11 @@ class Chain:
         self.max_target = difficulty.compact_to_target(self.config.mining.initial_bits)
         self.genesis_block = self._build_genesis_block()
         self.genesis_hash = self.genesis_block.block_hash()
-        
+
         # Initialize fork and upgrade managers
         self.fork_manager = ForkManager(self)
         self.upgrade_manager = UpgradeManager(state_db)
-        
+
         self._ensure_genesis()
         self.log.info("Current block height %s", self.state_db.get_best_tip()[1] if self.state_db.get_best_tip() else 0)
 
@@ -200,10 +198,10 @@ class Chain:
         height = parent_header.height + 1
         view = self._build_view_for_parent(prev_hash)
         validation = self._validate_block(block, height, parent_header, view)
-        
+
         # Process upgrade signaling
-        upgrade_results = self.upgrade_manager.process_new_block(block.header, height)
-        
+        self.upgrade_manager.process_new_block(block.header, height)
+
         chainwork_int = int(parent_header.chainwork) + difficulty.block_work(block.header.bits)
         header = HeaderData(
             hash=block_hash,
@@ -218,18 +216,18 @@ class Chain:
         )
         self.block_store.append_block(bytes.fromhex(block_hash), raw_block)
         self.state_db.store_header(header)
-        
+
         # Handle fork detection and reorganization
         block_accepted, reorganization_occurred = self.fork_manager.handle_new_block(block)
-        
+
         if not block_accepted:
             # Block was rejected by fork manager
             return {"status": "rejected", "hash": block_hash, "height": height}
-        
+
         if reorganization_occurred:
             # Fork manager handled the reorganization
             return {"status": "reorganized", "hash": block_hash, "height": height}
-        
+
         # Continue with normal processing
         self.state_db.upsert_chain_tip(block_hash, height, header.chainwork)
         self.state_db.remove_chain_tip(prev_hash)

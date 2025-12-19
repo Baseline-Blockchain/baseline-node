@@ -15,13 +15,13 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from ..config import NodeConfig
-from ..time_sync import synchronized_time_int
 from ..core.address import script_from_address
 from ..core.block import Block
 from ..core.chain import MAX_FUTURE_BLOCK_TIME, Chain, ChainError
 from ..mempool import Mempool
 from ..net.server import P2PServer
 from ..storage import StateDB
+from ..time_sync import synchronized_time_int
 from .payout import PayoutTracker
 from .templates import Template, TemplateBuilder
 

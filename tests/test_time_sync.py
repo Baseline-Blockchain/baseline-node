@@ -2,14 +2,12 @@
 Tests for NTP time synchronization functionality.
 """
 
-import asyncio
-import socket
 import time
 import unittest
 from unittest.mock import MagicMock, patch
 
-from baseline.config import NTPConfig, ConfigError
-from baseline.time_sync import NTPClient, NTPResponse, NTPError, TimeManager, synchronized_time_int
+from baseline.config import ConfigError, NTPConfig
+from baseline.time_sync import NTPClient, NTPError, NTPResponse, TimeManager, synchronized_time_int
 
 
 class TestNTPConfig(unittest.TestCase):
@@ -53,7 +51,7 @@ class TestNTPClient(unittest.IsolatedAsyncioTestCase):
         # Mock socket behavior
         mock_sock = MagicMock()
         mock_socket.return_value = mock_sock
-        
+
         # Mock NTP response (simplified)
         ntp_time = time.time() + 2208988800  # Convert to NTP epoch
         response_data = bytearray(48)
@@ -62,11 +60,11 @@ class TestNTPClient(unittest.IsolatedAsyncioTestCase):
         frac_time = int((ntp_time - struct_time) * (2**32))
         response_data[40:44] = struct_time.to_bytes(4, 'big')
         response_data[44:48] = frac_time.to_bytes(4, 'big')
-        
+
         mock_sock.recvfrom.return_value = (bytes(response_data), ("test.ntp.org", 123))
-        
+
         response = await self.client.query_server("test.ntp.org")
-        
+
         self.assertIsInstance(response, NTPResponse)
         self.assertEqual(response.server, "test.ntp.org")
         self.assertIsInstance(response.offset, float)
@@ -77,24 +75,24 @@ class TestNTPClient(unittest.IsolatedAsyncioTestCase):
         with patch("socket.socket") as mock_socket:
             mock_sock = MagicMock()
             mock_socket.return_value = mock_sock
-            mock_sock.recvfrom.side_effect = socket.timeout()
-            
+            mock_sock.recvfrom.side_effect = TimeoutError()
+
             with self.assertRaises(NTPError):
                 await self.client.query_server("nonexistent.ntp.org")
 
     async def test_sync_time_multiple_servers(self):
         """Test time synchronization with multiple servers."""
         client = NTPClient(servers=["server1.ntp.org", "server2.ntp.org"], timeout=1.0)
-        
+
         # Mock successful responses from both servers
         responses = [
             NTPResponse(offset=0.1, delay=0.05, server="server1.ntp.org", timestamp=time.time()),
             NTPResponse(offset=0.15, delay=0.06, server="server2.ntp.org", timestamp=time.time())
         ]
-        
+
         with patch.object(client, "query_server", side_effect=responses):
             result = await client.sync_time(max_servers=2)
-            
+
             self.assertIsInstance(result, NTPResponse)
             # Should return the response with lowest delay
             self.assertEqual(result.server, "server1.ntp.org")
@@ -117,7 +115,7 @@ class TestTimeManager(unittest.TestCase):
         """Test enabling and disabling time synchronization."""
         self.manager.enable()
         self.assertTrue(self.manager._enabled)
-        
+
         self.manager.disable()
         self.assertFalse(self.manager._enabled)
 
@@ -126,30 +124,30 @@ class TestTimeManager(unittest.TestCase):
         # Should return system time when not synchronized
         sys_time = time.time()
         manager_time = self.manager.time()
-        
+
         self.assertAlmostEqual(manager_time, sys_time, delta=0.1)
 
     def test_time_with_offset(self):
         """Test time methods with offset applied."""
         # Simulate a successful sync with offset
         response = NTPResponse(
-            offset=0.5, 
-            delay=0.1, 
-            server="test.ntp.org", 
+            offset=0.5,
+            delay=0.1,
+            server="test.ntp.org",
             timestamp=time.time()
         )
         self.manager._update_offset(response)
-        
+
         # Time should now include the offset
         sys_time = time.time()
         manager_time = self.manager.time()
-        
+
         self.assertAlmostEqual(manager_time, sys_time + 0.5, delta=0.1)
 
     def test_get_sync_status(self):
         """Test sync status reporting."""
         status = self.manager.get_sync_status()
-        
+
         self.assertIn('synchronized', status)
         self.assertIn('offset', status)
         self.assertIn('last_sync', status)
@@ -159,14 +157,14 @@ class TestTimeManager(unittest.TestCase):
         """Test clock drift rate calculation."""
         # Simulate two sync points
         now = time.time()
-        
+
         response1 = NTPResponse(offset=0.1, delay=0.05, server="test.ntp.org", timestamp=now)
         self.manager._update_offset(response1)
-        
+
         # Simulate time passing and another sync
         response2 = NTPResponse(offset=0.2, delay=0.05, server="test.ntp.org", timestamp=now + 100)
         self.manager._update_offset(response2)
-        
+
         drift_rate = self.manager.get_drift_rate()
         self.assertIsNotNone(drift_rate)
         # Drift rate should be approximately (0.2 - 0.1) / 100 = 0.001
@@ -181,7 +179,7 @@ class TestSynchronizedTimeFunctions(unittest.TestCase):
         # Should return an integer timestamp
         timestamp = synchronized_time_int()
         self.assertIsInstance(timestamp, int)
-        
+
         # Should be close to current time
         current_time = int(time.time())
         self.assertAlmostEqual(timestamp, current_time, delta=2)

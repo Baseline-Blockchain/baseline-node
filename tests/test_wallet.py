@@ -6,10 +6,11 @@ from pathlib import Path
 from baseline.config import NodeConfig
 from baseline.core import crypto
 from baseline.core.address import script_from_address
+from baseline.core.block import Block, BlockHeader, merkle_root_hash
 from baseline.core.chain import Chain
-from baseline.core.tx import COIN
+from baseline.core.tx import COIN, Transaction, TxInput, TxOutput
 from baseline.mempool import Mempool
-from baseline.storage import BlockStore, StateDB, UTXORecord
+from baseline.storage import BlockStore, HeaderData, StateDB, UTXORecord
 from baseline.wallet import WalletLockedError, WalletManager
 
 
@@ -140,3 +141,100 @@ class WalletTests(unittest.TestCase):
             wallet._lookup_privkey(addr)
         wallet.unlock_wallet("secret", 10)
         self.assertEqual(wallet._lookup_privkey(addr), 987654321)
+
+    def test_send_transaction_preserves_comments_across_sync(self) -> None:
+        wallet = WalletManager(self.wallet_path, self.state_db, self.block_store, self.mempool)
+        source_addr = wallet.get_new_address("source")
+        dest_addr = wallet.get_new_address("dest")
+        utxo = UTXORecord(
+            txid="cc" * 32,
+            vout=0,
+            amount=10 * COIN,
+            script_pubkey=script_from_address(source_addr),
+            height=0,
+            coinbase=False,
+        )
+        self.state_db.add_utxo(utxo)
+        txid = wallet.send_to_address(dest_addr, 1, comment="gift memo", comment_to="friend")
+        tx_entry = wallet.get_transaction(txid)
+        self.assertIsNotNone(tx_entry)
+        self.assertEqual(tx_entry["comment"], "gift memo")
+        self.assertEqual(tx_entry["comment_to"], "friend")
+        listed = wallet.list_transactions(count=1)[0]
+        self.assertEqual(listed["comment"], "gift memo")
+        self.assertEqual(listed["comment_to"], "friend")
+        # Ensure persistence across wallet reload
+        reloaded = WalletManager(self.wallet_path, self.state_db, self.block_store, self.mempool)
+        reloaded_entry = reloaded.get_transaction(txid)
+        self.assertIsNotNone(reloaded_entry)
+        self.assertEqual(reloaded_entry["comment"], "gift memo")
+        self.assertEqual(reloaded_entry["comment_to"], "friend")
+        # Mine the transaction into a block and resync; comments should remain intact
+        self._mine_transaction_into_block(txid)
+        reloaded.sync_chain()
+        synced_entry = reloaded.get_transaction(txid)
+        self.assertIsNotNone(synced_entry)
+        self.assertEqual(synced_entry["comment"], "gift memo")
+        self.assertEqual(synced_entry["comment_to"], "friend")
+
+    def _mine_transaction_into_block(self, txid: str) -> None:
+        tx = self.mempool.get(txid)
+        self.assertIsNotNone(tx, "transaction must exist in mempool")
+        best = self.state_db.get_best_tip()
+        prev_hash, prev_height = best if best else (self.chain.genesis_hash, 0)
+        height = prev_height + 1
+        coinbase = Transaction(
+            version=1,
+            inputs=[
+                TxInput(
+                    prev_txid="00" * 32,
+                    prev_vout=0xFFFFFFFF,
+                    script_sig=b"\x51",
+                    sequence=0xFFFFFFFF,
+                )
+            ],
+            outputs=[TxOutput(value=50 * COIN, script_pubkey=b"\x51")],
+            lock_time=0,
+        )
+        block_txs = [coinbase, tx]
+        header = BlockHeader(
+            version=1,
+            prev_hash=prev_hash,
+            merkle_root=merkle_root_hash(block_txs),
+            timestamp=int(time.time()),
+            bits=self.chain.config.mining.initial_bits,
+            nonce=0,
+        )
+        block = Block(header=header, transactions=block_txs)
+        block_hash = block.block_hash()
+        self.block_store.append_block(block_hash, block.serialize())
+        current_work = int(self.state_db.get_meta("best_work") or "0")
+        new_work = str(current_work + 1)
+        header_record = HeaderData(
+            hash=block_hash,
+            prev_hash=prev_hash,
+            height=height,
+            bits=header.bits,
+            nonce=header.nonce,
+            timestamp=header.timestamp,
+            merkle_root=header.merkle_root,
+            chainwork=new_work,
+            status=0,
+        )
+        self.state_db.store_header(header_record)
+        self.state_db.set_best_tip(block_hash, height)
+        self.state_db.upsert_chain_tip(block_hash, height, new_work)
+        self.state_db.set_meta("best_work", new_work)
+        spent = [(vin.prev_txid, vin.prev_vout) for vin in tx.inputs]
+        created = [
+            UTXORecord(
+                txid=txid,
+                vout=idx,
+                amount=txout.value,
+                script_pubkey=txout.script_pubkey,
+                height=height,
+                coinbase=False,
+            )
+            for idx, txout in enumerate(tx.outputs)
+        ]
+        self.state_db.apply_utxo_changes(spent, created)

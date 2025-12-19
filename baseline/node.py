@@ -135,7 +135,7 @@ class BaselineNode:
         if not self.config.ntp.enabled:
             self.log.info("NTP synchronization disabled")
             return
-        
+
         ntp_client = NTPClient(
             servers=list(self.config.ntp.servers),
             timeout=self.config.ntp.timeout
@@ -228,23 +228,23 @@ class BaselineNode:
         """Monitor time synchronization status and log warnings."""
         if not self.time_manager or not self.config.ntp.enabled:
             return
-        
+
         status = self.time_manager.get_sync_status()
-        
+
         # Warn about large offsets
         if abs(status["offset"]) > self.config.ntp.max_offset_warning:
             self.log.warning(
                 "Large time offset detected: %.3fs (system time may be incorrect)",
                 status["offset"]
             )
-        
+
         # Warn if synchronization is stale
         if not status["synchronized"]:
             self.log.warning(
                 "Time synchronization is stale (last sync: %.1fs ago)",
                 status.get("time_since_sync", 0)
             )
-        
+
         # Log drift rate if available
         drift_rate = status.get("drift_rate")
         if drift_rate is not None and abs(drift_rate) > 1e-6:  # More than 1 microsecond per second

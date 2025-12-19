@@ -27,14 +27,14 @@ class SecurityTests(unittest.TestCase):
     def test_rate_limiter_basic_functionality(self):
         """Test basic rate limiter functionality."""
         limiter = RateLimiter(max_tokens=5, refill_rate=1.0)
-        
+
         # Should be able to consume initial tokens
         for _ in range(5):
             self.assertTrue(limiter.consume())
-        
+
         # Should be rate limited now
         self.assertFalse(limiter.consume())
-        
+
         # Wait for refill
         time.sleep(1.1)
         self.assertTrue(limiter.consume())
@@ -42,19 +42,19 @@ class SecurityTests(unittest.TestCase):
     def test_peer_reputation_scoring(self):
         """Test peer reputation system."""
         reputation = PeerReputation()
-        
+
         # Start with neutral score
         self.assertEqual(reputation.score, 100)
         self.assertFalse(reputation.is_banned())
-        
+
         # Record violations
         reputation.record_violation(severity=2)
         self.assertEqual(reputation.score, 80)
-        
+
         # Record invalid messages
         reputation.record_invalid_message()
         self.assertEqual(reputation.score, 75)
-        
+
         # Record good behavior
         for _ in range(100):
             reputation.record_message()
@@ -63,31 +63,31 @@ class SecurityTests(unittest.TestCase):
     def test_connection_limiter(self):
         """Test connection limiting."""
         limiter = ConnectionLimiter(max_per_ip=2, max_total=5)
-        
+
         # Should accept connections within limits
         self.assertTrue(limiter.add_connection("192.168.1.1"))
         self.assertTrue(limiter.add_connection("192.168.1.1"))
         self.assertTrue(limiter.add_connection("192.168.1.2"))
-        
+
         # Should reject third connection from same IP
         self.assertFalse(limiter.add_connection("192.168.1.1"))
-        
+
         # Should accept from different IP
         self.assertTrue(limiter.add_connection("192.168.1.3"))
         self.assertTrue(limiter.add_connection("192.168.1.4"))
-        
+
         # Should reject when total limit reached
         self.assertFalse(limiter.add_connection("192.168.1.5"))
 
     def test_ban_manager(self):
         """Test ban management."""
         ban_manager = BanManager()
-        
+
         # Ban an IP
         ban_manager.ban_ip("192.168.1.1", 3600)  # 1 hour
         self.assertTrue(ban_manager.is_ip_banned("192.168.1.1"))
         self.assertFalse(ban_manager.is_ip_banned("192.168.1.2"))
-        
+
         # Ban a peer
         ban_manager.ban_peer("peer123", 1800)  # 30 minutes
         self.assertTrue(ban_manager.is_peer_banned("peer123"))
@@ -106,7 +106,7 @@ class SecurityTests(unittest.TestCase):
         is_valid, error = MessageValidator.validate_message(valid_version)
         self.assertTrue(is_valid)
         self.assertEqual(error, "")
-        
+
         # Invalid version message (missing field)
         invalid_version = {
             "type": "version",
@@ -117,7 +117,7 @@ class SecurityTests(unittest.TestCase):
         is_valid, error = MessageValidator.validate_message(invalid_version)
         self.assertFalse(is_valid)
         self.assertIn("Missing required field", error)
-        
+
         # Invalid inventory message (too many items)
         invalid_inv = {
             "type": "inv",
@@ -130,16 +130,16 @@ class SecurityTests(unittest.TestCase):
     def test_p2p_security_integration(self):
         """Test integrated P2P security."""
         security = P2PSecurity()
-        
+
         # Should accept initial connections
         self.assertTrue(security.can_accept_connection("192.168.1.1"))
         self.assertTrue(security.add_connection("192.168.1.1", "peer1"))
-        
+
         # Should validate messages
         valid_msg = {"type": "ping", "nonce": 12345}
         should_accept, error = security.should_accept_message("peer1", valid_msg)
         self.assertTrue(should_accept)
-        
+
         # Should reject invalid messages
         invalid_msg = {"type": "version"}  # Missing required fields
         should_accept, error = security.should_accept_message("peer1", invalid_msg)
@@ -152,15 +152,15 @@ class PeerDiscoveryTests(unittest.TestCase):
     def test_peer_address_reliability_scoring(self):
         """Test peer address reliability scoring."""
         addr = PeerAddress("192.168.1.1", 9333, time.time(), source="manual")
-        
+
         # Initial score should be neutral
         self.assertEqual(addr.reliability_score(), 0.5)
-        
+
         # Record successes and failures
         addr.record_success()
         addr.record_success()
         addr.record_failure()
-        
+
         # Score should be 2/3 = 0.667
         self.assertAlmostEqual(addr.reliability_score(), 2/3, places=2)
 
@@ -168,7 +168,7 @@ class PeerDiscoveryTests(unittest.TestCase):
         """Test address book persistence."""
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "peers.json"
-            
+
             # Create address book and add addresses
             book1 = AddressBook(path)
             addr1 = PeerAddress("192.168.1.1", 9333, time.time(), source="manual")
@@ -176,12 +176,12 @@ class PeerDiscoveryTests(unittest.TestCase):
             book1.add_address(addr1)
             book1.add_address(addr2)
             book1.save()
-            
+
             # Load in new instance
             book2 = AddressBook(path)
             addresses = book2.get_addresses(10)
             self.assertEqual(len(addresses), 2)
-            
+
             # Check addresses are preserved
             hosts = {addr.host for addr in addresses}
             self.assertEqual(hosts, {"192.168.1.1", "192.168.1.2"})
@@ -189,7 +189,7 @@ class PeerDiscoveryTests(unittest.TestCase):
     def test_dns_seeder_ip_filtering(self):
         """Test DNS seeder IP filtering."""
         seeder = DNSSeeder([])
-        
+
         # Test routable IP detection
         self.assertTrue(seeder._is_routable_ip("8.8.8.8"))      # Public
         self.assertTrue(seeder._is_routable_ip("1.1.1.1"))      # Public
@@ -226,7 +226,7 @@ class UpgradeTests(unittest.TestCase):
             min_activation_height=0,
             description="Test upgrade"
         )
-        
+
         # Test bit checking
         self.assertTrue(upgrade.is_signaling_bit_set(1 << 5))  # Bit 5 set
         self.assertFalse(upgrade.is_signaling_bit_set(1 << 4)) # Bit 4 set
@@ -246,22 +246,22 @@ class UpgradeTests(unittest.TestCase):
             min_activation_height=0,
             description="Test upgrade"
         )
-        
+
         # Add the test upgrade
         self.upgrade_manager.add_custom_upgrade(upgrade)
-        
+
         # Should be in STARTED state
         state = self.upgrade_manager.version_tracker.get_upgrade_state(
             "test_upgrade", 50, current_time
         )
         self.assertEqual(state, UpgradeState.STARTED)
-        
+
         # Test DEFINED state (before start time)
         state = self.upgrade_manager.version_tracker.get_upgrade_state(
             "test_upgrade", 50, current_time - 200
         )
         self.assertEqual(state, UpgradeState.DEFINED)
-        
+
         # Test FAILED state (after timeout)
         state = self.upgrade_manager.version_tracker.get_upgrade_state(
             "test_upgrade", 50, current_time + 4000
@@ -271,7 +271,7 @@ class UpgradeTests(unittest.TestCase):
     def test_block_version_creation(self):
         """Test block version creation with signaling."""
         current_time = int(time.time())
-        
+
         # Add a test upgrade that should be signaled
         upgrade = UpgradeDefinition(
             name="test_upgrade",
@@ -284,10 +284,10 @@ class UpgradeTests(unittest.TestCase):
             description="Test upgrade"
         )
         self.upgrade_manager.add_custom_upgrade(upgrade)
-        
+
         # Create version for block
         version = self.upgrade_manager.create_block_version(50, current_time)
-        
+
         # Should have bit 3 set (signaling for test_upgrade)
         self.assertTrue(version & (1 << 3))
 
@@ -295,11 +295,11 @@ class UpgradeTests(unittest.TestCase):
         """Test upgrade activation tracking."""
         # Record an upgrade activation
         self.state_db.set_upgrade_activation_height("test_feature", 1000)
-        
+
         # Retrieve activation height
         height = self.state_db.get_upgrade_activation_height("test_feature")
         self.assertEqual(height, 1000)
-        
+
         # Non-existent upgrade should return None
         height = self.state_db.get_upgrade_activation_height("nonexistent")
         self.assertIsNone(height)
@@ -307,7 +307,7 @@ class UpgradeTests(unittest.TestCase):
     def test_backward_compatibility_validation(self):
         """Test backward compatibility validation."""
         compatibility = self.upgrade_manager.compatibility
-        
+
         # Valid block version
         header = BlockHeader(
             version=1,
@@ -317,11 +317,11 @@ class UpgradeTests(unittest.TestCase):
             bits=0x1d00ffff,
             nonce=0
         )
-        
+
         is_valid, error = compatibility.validate_block_version(header)
         self.assertTrue(is_valid)
         self.assertEqual(error, "")
-        
+
         # Invalid block version (too low)
         header.version = 0
         is_valid, error = compatibility.validate_block_version(header)
@@ -340,15 +340,15 @@ class UpgradeTests(unittest.TestCase):
             min_activation_height=5000,
             description="Custom feature upgrade"
         )
-        
+
         # Should be able to add custom upgrade
         self.upgrade_manager.add_custom_upgrade(custom_upgrade)
         self.assertIn("custom_feature", self.upgrade_manager.version_tracker.upgrades)
-        
+
         # Should reject duplicate upgrade
         with self.assertRaises(ValueError):
             self.upgrade_manager.add_custom_upgrade(custom_upgrade)
-        
+
         # Should reject upgrade with used bit
         duplicate_bit_upgrade = UpgradeDefinition(
             name="another_feature",
@@ -360,7 +360,7 @@ class UpgradeTests(unittest.TestCase):
             min_activation_height=5000,
             description="Another feature"
         )
-        
+
         with self.assertRaises(ValueError):
             self.upgrade_manager.add_custom_upgrade(duplicate_bit_upgrade)
 

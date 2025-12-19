@@ -8,10 +8,10 @@ import time
 from pathlib import Path
 from typing import Any
 
+from ..core import difficulty
 from ..core.block import Block
 from ..core.chain import Chain, ChainError
 from ..core.tx import Transaction
-from ..core import difficulty
 from ..mempool import Mempool, MempoolError
 from ..mining.templates import TemplateBuilder
 from ..storage import BlockStore, StateDB
@@ -245,14 +245,14 @@ class RPCHandlers:
         else:
             best_hash, height = best
             best_header = self.state_db.get_header(best_hash)
-        
+
         # Calculate difficulty from current bits
         current_difficulty = 1.0
         if best_header:
             target = difficulty.compact_to_target(best_header.bits)
             max_target = difficulty.compact_to_target(self.chain.config.mining.initial_bits)
             current_difficulty = max_target / target if target > 0 else 1.0
-        
+
         # Calculate chainwork (cumulative work)
         chainwork = 0
         if best_header:
@@ -264,7 +264,7 @@ class RPCHandlers:
                     break
                 chainwork += difficulty.block_work(header.bits)
                 current_hash = header.prev_hash
-        
+
         # Get block time and median time
         block_time = int(time.time())
         median_time = int(time.time())
@@ -272,13 +272,13 @@ class RPCHandlers:
             block_time = best_header.timestamp
             # Calculate median time past (simplified - just use current block time)
             median_time = best_header.timestamp
-        
+
         # Estimate size on disk (simplified)
         size_on_disk = 0
         if height > 0:
             # Rough estimate: average block size * number of blocks
             size_on_disk = height * 1000  # Assume 1KB average block size
-        
+
         return {
             "chain": "main",  # Could be made configurable
             "blocks": height,
@@ -296,9 +296,8 @@ class RPCHandlers:
         }
 
     def getnetworkinfo(self) -> dict[str, Any]:
-        best = self.state_db.get_best_tip()
         connections = len(self.network.peers) if getattr(self.network, "peers", None) is not None else 0
-        
+
         # Build networks array (simplified)
         networks = [
             {
@@ -309,14 +308,14 @@ class RPCHandlers:
                 "proxy_randomize_credentials": False
             },
             {
-                "name": "ipv6", 
+                "name": "ipv6",
                 "limited": False,
                 "reachable": True,
                 "proxy": "",
                 "proxy_randomize_credentials": False
             }
         ]
-        
+
         return {
             "version": 10000,  # Version number format similar to Bitcoin Core
             "subversion": "/Baseline:0.1.0/",
@@ -473,7 +472,7 @@ class RPCHandlers:
                 "offset": 0.0,
                 "message": "NTP synchronization is disabled"
             }
-        
+
         status = self.time_manager.get_sync_status()
         return {
             "enabled": True,

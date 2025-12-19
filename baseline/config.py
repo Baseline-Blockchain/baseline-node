@@ -84,7 +84,7 @@ class NTPConfig:
     enabled: bool = True
     servers: tuple[str, ...] = (
         "pool.ntp.org",
-        "time.nist.gov", 
+        "time.nist.gov",
         "time.google.com",
         "time.cloudflare.com"
     )
