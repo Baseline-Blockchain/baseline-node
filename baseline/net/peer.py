@@ -115,6 +115,8 @@ class Peer:
             await self.manager.handle_addr(self, message)
         elif msg_type == "getheaders":
             await self.manager.handle_getheaders(self, message)
+        elif msg_type == "headers":
+            await self.manager.handle_headers(self, message)
         elif msg_type == "getblocks":
             await self.manager.handle_getblocks(self, message)
         else:
