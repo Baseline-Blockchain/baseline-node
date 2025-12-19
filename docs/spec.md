@@ -62,7 +62,7 @@ new_target ≤ max_target (set by genesis bits 0x207fffff)
 - Algorithm: SHA256d, same as Bitcoin.
 - Initial target: 0x207fffff (regtest-like).
 - Block interval target: 20 seconds (configurable but default consensus).
-- Maximum future drift accepted: +2 hours relative to synchronized node time.
+- Maximum future drift accepted: +15 minutes relative to synchronized node time.
 
 ## 6. Network & Messaging
 
