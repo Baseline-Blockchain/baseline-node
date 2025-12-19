@@ -27,7 +27,7 @@ class ChainError(Exception):
 GENESIS_PRIVKEY = 1
 GENESIS_PUBKEY = crypto.generate_pubkey(GENESIS_PRIVKEY)
 GENESIS_MESSAGE = b"Baseline genesis"
-MAX_FUTURE_BLOCK_TIME = 2 * 60 * 60
+MAX_FUTURE_BLOCK_TIME = 15 * 60  # 15 minutes
 
 CONSENSUS_DEFAULTS = {
     "coinbase_maturity": 5,
