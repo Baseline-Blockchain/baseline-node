@@ -666,7 +666,7 @@ class P2PServer:
                 self.security.cleanup()
                 
                 # Clean up peer discovery data
-                self.discovery.cleanup_stale()
+                self.discovery.cleanup()
                 
                 self.log.debug("Completed periodic cleanup")
             except Exception as exc:
