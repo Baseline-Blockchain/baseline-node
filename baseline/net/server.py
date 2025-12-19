@@ -10,7 +10,7 @@ import json
 import logging
 import random
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from typing import Any
 
 from ..config import NodeConfig
@@ -21,19 +21,10 @@ from ..core.tx import Transaction
 from ..mempool import Mempool, MempoolError
 from ..storage import BlockStoreError, HeaderData, StateDBError
 from . import protocol
+from .address import PeerAddress
 from .discovery import PeerDiscovery
 from .peer import Peer
 from .security import P2PSecurity
-
-
-@dataclass
-class PeerAddress:
-    host: str
-    port: int
-    last_seen: float
-
-    def key(self) -> tuple[str, int]:
-        return self.host, self.port
 
 
 class P2PServer:

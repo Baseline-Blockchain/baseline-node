@@ -2,6 +2,7 @@
 Networking subsystem exports.
 """
 
-from .server import P2PServer, PeerAddress
+from .address import PeerAddress
+from .server import P2PServer
 
 __all__ = ["P2PServer", "PeerAddress"]
