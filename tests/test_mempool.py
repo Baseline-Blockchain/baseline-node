@@ -17,6 +17,7 @@ class MempoolTests(unittest.TestCase):
         data_dir = Path(self.tmpdir.name)
         self.config = NodeConfig()
         self.config.data_dir = data_dir
+        self.config.mining.allow_consensus_overrides = True
         self.config.mining.coinbase_maturity = 2
         self.config.ensure_data_layout()
         self.block_store = BlockStore(data_dir / "blocks")

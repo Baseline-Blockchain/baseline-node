@@ -74,9 +74,9 @@ baseline-wallet --config config.json setup --encrypt   # first run, optionally e
 baseline-wallet --config config.json newaddress payout
 baseline-wallet --config config.json listaddresses     # list wallet + watch-only addresses
 baseline-wallet --config config.json balances          # show balance per address
-baseline-wallet --config config.json send bl1example... 1.25 --from-address bl1abc...  # prompts for passphrase if encrypted; omit optional flags for defaults
+baseline-wallet --config config.json send NexampleAddr... 1.25 --from-address NabcSource...  # prompts for passphrase if encrypted; omit optional flags for defaults
 baseline-wallet --config config.json dump /secure/backups/baseline-wallet.json
-baseline-wallet --config config.json importaddress bl1watch... --label "monitor" --rescan
+baseline-wallet --config config.json importaddress NwatchOnly... --label "monitor" --rescan
 baseline-wallet --config config.json importprivkey <WIF> --label "hot key" --rescan  # imports a single private key - useful for pool payout key
 ```
 
@@ -121,6 +121,7 @@ Additional operational docs live under [`docs/`](docs):
 - [`mining-and-payouts.md`](docs/mining-and-payouts.md) – Stratum usage, share accounting, payout lifecycle.
 - [`rpc.md`](docs/rpc.md) – JSON-RPC surface area with example calls.
 - [`operations.md`](docs/operations.md) – backups, monitoring, troubleshooting, and upgrade workflows.
+- [`spec.md`](docs/spec.md) – formal protocol specification derived from the current implementation.
 
 ## Code Quality
 

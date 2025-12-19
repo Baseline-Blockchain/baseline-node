@@ -23,6 +23,7 @@ class TPSTestCase(unittest.TestCase):
         config = NodeConfig()
         config.data_dir = node_dir
         config.ensure_data_layout()
+        config.mining.allow_consensus_overrides = True
         config.mining.coinbase_maturity = 1
         self.block_store = BlockStore(node_dir / "blocks")
         self.state_db = StateDB(node_dir / "chainstate" / "state.sqlite3")

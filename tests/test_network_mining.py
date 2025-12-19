@@ -14,6 +14,7 @@ class NodeSim:
     def __init__(self, root: Path, node_id: int):
         self.config = NodeConfig()
         self.config.data_dir = root / f"node{node_id}"
+        self.config.mining.allow_consensus_overrides = True
         self.config.mining.coinbase_maturity = 1
         self.config.ensure_data_layout()
         self.block_store = BlockStore(self.config.data_dir / "blocks")

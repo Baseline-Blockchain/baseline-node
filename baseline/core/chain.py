@@ -8,7 +8,9 @@ import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from ..config import NodeConfig
+import os
+
+from ..config import ConfigError, NodeConfig
 from ..storage import BlockStore, HeaderData, StateDB, UTXORecord
 from ..time_sync import synchronized_time_int
 from . import crypto, difficulty, script
@@ -26,6 +28,14 @@ GENESIS_PRIVKEY = 1
 GENESIS_PUBKEY = crypto.generate_pubkey(GENESIS_PRIVKEY)
 GENESIS_MESSAGE = b"Baseline genesis"
 MAX_FUTURE_BLOCK_TIME = 2 * 60 * 60
+
+CONSENSUS_DEFAULTS = {
+    "coinbase_maturity": 5,
+    "block_interval_target": 20,
+    "retarget_interval": 20,
+    "initial_bits": 0x207FFFFF,
+    "subsidy_halving_interval": 150_000,
+}
 
 
 @dataclass
@@ -87,6 +97,7 @@ class Chain:
         self.fork_manager = ForkManager(self)
         self.upgrade_manager = UpgradeManager(state_db)
 
+        self._enforce_consensus_parameters()
         self._ensure_genesis()
         self.log.info("Current block height %s", self.state_db.get_best_tip()[1] if self.state_db.get_best_tip() else 0)
 
@@ -175,6 +186,23 @@ class Chain:
         self.state_db.set_best_tip(genesis_hash, 0)
         self.state_db.set_meta("best_work", header.chainwork)
         self.state_db.upsert_chain_tip(genesis_hash, 0, header.chainwork)
+
+    def _enforce_consensus_parameters(self) -> None:
+        mining = self.config.mining
+        if getattr(mining, "allow_consensus_overrides", False):
+            self.log.warning("Consensus overrides enabled; this node may diverge from main network parameters")
+            return
+        mismatches: list[str] = []
+        for key, expected in CONSENSUS_DEFAULTS.items():
+            actual = getattr(mining, key, None)
+            if actual != expected:
+                mismatches.append(f"{key}={actual} (expected {expected})")
+        if mismatches:
+            raise ConfigError(
+                "Consensus parameter mismatch detected. "
+                "Set mining.allow_consensus_overrides=true ONLY for isolated test nets. "
+                f"Mismatches: {', '.join(mismatches)}"
+            )
 
     def process_block_bytes(self, raw_block: bytes) -> dict[str, str | int | bool]:
         block = Block.parse(raw_block)

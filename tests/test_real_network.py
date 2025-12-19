@@ -146,6 +146,7 @@ class RealNetworkIntegrationTests(unittest.TestCase):
         config.rpc.port = self.BASE_RPC_PORT + node_id
         config.stratum.host = "127.0.0.1"
         config.stratum.port = self.BASE_STRATUM_PORT + node_id
+        config.mining.allow_consensus_overrides = True
         config.ntp.enabled = False
         config.mining.coinbase_maturity = 1
         config.mining.block_interval_target = 1

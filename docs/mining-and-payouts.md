@@ -33,14 +33,14 @@ When a worker submits a share above the network difficulty, the Stratum server c
 ### Ledger Anatomy
 
 ```json
-{
-  "workers": {
-    "worker01": {
-      "address": "bl1...",
-      "script": "76a9...88ac",
-      "balance": 250000000
-    }
-  },
+    {
+      "workers": {
+        "worker01": {
+          "address": "NExampleAddr...",
+          "script": "76a9...88ac",
+          "balance": 250000000
+        }
+      },
   "round_shares": {
     "worker01": 1234.0
   },

@@ -114,6 +114,7 @@ class MiningConfig:
     pool_fee_percent: float = 1.0
     pool_private_key: str = "1337133713371337133713371337133713371337133713371337133713371337"
     min_payout: int = 50_000_000
+    allow_consensus_overrides: bool = False
 
     def validate(self) -> None:
         if self.coinbase_maturity <= 0:
