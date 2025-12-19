@@ -506,7 +506,13 @@ class PeerDiscovery:
                         self.address_book.add_addresses(dns_addresses)
                         self.log.info("Discovered %d addresses from DNS seeds", len(dns_addresses))
                     else:
-                        self.log.warning("No addresses discovered from DNS seeds")
+                        if not self.manual_seeds and not self.address_book.addresses:
+                            self.log.warning("No addresses discovered from DNS seeds")
+                        else:
+                            self.log.debug(
+                                "DNS seeds returned no new addresses; reusing %d cached/manual entries",
+                                len(self.address_book.addresses),
+                            )
                 except Exception as exc:
                     self.log.warning("DNS seed discovery failed: %s", exc)
                     self._record_error()

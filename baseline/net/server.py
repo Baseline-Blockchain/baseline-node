@@ -19,7 +19,7 @@ from ..core.block import Block, BlockHeader
 from ..core.chain import Chain, ChainError
 from ..core.tx import Transaction
 from ..mempool import Mempool, MempoolError
-from ..storage import BlockStoreError
+from ..storage import BlockStoreError, HeaderData
 from . import protocol
 from .discovery import PeerDiscovery
 from .peer import Peer
@@ -307,8 +307,14 @@ class P2PServer:
                 if not self.mempool.contains(obj_hash):
                     needed.append(entry)
             elif obj_type == "block":
-                if not self.chain.state_db.get_header(obj_hash):
+                if not self.chain.block_store.has_block(obj_hash):
                     needed.append(entry)
+        self.log.debug(
+            "Received inv from %s items=%d requesting=%d",
+            peer.peer_id,
+            len(items),
+            len(needed),
+        )
         if needed:
             await peer.send_message(protocol.getdata_payload(needed))
         self._handle_sync_inv(peer, items)
@@ -468,6 +474,21 @@ class P2PServer:
             if not difficulty.check_proof_of_work(header.hash(), header.bits):
                 self.log.debug("Invalid POW for header %s", header.hash())
                 return
+            header_hash = header.hash()
+            chainwork_int = int(parent.chainwork) + difficulty.block_work(header.bits)
+            header_record = HeaderData(
+                hash=header_hash,
+                prev_hash=header.prev_hash,
+                height=height,
+                bits=header.bits,
+                nonce=header.nonce,
+                timestamp=header.timestamp,
+                merkle_root=header.merkle_root,
+                chainwork=str(chainwork_int),
+                version=header.version,
+                status=1,
+            )
+            self.chain.state_db.store_header(header_record)
             last_height = height
         if last_height is not None:
             self.sync_remote_height = max(self.sync_remote_height, last_height)
@@ -616,12 +637,13 @@ class P2PServer:
         if block_count == 0:
             return
         local_height = self.best_height()
-        if block_count < self.sync_batch or local_height >= self.sync_remote_height:
+        if local_height >= self.sync_remote_height:
             self.log.info("Block sync complete height=%s", local_height)
             self.sync_active = False
             self.sync_peer = None
             return
-        asyncio.create_task(self._send_getblocks(peer))
+        if block_count >= self.sync_batch:
+            asyncio.create_task(self._send_getblocks(peer))
 
     def _on_block_connected(self, height: int) -> None:
         self._block_last_height = max(self._block_last_height, height)

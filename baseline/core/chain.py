@@ -184,7 +184,8 @@ class Chain:
 
     def add_block(self, block: Block, raw_block: bytes | None = None) -> dict[str, str | int | bool]:
         block_hash = block.block_hash()
-        if self.state_db.get_header(block_hash) is not None:
+        existing_header = self.state_db.get_header(block_hash)
+        if existing_header is not None and self.block_store.has_block(block_hash):
             return {"status": "duplicate", "hash": block_hash}
         if raw_block is None:
             raw_block = block.serialize()

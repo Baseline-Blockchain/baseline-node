@@ -231,7 +231,9 @@ class MessageValidator:
     @classmethod
     def _validate_inv(cls, message: dict[str, Any]) -> tuple[bool, str]:
         """Validate inventory message."""
-        inventory = message.get("inventory", [])
+        inventory = message.get("inventory")
+        if inventory is None:
+            inventory = message.get("items", [])
         if not isinstance(inventory, list):
             return False, "Invalid inventory format"
             
@@ -254,22 +256,33 @@ class MessageValidator:
     @classmethod
     def _validate_tx(cls, message: dict[str, Any]) -> tuple[bool, str]:
         """Validate transaction message."""
-        if "transaction" not in message:
+        raw_hex = message.get("raw")
+        txid = message.get("txid")
+        if raw_hex is not None:
+            if not isinstance(raw_hex, str):
+                return False, "Invalid transaction encoding"
+            if len(raw_hex) % 2 != 0:
+                return False, "Raw transaction hex must have even length"
+            try:
+                bytes.fromhex(raw_hex)
+            except ValueError:
+                return False, "Invalid transaction hex"
+            if not isinstance(txid, str) or len(txid) != 64:
+                return False, "Invalid txid"
+            return True, ""
+        
+        tx_data = message.get("transaction")
+        if not isinstance(tx_data, dict):
             return False, "Missing transaction data"
         
-        tx_data = message["transaction"]
-        
-        # Validate transaction structure
         required_fields = ["version", "inputs", "outputs", "lock_time"]
         for field in required_fields:
             if field not in tx_data:
                 return False, f"Missing transaction field: {field}"
         
-        # Validate version
         if not isinstance(tx_data["version"], int) or tx_data["version"] < 1:
             return False, "Invalid transaction version"
         
-        # Validate inputs
         if not isinstance(tx_data["inputs"], list) or len(tx_data["inputs"]) == 0:
             return False, "Transaction must have at least one input"
         
@@ -283,7 +296,6 @@ class MessageValidator:
             if not isinstance(inp["prev_vout"], int) or inp["prev_vout"] < 0:
                 return False, f"Invalid input {i}: invalid prev_vout"
         
-        # Validate outputs
         if not isinstance(tx_data["outputs"], list) or len(tx_data["outputs"]) == 0:
             return False, "Transaction must have at least one output"
         
@@ -295,14 +307,13 @@ class MessageValidator:
                 return False, f"Invalid output {i}: missing value or script_pubkey"
             if not isinstance(out["value"], int) or out["value"] < 0:
                 return False, f"Invalid output {i}: invalid value"
-            if out["value"] > 15_000_000 * 100_000_000:  # MAX_MONEY
+            if out["value"] > 15_000_000 * 100_000_000:
                 return False, f"Invalid output {i}: value exceeds maximum"
             total_output_value += out["value"]
         
-        if total_output_value > 15_000_000 * 100_000_000:  # MAX_MONEY
+        if total_output_value > 15_000_000 * 100_000_000:
             return False, "Total output value exceeds maximum"
         
-        # Validate lock_time
         if not isinstance(tx_data["lock_time"], int) or tx_data["lock_time"] < 0:
             return False, "Invalid lock_time"
         
@@ -311,19 +322,28 @@ class MessageValidator:
     @classmethod
     def _validate_block(cls, message: dict[str, Any]) -> tuple[bool, str]:
         """Validate block message."""
-        if "block" not in message:
-            return False, "Missing block data"
+        raw_hex = message.get("raw")
+        if raw_hex is not None:
+            if not isinstance(raw_hex, str):
+                return False, "Invalid block payload"
+            if len(raw_hex) % 2 != 0:
+                return False, "Raw block hex must have even length"
+            try:
+                bytes.fromhex(raw_hex)
+            except ValueError:
+                return False, "Invalid block hex"
+            block_hash = message.get("hash")
+            if not isinstance(block_hash, str) or len(block_hash) != 64:
+                return False, "Invalid block hash"
+            return True, ""
         
-        block_data = message["block"]
-        
-        # Validate block structure
+        block_data = message.get("block")
         if not isinstance(block_data, dict):
-            return False, "Block data must be a dict"
+            return False, "Missing block data"
         
         if "header" not in block_data or "transactions" not in block_data:
             return False, "Missing block header or transactions"
         
-        # Validate header
         header = block_data["header"]
         if not isinstance(header, dict):
             return False, "Block header must be a dict"
@@ -333,7 +353,6 @@ class MessageValidator:
             if field not in header:
                 return False, f"Missing header field: {field}"
         
-        # Validate header fields
         if not isinstance(header["version"], int) or header["version"] < 1:
             return False, "Invalid block version"
         
@@ -352,31 +371,31 @@ class MessageValidator:
         if not isinstance(header["nonce"], int) or header["nonce"] < 0:
             return False, "Invalid nonce"
         
-        # Validate transactions
         transactions = block_data["transactions"]
         if not isinstance(transactions, list) or len(transactions) == 0:
             return False, "Block must have at least one transaction"
         
-        # Validate each transaction using existing transaction validator
         for i, tx in enumerate(transactions):
             tx_valid, tx_error = cls._validate_tx({"transaction": tx})
             if not tx_valid:
                 return False, f"Invalid transaction {i}: {tx_error}"
         
-        # Validate first transaction is coinbase
         first_tx = transactions[0]
-        if (not isinstance(first_tx.get("inputs"), list) or 
-            len(first_tx["inputs"]) != 1 or
-            first_tx["inputs"][0].get("prev_txid") != "00" * 32 or
-            first_tx["inputs"][0].get("prev_vout") != 0xFFFFFFFF):
+        if (
+            not isinstance(first_tx.get("inputs"), list)
+            or len(first_tx["inputs"]) != 1
+            or first_tx["inputs"][0].get("prev_txid") != "00" * 32
+            or first_tx["inputs"][0].get("prev_vout") != 0xFFFFFFFF
+        ):
             return False, "First transaction must be coinbase"
         
-        # Validate no other transactions are coinbase
         for i, tx in enumerate(transactions[1:], 1):
-            if (isinstance(tx.get("inputs"), list) and 
-                len(tx["inputs"]) == 1 and
-                tx["inputs"][0].get("prev_txid") == "00" * 32 and
-                tx["inputs"][0].get("prev_vout") == 0xFFFFFFFF):
+            if (
+                isinstance(tx.get("inputs"), list)
+                and len(tx["inputs"]) == 1
+                and tx["inputs"][0].get("prev_txid") == "00" * 32
+                and tx["inputs"][0].get("prev_vout") == 0xFFFFFFFF
+            ):
                 return False, f"Transaction {i} is coinbase but not first transaction"
         
         return True, ""
@@ -384,7 +403,9 @@ class MessageValidator:
     @classmethod
     def _validate_addr(cls, message: dict[str, Any]) -> tuple[bool, str]:
         """Validate address message."""
-        addresses = message.get("addresses", [])
+        addresses = message.get("addresses")
+        if addresses is None:
+            addresses = message.get("peers", [])
         if not isinstance(addresses, list):
             return False, "Invalid addresses format"
             

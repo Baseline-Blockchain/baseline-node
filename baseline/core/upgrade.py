@@ -259,9 +259,14 @@ class BackwardCompatibility:
         signaling_bits = header.version & 0x1FFFFFFF
         
         for bit in range(29):  # Check bits 0-28
-            if (signaling_bits & (1 << bit)) and bit not in known_bits:
-                self.log.warning("Unknown signaling bit %d in block version %d", bit, header.version)
-                # For now, we'll accept unknown bits but log them
+            if not (signaling_bits & (1 << bit)):
+                continue
+            if bit == 0 and header.version == 1:
+                # Base protocol version, not an explicit signal.
+                continue
+            if bit not in known_bits:
+                self.log.debug("Ignoring unknown signaling bit %d in block version %d", bit, header.version)
+                # Accept unknown bits but downgrade to debug to avoid user-facing noise.
         
         return True, ""
     
