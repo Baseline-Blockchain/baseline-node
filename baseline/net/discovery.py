@@ -66,8 +66,10 @@ class PeerAddress:
 class DNSSeeder:
     """DNS seed resolver for peer discovery."""
     
-    def __init__(self, dns_seeds: list[str]):
+    def __init__(self, dns_seeds: list[str], timeout: float = 10.0, max_addresses_per_seed: int = 100):
         self.dns_seeds = dns_seeds
+        self.timeout = timeout
+        self.max_addresses_per_seed = max_addresses_per_seed
         self.log = logging.getLogger("baseline.dns_seeder")
     
     async def resolve_seeds(self) -> list[PeerAddress]:
@@ -97,10 +99,13 @@ class DNSSeeder:
                 hostname = seed
                 default_port = 9333  # Default Baseline port
             
-            # Resolve hostname to IP addresses
+            # Resolve hostname to IP addresses with timeout
             loop = asyncio.get_event_loop()
-            addrinfo = await loop.getaddrinfo(
-                hostname, None, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM
+            addrinfo = await asyncio.wait_for(
+                loop.getaddrinfo(
+                    hostname, None, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM
+                ),
+                timeout=self.timeout
             )
             
             for family, type_, proto, canonname, sockaddr in addrinfo:
@@ -117,44 +122,72 @@ class DNSSeeder:
                         source="dns"
                     )
                     addresses.append(addr)
+                    
+                    # Limit addresses per seed to prevent DNS amplification
+                    if len(addresses) >= self.max_addresses_per_seed:
+                        self.log.debug("Reached address limit for seed %s", seed)
+                        break
         
+        except asyncio.TimeoutError:
+            self.log.warning("DNS resolution timeout for seed %s", seed)
         except Exception as exc:
             self.log.debug("DNS resolution failed for %s: %s", seed, exc)
         
         return addresses
     
     def _is_routable_ip(self, ip: str) -> bool:
-        """Check if IP address is routable (not localhost/private)."""
+        """Check if IP address is routable (not localhost/private/reserved)."""
         try:
-            addr = socket.inet_pton(socket.AF_INET, ip)
-            # Check for localhost (127.x.x.x)
-            if addr[0] == 127:
+            import ipaddress
+            addr = ipaddress.ip_address(ip)
+            
+            # Check for various non-routable ranges
+            if addr.is_loopback:
                 return False
-            # Check for private networks (10.x.x.x, 172.16-31.x.x, 192.168.x.x)
-            if addr[0] == 10:
+            if addr.is_private:
                 return False
-            if addr[0] == 172 and 16 <= addr[1] <= 31:
+            if addr.is_reserved:
                 return False
-            if addr[0] == 192 and addr[1] == 168:
+            if addr.is_multicast:
                 return False
-            return True
-        except socket.error:
-            try:
-                # IPv6 check
-                addr = socket.inet_pton(socket.AF_INET6, ip)
-                # Skip localhost and link-local
-                if ip.startswith("::1") or ip.startswith("fe80:"):
+            if addr.is_link_local:
+                return False
+            
+            # Additional checks for IPv4
+            if isinstance(addr, ipaddress.IPv4Address):
+                # Check for broadcast
+                if addr.is_unspecified:
                     return False
-                return True
-            except socket.error:
-                return False
+                # Check for CGNAT (100.64.0.0/10)
+                if int(addr) >= int(ipaddress.IPv4Address('100.64.0.0')) and \
+                   int(addr) <= int(ipaddress.IPv4Address('100.127.255.255')):
+                    return False
+                # Check for test networks (198.18.0.0/15)
+                if int(addr) >= int(ipaddress.IPv4Address('198.18.0.0')) and \
+                   int(addr) <= int(ipaddress.IPv4Address('198.19.255.255')):
+                    return False
+            
+            # Additional checks for IPv6
+            elif isinstance(addr, ipaddress.IPv6Address):
+                # Check for unique local (fc00::/7)
+                if addr.is_site_local:
+                    return False
+                # Check for documentation prefix (2001:db8::/32)
+                if int(addr) >= int(ipaddress.IPv6Address('2001:db8::')) and \
+                   int(addr) <= int(ipaddress.IPv6Address('2001:db8:ffff:ffff:ffff:ffff:ffff:ffff')):
+                    return False
+            
+            return True
+        except ValueError:
+            return False
 
 
 class AddressBook:
     """Persistent address book for peer management."""
     
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, max_addresses: int = 50000):
         self.path = path
+        self.max_addresses = max_addresses
         self.addresses: dict[tuple[str, int], PeerAddress] = {}
         self.log = logging.getLogger("baseline.address_book")
         self._load()
@@ -194,8 +227,8 @@ class AddressBook:
         except Exception as exc:
             self.log.warning("Failed to save address book: %s", exc)
     
-    def add_address(self, address: PeerAddress) -> None:
-        """Add or update an address."""
+    def add_address(self, address: PeerAddress) -> bool:
+        """Add or update an address. Returns True if added/updated, False if rejected."""
         key = address.key()
         existing = self.addresses.get(key)
         
@@ -205,13 +238,46 @@ class AddressBook:
                 existing.last_seen = address.last_seen
                 existing.services = address.services
             # Keep attempt/success/failure counts
+            return True
         else:
+            # Check size limit before adding new address
+            if len(self.addresses) >= self.max_addresses:
+                self._evict_stale_addresses()
+                
+                # If still at limit after eviction, reject
+                if len(self.addresses) >= self.max_addresses:
+                    self.log.debug("Address book full, rejecting new address %s:%d", 
+                                 address.host, address.port)
+                    return False
+            
             self.addresses[key] = address
+            return True
     
-    def add_addresses(self, addresses: list[PeerAddress]) -> None:
-        """Add multiple addresses."""
+    def add_addresses(self, addresses: list[PeerAddress]) -> int:
+        """Add multiple addresses. Returns count of successfully added addresses."""
+        added_count = 0
         for addr in addresses:
-            self.add_address(addr)
+            if self.add_address(addr):
+                added_count += 1
+        return added_count
+    
+    def _evict_stale_addresses(self) -> None:
+        """Evict stale addresses using LRU policy."""
+        # Sort by last_seen (oldest first) and reliability score (worst first)
+        sorted_addresses = sorted(
+            self.addresses.items(),
+            key=lambda x: (x[1].last_seen, x[1].reliability_score())
+        )
+        
+        # Remove oldest 10% of addresses
+        evict_count = max(1, len(self.addresses) // 10)
+        for i in range(evict_count):
+            if i < len(sorted_addresses):
+                key = sorted_addresses[i][0]
+                del self.addresses[key]
+        
+        if evict_count > 0:
+            self.log.debug("Evicted %d stale addresses from address book", evict_count)
     
     def get_addresses(self, count: int, exclude: set[tuple[str, int]] | None = None) -> list[PeerAddress]:
         """Get addresses for connection attempts."""
@@ -297,6 +363,11 @@ class PeerExchange:
     def __init__(self, address_book: AddressBook):
         self.address_book = address_book
         self.log = logging.getLogger("baseline.peer_exchange")
+        
+        # Rate limiting for addr messages
+        self.peer_addr_timestamps: dict[str, float] = {}
+        self.min_addr_interval = 300.0  # 5 minutes between addr messages per peer
+        self.max_addresses_per_message = 1000
     
     def create_addr_message(self, max_addresses: int = 1000) -> dict[str, Any]:
         """Create an addr message with known addresses."""
@@ -318,9 +389,24 @@ class PeerExchange:
             "addresses": addr_list,
         }
     
-    def handle_addr_message(self, message: dict[str, Any], peer_host: str) -> None:
-        """Handle incoming addr message."""
+    def handle_addr_message(self, message: dict[str, Any], peer_id: str) -> bool:
+        """Handle incoming addr message with rate limiting."""
+        import time
+        current_time = time.time()
+        
+        # Check rate limiting
+        last_addr_time = self.peer_addr_timestamps.get(peer_id, 0)
+        if current_time - last_addr_time < self.min_addr_interval:
+            self.log.warning("Rate limiting addr message from peer %s", peer_id)
+            return False
+        
         addresses = message.get("addresses", [])
+        
+        # Limit number of addresses per message
+        if len(addresses) > self.max_addresses_per_message:
+            self.log.warning("Peer %s sent too many addresses (%d), truncating to %d",
+                           peer_id, len(addresses), self.max_addresses_per_message)
+            addresses = addresses[:self.max_addresses_per_message]
         
         new_addresses = []
         for addr_data in addresses:
@@ -342,8 +428,12 @@ class PeerExchange:
                 self.log.debug("Invalid address in addr message: %s", exc)
         
         if new_addresses:
-            self.address_book.add_addresses(new_addresses)
-            self.log.debug("Added %d addresses from peer %s", len(new_addresses), peer_host)
+            added_count = self.address_book.add_addresses(new_addresses)
+            self.peer_addr_timestamps[peer_id] = current_time
+            self.log.debug("Added %d/%d addresses from peer %s", 
+                          added_count, len(new_addresses), peer_id)
+        
+        return True
     
     def _is_valid_address(self, addr: PeerAddress) -> bool:
         """Validate a peer address."""
@@ -373,6 +463,11 @@ class PeerDiscovery:
         self.manual_seeds = manual_seeds
         self.log = logging.getLogger("baseline.peer_discovery")
         
+        # Error tracking for recovery
+        self.error_count = 0
+        self.last_error_time = 0.0
+        self.max_errors_per_hour = 100
+        
         # Add manual seeds to address book
         self._add_manual_seeds()
     
@@ -399,22 +494,62 @@ class PeerDiscovery:
     
     async def discover_peers(self, count: int) -> list[tuple[str, int]]:
         """Discover peer addresses for connection."""
-        # First try existing addresses
-        existing = self.address_book.get_addresses(count)
-        
-        # If we don't have enough, try DNS seeds
-        if len(existing) < count:
-            try:
-                dns_addresses = await self.dns_seeder.resolve_seeds()
-                self.address_book.add_addresses(dns_addresses)
-                self.log.info("Discovered %d addresses from DNS seeds", len(dns_addresses))
-            except Exception as exc:
-                self.log.warning("DNS seed discovery failed: %s", exc)
-            
-            # Get addresses again after adding DNS results
+        try:
+            # First try existing addresses
             existing = self.address_book.get_addresses(count)
+            
+            # If we don't have enough, try DNS seeds
+            if len(existing) < count:
+                try:
+                    dns_addresses = await self.dns_seeder.resolve_seeds()
+                    if dns_addresses:
+                        self.address_book.add_addresses(dns_addresses)
+                        self.log.info("Discovered %d addresses from DNS seeds", len(dns_addresses))
+                    else:
+                        self.log.warning("No addresses discovered from DNS seeds")
+                except Exception as exc:
+                    self.log.warning("DNS seed discovery failed: %s", exc)
+                    self._record_error()
+                
+                # Get addresses again after adding DNS results
+                existing = self.address_book.get_addresses(count)
+            
+            return [addr.key() for addr in existing]
         
-        return [addr.key() for addr in existing]
+        except Exception as exc:
+            self.log.error("Peer discovery failed: %s", exc, exc_info=True)
+            self._record_error()
+            return []
+    
+    def _record_error(self) -> None:
+        """Record an error for rate limiting and recovery."""
+        import time
+        current_time = time.time()
+        
+        # Reset error count if it's been more than an hour
+        if current_time - self.last_error_time > 3600:
+            self.error_count = 0
+        
+        self.error_count += 1
+        self.last_error_time = current_time
+        
+        # If too many errors, attempt recovery
+        if self.error_count > self.max_errors_per_hour:
+            self.log.warning("Too many discovery errors, attempting recovery")
+            self._attempt_recovery()
+    
+    def _attempt_recovery(self) -> None:
+        """Attempt to recover from discovery errors."""
+        try:
+            # Clear old addresses that might be causing issues
+            self.address_book.cleanup_old_addresses()
+            
+            # Reset error count
+            self.error_count = 0
+            
+            self.log.info("Discovery recovery completed")
+        except Exception as exc:
+            self.log.error("Discovery recovery failed: %s", exc)
     
     def record_connection_attempt(self, host: str, port: int) -> None:
         """Record a connection attempt."""
