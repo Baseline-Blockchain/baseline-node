@@ -277,6 +277,8 @@ class P2PServer:
 
     async def on_peer_closed(self, peer: Peer) -> None:
         self.peers.pop(peer.peer_id, None)
+        with contextlib.suppress(Exception):
+            self.security.remove_connection(peer.address[0], peer.peer_id)
         self.log.info("Peer %s disconnected", peer.peer_id)
         if self.sync_peer is peer:
             self.sync_peer = None

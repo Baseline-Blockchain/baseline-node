@@ -100,6 +100,7 @@ class Peer:
                 self.ping_nonce = None
         elif msg_type == "addr":
             self.manager.discovery.handle_addr_message(message, self.address[0])
+            await self.manager.handle_addr(self, message)
         elif msg_type == "getaddr":
             addr_msg = self.manager.discovery.create_addr_message()
             await self.send_message(addr_msg)
@@ -111,8 +112,6 @@ class Peer:
             await self.manager.handle_tx(self, message)
         elif msg_type == "block":
             await self.manager.handle_block(self, message)
-        elif msg_type == "addr":
-            await self.manager.handle_addr(self, message)
         elif msg_type == "getheaders":
             await self.manager.handle_getheaders(self, message)
         elif msg_type == "headers":

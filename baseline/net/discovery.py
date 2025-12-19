@@ -339,6 +339,21 @@ class AddressBook:
         if stale_keys:
             self.log.info("Removed %d stale addresses", len(stale_keys))
 
+    def cleanup_old_addresses(self, max_age: float = 86400 * 30, max_failures: int = 5) -> None:
+        """Remove addresses that consistently fail or have been unseen for too long."""
+        import time
+
+        now = time.time()
+        removed = 0
+        for key, addr in list(self.addresses.items()):
+            age = now - addr.last_seen
+            if age > max_age and (addr.failure_count >= max_failures or addr.success_count == 0):
+                del self.addresses[key]
+                removed += 1
+
+        if removed:
+            self.log.info("Recovery removed %d unreliable addresses", removed)
+
     def get_stats(self) -> dict[str, Any]:
         """Get address book statistics."""
         total = len(self.addresses)
