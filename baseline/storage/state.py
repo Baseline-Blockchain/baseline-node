@@ -678,3 +678,11 @@ class StateDB:
                 chainwork=row["chainwork"],
                 status=row["status"],
             )
+
+    def get_max_header_height(self) -> int:
+        self._ensure_open()
+        with self._lock:
+            row = self._conn.execute("SELECT MAX(height) AS max_height FROM headers").fetchone()
+        if row is None or row["max_height"] is None:
+            return 0
+        return int(row["max_height"])

@@ -339,16 +339,27 @@ class RPCHandlers:
 
         size_on_disk = self._chain_storage_bytes()
 
+        headers_height = self.state_db.get_max_header_height()
+        verification_progress = 0.0
+        if headers_height > 0:
+            verification_progress = min(1.0, height / headers_height)
+        now = int(time.time())
+        is_ibd = True
+        if best_header:
+            synced_height = height >= max(1, self.chain.config.mining.retarget_interval)
+            recent_enough = best_header.timestamp > now - 24 * 60 * 60
+            is_ibd = not (synced_height and recent_enough)
+
         return {
             "chain": "main",  # Could be made configurable
             "blocks": height,
-            "headers": height,  # In this implementation, headers == blocks
+            "headers": headers_height,
             "bestblockhash": best_hash,
             "difficulty": current_difficulty,
             "time": block_time,
             "mediantime": median_time,
-            "verificationprogress": 1.0 if height > 0 else 0.0,  # Simplified
-            "initialblockdownload": False,  # Simplified
+            "verificationprogress": verification_progress,
+            "initialblockdownload": is_ibd,
             "chainwork": f"{chainwork:016x}",
             "size_on_disk": size_on_disk,
             "pruned": False,
@@ -356,7 +367,23 @@ class RPCHandlers:
         }
 
     def getnetworkinfo(self) -> dict[str, Any]:
-        connections = len(self.network.peers) if getattr(self.network, "peers", None) is not None else 0
+        peers = getattr(self.network, "peers", {}) or {}
+        connections = len(peers)
+        inbound = sum(1 for peer in peers.values() if not getattr(peer, "outbound", False))
+        outbound = connections - inbound
+        timeoffset = 0
+        if self.time_manager and hasattr(self.time_manager, "get_offset"):
+            try:
+                timeoffset = float(self.time_manager.get_offset())  # type: ignore[attr-defined]
+            except Exception:
+                timeoffset = 0
+        networkactive = bool(self.network)
+        stop_event = getattr(self.network, "_stop_event", None)
+        if stop_event is not None and hasattr(stop_event, "is_set"):
+            try:
+                networkactive = not stop_event.is_set()
+            except Exception:
+                pass
 
         # Build networks array (simplified)
         networks = [
@@ -375,6 +402,10 @@ class RPCHandlers:
                 "proxy_randomize_credentials": False
             }
         ]
+        localaddresses: list[dict[str, Any]] = []
+        known = getattr(self.network, "known_addresses", {}) if self.network else {}
+        for addr in list(known.values())[:5]:
+            localaddresses.append({"address": addr.host, "port": addr.port, "score": 1})
 
         return {
             "version": 10000,  # Version number format similar to Bitcoin Core
@@ -383,13 +414,15 @@ class RPCHandlers:
             "localservices": "0000000000000001",  # NODE_NETWORK
             "localservicesnames": ["NETWORK"],
             "localrelay": True,
-            "timeoffset": 0,
+            "timeoffset": timeoffset,
             "connections": connections,
-            "networkactive": True,
+            "connections_in": inbound,
+            "connections_out": outbound,
+            "networkactive": networkactive,
             "networks": networks,
             "relayfee": MIN_RELAY_FEE_RATE / COIN,
             "incrementalfee": MIN_RELAY_FEE_RATE / COIN,
-            "localaddresses": [],  # Could be populated with actual local addresses
+            "localaddresses": localaddresses,
             "warnings": []
         }
 
