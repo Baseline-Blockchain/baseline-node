@@ -1,6 +1,6 @@
 # Prerequisites
 
-Baseline is designed to run anywhere Python 3.11+ is available. The node ships with no third-party runtime dependencies; stdlib modules cover networking, sqlite3 storage, and TLS-free RPC.
+Baseline is designed to run anywhere Python 3.12+ is available. The node ships with no third-party runtime dependencies; stdlib modules cover networking, sqlite3 storage, and TLS-free RPC.
 
 ## Operating System
 
@@ -10,7 +10,7 @@ Baseline is designed to run anywhere Python 3.11+ is available. The node ships w
 
 ## Python
 
-- Python 3.11 or newer (3.11/3.12/3.13 tested).
+- Python 3.12 or newer (3.12/3.13 tested).
 - Install via your OS package manager or `pyenv`.
 - Create a dedicated virtualenv per node: `python -m venv .venv && . .venv/bin/activate`.
 

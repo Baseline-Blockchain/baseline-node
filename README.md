@@ -22,6 +22,8 @@ Adjustments are clamped to 4× faster/slower than expected so that hash-rate spi
 ## Quick Start
 
 ### 1. Install Python environment
+
+Baseline targets **Python 3.12 or newer** (3.12/3.13 verified). Make sure your `python` shim points to a compatible interpreter before creating the virtualenv.
    ```bash
    python -m venv .venv
    . .venv/Scripts/activate  # or source .venv/bin/activate on UNIX
