@@ -15,6 +15,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from ..config import NodeConfig
+from ..time_sync import synchronized_time_int
 from ..core.address import script_from_address
 from ..core.block import Block
 from ..core.chain import MAX_FUTURE_BLOCK_TIME, Chain, ChainError
@@ -332,7 +333,7 @@ class StratumServer:
             await session.send_error(msg_id, 29, "stale share")
             session.stale_shares += 1
             return
-        now = int(time.time())
+        now = synchronized_time_int()
         if ntime < job.template.timestamp - 600 or ntime > now + MAX_FUTURE_BLOCK_TIME:
             await session.send_error(msg_id, 35, "ntime out of range")
             session.invalid_shares += 1

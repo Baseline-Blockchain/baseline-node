@@ -7,6 +7,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
+from ..time_sync import synchronized_time_int
 from ..core import crypto, difficulty
 from ..core.block import Block, BlockHeader
 from ..core.chain import Chain, UTXOView
@@ -57,7 +58,7 @@ class TemplateBuilder:
         coinbase_value = subsidy + total_fees
         coinb1, coinb2 = self._build_coinbase_parts(height, coinbase_value)
         merkle_branches = self._build_merkle_branches(selected)
-        timestamp = max(int(time.time()), parent_header.timestamp + 1)
+        timestamp = max(synchronized_time_int(), parent_header.timestamp + 1)
         bits = self.chain._expected_bits(height, parent_header)
         target = difficulty.compact_to_target(bits)
         return Template(

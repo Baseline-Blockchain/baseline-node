@@ -15,6 +15,7 @@ from ..core import difficulty
 from ..mempool import Mempool, MempoolError
 from ..mining.templates import TemplateBuilder
 from ..storage import BlockStore, StateDB
+from ..time_sync import TimeManager
 from ..wallet import WalletError, WalletLockedError, WalletManager, coins_to_sats
 
 
@@ -36,6 +37,7 @@ class RPCHandlers:
         template_builder: TemplateBuilder | None,
         network: Any | None = None,
         wallet: WalletManager | None = None,
+        time_manager: TimeManager | None = None,
     ):
         self.chain = chain
         self.mempool = mempool
@@ -44,6 +46,7 @@ class RPCHandlers:
         self.template_builder = template_builder
         self.network = network
         self.wallet = wallet
+        self.time_manager = time_manager
         self._methods = {
             "getblockhash": self.getblockhash,
             "getblock": self.getblock,
@@ -54,6 +57,7 @@ class RPCHandlers:
             "getblockchaininfo": self.getblockchaininfo,
             "getnetworkinfo": self.getnetworkinfo,
             "submitblock": self.submitblock,
+            "gettimesyncinfo": self.gettimesyncinfo,
         }
         if self.wallet:
             self._methods.update(
@@ -457,3 +461,26 @@ class RPCHandlers:
                 break
             current_hash = header.prev_hash
         return None, None, None
+
+    def gettimesyncinfo(self) -> dict[str, Any]:
+        """Get time synchronization status and information."""
+        if not self.time_manager:
+            return {
+                "enabled": False,
+                "synchronized": False,
+                "offset": 0.0,
+                "message": "NTP synchronization is disabled"
+            }
+        
+        status = self.time_manager.get_sync_status()
+        return {
+            "enabled": True,
+            "synchronized": status["synchronized"],
+            "offset": status["offset"],
+            "last_sync": status.get("last_sync"),
+            "time_since_sync": status.get("time_since_sync"),
+            "drift_rate": status.get("drift_rate"),
+            "servers": status.get("servers", []),
+            "system_time": time.time(),
+            "synchronized_time": status.get("synchronized_time", time.time())
+        }

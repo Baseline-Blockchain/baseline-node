@@ -80,6 +80,31 @@ class StratumConfig:
 
 
 @dataclass(slots=True)
+class NTPConfig:
+    enabled: bool = True
+    servers: tuple[str, ...] = (
+        "pool.ntp.org",
+        "time.nist.gov", 
+        "time.google.com",
+        "time.cloudflare.com"
+    )
+    sync_interval: float = 300.0  # seconds
+    timeout: float = 5.0  # seconds
+    max_servers: int = 3
+    max_offset_warning: float = 60.0  # seconds
+
+    def validate(self) -> None:
+        if self.sync_interval <= 0:
+            raise ConfigError("sync_interval must be > 0")
+        if self.timeout <= 0:
+            raise ConfigError("timeout must be > 0")
+        if self.max_servers <= 0:
+            raise ConfigError("max_servers must be > 0")
+        if not self.servers:
+            raise ConfigError("At least one NTP server must be configured")
+
+
+@dataclass(slots=True)
 class MiningConfig:
     coinbase_maturity: int = 5
     block_interval_target: int = 20  # seconds
@@ -108,6 +133,7 @@ class NodeConfig:
     rpc: RPCConfig = field(default_factory=RPCConfig)
     stratum: StratumConfig = field(default_factory=StratumConfig)
     mining: MiningConfig = field(default_factory=MiningConfig)
+    ntp: NTPConfig = field(default_factory=NTPConfig)
     data_dir: Path = field(default_factory=default_data_dir)
     log_file: Path | None = None
 
@@ -123,6 +149,7 @@ class NodeConfig:
         self.rpc.validate()
         self.stratum.validate()
         self.mining.validate()
+        self.ntp.validate()
         if not isinstance(self.data_dir, Path):
             raise ConfigError("data_dir must be a Path")
 
@@ -181,7 +208,7 @@ def _apply_dict(obj: Any, data: dict[str, Any]) -> None:
         current = getattr(obj, key)
         if isinstance(current, Path):
             setattr(obj, key, _expand_path(str(value)))
-        elif isinstance(current, (P2PConfig, RPCConfig, StratumConfig, MiningConfig)):
+        elif isinstance(current, (P2PConfig, RPCConfig, StratumConfig, MiningConfig, NTPConfig)):
             if not isinstance(value, dict):
                 raise ConfigError(f"{key} must be a mapping")
             _apply_dict(current, value)

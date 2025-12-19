@@ -16,6 +16,7 @@ from .mining import PayoutTracker, StratumServer, TemplateBuilder
 from .net import P2PServer
 from .rpc import RPCHandlers, RPCServer
 from .storage import BlockStore, BlockStoreError, StateDB, StateDBError
+from .time_sync import NTPClient, TimeManager
 from .wallet import WalletManager
 
 
@@ -41,6 +42,7 @@ class BaselineNode:
         self.rpc_server: RPCServer | None = None
         self.rpc_handlers: RPCHandlers | None = None
         self.wallet: WalletManager | None = None
+        self.time_manager: TimeManager | None = None
 
     async def start(self) -> None:
         if self._started:
@@ -61,6 +63,7 @@ class BaselineNode:
             self.mempool = Mempool(self.chain)
             self.network = P2PServer(self.config, self.chain, self.mempool)
             await self.network.start()
+            self._initialize_time_sync()
             self._initialize_mining_components()
             self._initialize_wallet()
             self._initialize_rpc()
@@ -93,6 +96,9 @@ class BaselineNode:
         if self.stratum:
             await self.stratum.stop()
             self.stratum = None
+        if self.time_manager:
+            self.time_manager.stop()
+            self.time_manager = None
         if self.network:
             await self.network.stop()
 
@@ -122,6 +128,24 @@ class BaselineNode:
             if self.wallet:
                 await asyncio.to_thread(self.wallet.sync_chain)
                 self.wallet.tick()
+            self._monitor_time_sync()
+
+    def _initialize_time_sync(self) -> None:
+        """Initialize NTP time synchronization."""
+        if not self.config.ntp.enabled:
+            self.log.info("NTP synchronization disabled")
+            return
+        
+        ntp_client = NTPClient(
+            servers=list(self.config.ntp.servers),
+            timeout=self.config.ntp.timeout
+        )
+        self.time_manager = TimeManager(
+            ntp_client=ntp_client,
+            sync_interval=self.config.ntp.sync_interval
+        )
+        self.time_manager.start()
+        self.log.info("NTP synchronization enabled with servers: %s", self.config.ntp.servers)
 
     def _initialize_mining_components(self) -> None:
         if not (self.chain and self.mempool):
@@ -171,6 +195,7 @@ class BaselineNode:
             self.template_builder,
             self.network,
             self.wallet,
+            self.time_manager,
         )
         self.rpc_handlers = handlers
         self.rpc_server = RPCServer(self.config, handlers)
@@ -198,3 +223,29 @@ class BaselineNode:
             self.mempool.accept_transaction(tx, peer_id="payout")
         except MempoolError as exc:
             self.log.warning("Failed to enqueue payout tx %s: %s", tx.txid(), exc)
+
+    def _monitor_time_sync(self) -> None:
+        """Monitor time synchronization status and log warnings."""
+        if not self.time_manager or not self.config.ntp.enabled:
+            return
+        
+        status = self.time_manager.get_sync_status()
+        
+        # Warn about large offsets
+        if abs(status["offset"]) > self.config.ntp.max_offset_warning:
+            self.log.warning(
+                "Large time offset detected: %.3fs (system time may be incorrect)",
+                status["offset"]
+            )
+        
+        # Warn if synchronization is stale
+        if not status["synchronized"]:
+            self.log.warning(
+                "Time synchronization is stale (last sync: %.1fs ago)",
+                status.get("time_since_sync", 0)
+            )
+        
+        # Log drift rate if available
+        drift_rate = status.get("drift_rate")
+        if drift_rate is not None and abs(drift_rate) > 1e-6:  # More than 1 microsecond per second
+            self.log.info("Clock drift rate: %.2e s/s", drift_rate)

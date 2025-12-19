@@ -9,6 +9,8 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from ..time_sync import synchronized_time_int
+
 from ..config import NodeConfig
 from ..storage import BlockStore, HeaderData, StateDB, UTXORecord
 from . import crypto, difficulty, script
@@ -270,7 +272,7 @@ class Chain:
         median_time = self._median_time_past(parent_header.hash)
         if block.header.timestamp <= median_time:
             raise ChainError("Block timestamp too early")
-        if block.header.timestamp > int(time.time()) + MAX_FUTURE_BLOCK_TIME:
+        if block.header.timestamp > synchronized_time_int() + MAX_FUTURE_BLOCK_TIME:
             raise ChainError("Block timestamp too far in future")
         return self._apply_block_transactions(block, height, view, enforce_scripts=True)
 
