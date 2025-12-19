@@ -151,13 +151,15 @@ class ForkDetector:
     
     def detect_fork(self, new_block: Block) -> ForkInfo | None:
         """Detect if a new block creates a fork."""
-        block_hash = new_block.hash()
+        block_hash = new_block.block_hash()
         prev_hash = new_block.header.prev_hash
         
         # Get current chain tip
-        current_tip = self.state_db.get_tip_hash()
-        if not current_tip:
+        current_tip_info = self.state_db.get_best_tip()
+        if not current_tip_info:
             return None
+        
+        current_tip = current_tip_info[0]  # Extract hash from (hash, height) tuple
         
         # If block builds on current tip, no fork
         if prev_hash == current_tip:

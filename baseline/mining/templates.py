@@ -49,6 +49,8 @@ class TemplateBuilder:
         height = tip[1] + 1
         prev_hash = tip[0]
         parent_header = self.chain.state_db.get_header(prev_hash)
+        if parent_header is None:
+            raise RuntimeError(f"Parent header not found for hash {prev_hash}")
         view = self.chain._build_view_for_parent(prev_hash)
         selected, total_fees = self._select_transactions(height, view)
         subsidy = self.chain._block_subsidy(height)

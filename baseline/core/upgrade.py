@@ -143,30 +143,30 @@ class VersionBitsTracker:
         
         return signaling_count
     
-    def process_new_block(self, header: BlockHeader) -> dict[str, Any]:
+    def process_new_block(self, header: BlockHeader, height: int) -> dict[str, Any]:
         """Process a new block for version bits signaling."""
         results = {}
         
         for upgrade_name, upgrade in self.upgrades.items():
-            old_state = self.get_upgrade_state(upgrade_name, header.height - 1, header.timestamp)
-            new_state = self.get_upgrade_state(upgrade_name, header.height, header.timestamp)
+            old_state = self.get_upgrade_state(upgrade_name, height - 1, header.timestamp)
+            new_state = self.get_upgrade_state(upgrade_name, height, header.timestamp)
             
             # Check for state transitions
             if old_state != new_state:
                 self.log.info(
                     "Upgrade %s state transition: %s -> %s at height %d",
-                    upgrade_name, old_state.value, new_state.value, header.height
+                    upgrade_name, old_state.value, new_state.value, height
                 )
                 
                 # Handle activation
                 if new_state == UpgradeState.ACTIVE and old_state == UpgradeState.LOCKED_IN:
-                    self.state_db.set_upgrade_activation_height(upgrade_name, header.height)
-                    self.log.info("Upgrade %s activated at height %d", upgrade_name, header.height)
+                    self.state_db.set_upgrade_activation_height(upgrade_name, height)
+                    self.log.info("Upgrade %s activated at height %d", upgrade_name, height)
             
             results[upgrade_name] = {
                 "state": new_state.value,
                 "signaling": upgrade.is_signaling_bit_set(header.version),
-                "height": header.height,
+                "height": height,
             }
         
         return results
@@ -288,7 +288,7 @@ class UpgradeManager:
         self.compatibility = BackwardCompatibility(self.version_tracker)
         self.log = logging.getLogger("baseline.upgrade_manager")
     
-    def process_new_block(self, header: BlockHeader) -> dict[str, Any]:
+    def process_new_block(self, header: BlockHeader, height: int) -> dict[str, Any]:
         """Process a new block for upgrade signaling."""
         # Validate block version
         is_valid, error = self.compatibility.validate_block_version(header)
@@ -297,11 +297,11 @@ class UpgradeManager:
             return {"error": error}
         
         # Process version bits signaling
-        signaling_results = self.version_tracker.process_new_block(header)
+        signaling_results = self.version_tracker.process_new_block(header, height)
         
         return {
             "signaling_results": signaling_results,
-            "active_features": self.compatibility.get_active_features(header.height),
+            "active_features": self.compatibility.get_active_features(height),
         }
     
     def create_block_version(self, height: int, block_time: int) -> int:

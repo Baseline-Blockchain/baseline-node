@@ -199,7 +199,7 @@ class Chain:
         validation = self._validate_block(block, height, parent_header, view)
         
         # Process upgrade signaling
-        upgrade_results = self.upgrade_manager.process_new_block(block.header)
+        upgrade_results = self.upgrade_manager.process_new_block(block.header, height)
         
         chainwork_int = int(parent_header.chainwork) + difficulty.block_work(block.header.bits)
         header = HeaderData(
