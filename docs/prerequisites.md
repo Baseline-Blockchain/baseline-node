@@ -16,8 +16,6 @@ Baseline is designed to run anywhere Python 3.11+ is available. The node ships w
 
 ## Hardware Sizing
 
-Baseline’s throughput targets are modest (single-digit TPS). A “full” node that also runs Stratum and RPC fits on commodity hardware:
-
 | Workload                       | CPU                 | RAM | Disk                                        |
 |--------------------------------|---------------------|-----|---------------------------------------------|
 | Solo wallet / dev box          | 1 core @ 2 GHz      | 1G  | 1 GB SSD (fast fsync helpful)               |
