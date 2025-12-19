@@ -14,7 +14,7 @@
     "port": 3333
   },
   "mining": {
-    "pool_private_key": "70cd9bdd3ddb29caa3aa8edf41ef60447a27276a478bdc333349225868a8e4f4",
+    "pool_private_key": "CHANGE-ME",
     "min_payout": 100000000,
     "pool_fee_percent": 1.0
   }
