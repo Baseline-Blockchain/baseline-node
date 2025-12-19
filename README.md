@@ -7,8 +7,8 @@ Baseline is a compact Bitcoin-style cryptocurrency implemented purely in Python 
 - **Consensus**: SHA256d proof-of-work, 32-byte block hashes, 0x207fffff genesis target (roughly Bitcoin regtest difficulty).
 - **Timing**: 20-second block target, retarget every 20 blocks (≈6.7 minutes) with 4× dampening to stay responsive without oscillations.
 - **Difficulty** is the target hash threshold miners must beat; lower targets = harder work. Baseline encodes this exactly like Bitcoin in the header `bits` field.
-- Every **20 blocks** (~6.7 minutes) the node compares the actual elapsed time with the expected `20 * 20s = 400s`. If blocks arrive too fast, the target tightens; too slow and it loosens.
-- Adjustments are clamped to 4× faster/slower than expected so that hash-rate spikes do not cause whiplash while the 20-second cadence stays smooth.
+Every **20 blocks** (~6.7 minutes) the node compares the actual elapsed time with the expected `20 * 20s = 400s`. If blocks arrive too fast, the target tightens; too slow and it loosens.
+Adjustments are clamped to 4× faster/slower than expected so that hash-rate spikes do not cause whiplash while the 20-second cadence stays smooth.
 - **Rewards**: 50 BLINE block subsidy halving every 150,000 blocks (~34.7 days). Total supply caps at 15 million BLINE (geometric series of 50 * 150k).
 - **Coinbase maturity**: 5 blocks before mined funds can be spent.
 - **Fees**: Minimum relay fee is 1,000 satoshis per kB; non-standard scripts are rejected, so typical P2PKH transactions should pay at least 0.00001 BLINE for a 250-byte tx.
@@ -35,11 +35,8 @@ Baseline is a compact Bitcoin-style cryptocurrency implemented purely in Python 
 
   A starter `config.json` lives at the repo root with reasonable defaults. Before launching your node, make two important changes:
 
-### 4. Pick RPC creds 
-  Modify `rpc.username` and `rpc.password` in `config.json` and keep them secret; all wallet tooling and miners authenticate with them.
-
-### 5. Set peers
-  In `network.seeds`, add reachable Baseline nodes as a list to help your node find peers.
+- Pick RPC creds: Modify `rpc.username` and `rpc.password` in `config.json` and keep them secret; all wallet tooling and miners authenticate with them.
+- Set peers: In `network.seeds`, add reachable Baseline nodes as a list to help your node find peers.
 
 ### 6. Create the pool payout key
   This key is separate from the wallet: it controls who receives block rewards from your Stratum pool. Generate one with:
