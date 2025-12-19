@@ -13,14 +13,14 @@ Baseline prioritizes stability: the shipped binaries enforce fixed consensus par
 
 Each consensus/behavioral change follows this lifecycle:
 
-1. **Draft** – Author writes a Markdown document (e.g., docs/bips/BIP-XXXX.md) explaining motivation, specification, security impacts, and activation parameters.
-2. **Review** – Share the draft in community channels (GitHub discussions, forums, Discord). Iterate until rough consensus exists.
+1. **Draft** - Author opens a GitHub Discussion (or Markdown document) explaining motivation, specification, security impacts, and activation parameters.
+2. **Review** - Gather feedback in that Discussion and other community channels (forums, Discord). Iterate until rough consensus exists.
 3. **Test Plan** – Document unit/integration tests plus testnet scenarios and rollback considerations.
 4. **Status** – Mark the BIP as Draft, Accepted, Rejected, or Final. Code only lands once the BIP is Accepted.
 
-Template:
+Template (use as the body of a GitHub Discussion when proposing a change):
 
-`
+````markdown
 # BIP-000X: Short Title
 
 - Author(s): ...
@@ -29,11 +29,20 @@ Template:
 - License: CC-BY 4.0
 
 ## Motivation
+...
+
 ## Specification
+...
+
 ## Activation Parameters
+...
+
 ## Security Considerations
+...
+
 ## Reference Implementation / Tests
-`
+...
+````
 
 ## Activation Pipeline
 
