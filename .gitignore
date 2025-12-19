@@ -11,6 +11,7 @@ env/
 # Node/data directories
 data/
 logs/
+*.log
 
 # OS-generated files
 .DS_Store
