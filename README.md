@@ -17,7 +17,7 @@ Every **20 blocks** (~6.7 minutes) the node compares the actual elapsed time wit
 Adjustments are clamped to 4× faster/slower than expected so that hash-rate spikes do not cause whiplash while the 20-second cadence stays smooth.
 - **Rewards**: 50 BLINE block subsidy halving every 150,000 blocks (~34.7 days). Total supply caps at 15 million BLINE (geometric series of 50 * 150k).
 - **Coinbase maturity**: 5 blocks before mined funds can be spent.
-- **Fees**: Minimum relay fee is 1,000 liners per kB; non-standard scripts are rejected, so typical P2PKH transactions should pay at least 0.00001 BLINE for a 250-byte tx.
+- **Fees**: Minimum relay fee is 5,000 liners per kB; non-standard scripts are rejected, so typical P2PKH transactions should pay at least ~0.0000125 BLINE for a 250-byte tx.
 - **Premine**: Reserve 2.5% of total supply (375,000 BLINE) by mining ~7,500 blocks at launch. With 20-second blocks, that’s roughly 42 hours of dedicated premining before opening the network.
 - **Ports**: P2P `9333`, RPC `8832`, Stratum `3333`.
 

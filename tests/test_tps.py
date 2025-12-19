@@ -10,6 +10,7 @@ from baseline.core.chain import Chain
 from baseline.core.tx import COIN, Transaction, TxInput, TxOutput
 from baseline.mempool import Mempool
 from baseline.mining.templates import TemplateBuilder
+from baseline.policy import MIN_RELAY_FEE_RATE
 from baseline.storage import BlockStore, StateDB, UTXORecord
 
 
@@ -75,7 +76,7 @@ class TPSTestCase(unittest.TestCase):
         return utxos
 
     def _build_signed_transaction(self, utxo: UTXORecord) -> Transaction:
-        fee = 1_000
+        fee = MIN_RELAY_FEE_RATE
         output_value = utxo.amount - fee
         tx = Transaction(
             version=1,

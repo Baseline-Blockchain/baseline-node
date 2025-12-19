@@ -29,7 +29,7 @@ This document captures the normative behavior implemented by the current Baselin
 - Maximum halvings considered: 32 (after which subsidy stays at zero).
 - Theoretical supply cap: 15 000 000 BLINE (50 * 150 000 * (1 - 2^-32)).
 - Transaction fees (input minus output sum) accrue entirely to the miner of the block that includes the transaction. No burning or redistribution occurs.
-- Relay/miner fee floor: 1 000 liners per kB (rounded up) as implemented in `baseline/policy.py`.
+- Relay/miner fee floor: 5 000 liners per kB (rounded up) as implemented in `baseline/policy.py`.
 - Nodes verify that local `MiningConfig` values match these constants at startup. Any deviation causes initialization to fail unless `allow_consensus_overrides=true` is explicitly set for private testnets, in which case the node logs a warning and may diverge from mainnet.
 
 ### Premine

@@ -75,4 +75,4 @@ Monitor this file (or expose it via tooling) to audit payouts.
 - **Dedicated payout key**: keep `pool_private_key` offline. Use the wallet CLI to generate WIF backups.
 - **Worker registration**: Stratum auto-registers workers when the first share arrives, using the address they provide in the mining protocol.
 - **Fee accounting**: `pool_balance` grows with fees and leftover liners. Periodically sweep it to the operator wallet by crafting a manual transaction.
-- **Tx fees**: payout transactions include a flat 1,000 liner fee. Bump it manually (editing `PayoutTracker.tx_fee`) if mempools get congested.
+- **Tx fees**: payout transactions include a flat 5,000 liner fee (matching the network relay floor). Bump it manually (editing `PayoutTracker.tx_fee`) if mempools get congested.

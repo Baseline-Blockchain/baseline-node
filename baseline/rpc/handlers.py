@@ -526,7 +526,7 @@ class RPCHandlers:
             lambda w: w.send_to_address(
                 address,
                 amount,
-                fee=fee_liners if fee_liners is not None else 1_000,
+                fee=fee_liners if fee_liners is not None else MIN_RELAY_FEE_RATE,
                 from_addresses=from_addresses,
                 change_address=change_address,
                 comment=comment,

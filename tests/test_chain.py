@@ -7,6 +7,7 @@ from baseline.core import crypto, difficulty
 from baseline.core.block import Block, BlockHeader, merkle_root_hash
 from baseline.core.chain import GENESIS_PRIVKEY, GENESIS_PUBKEY, Chain
 from baseline.core.tx import COIN, Transaction, TxInput, TxOutput
+from baseline.policy import MIN_RELAY_FEE_RATE
 from baseline.storage import BlockStore, StateDB
 
 
@@ -88,7 +89,7 @@ class ChainTests(unittest.TestCase):
         spend_tx = Transaction(
             version=1,
             inputs=[TxInput(prev_txid=genesis_txid, prev_vout=0, script_sig=b"", sequence=0xFFFFFFFF)],
-            outputs=[TxOutput(value=50 * COIN - 1_000, script_pubkey=self.script_pubkey)],
+            outputs=[TxOutput(value=50 * COIN - MIN_RELAY_FEE_RATE, script_pubkey=self.script_pubkey)],
             lock_time=0,
         )
         sighash = spend_tx.signature_hash(0, self.script_pubkey, 0x01)

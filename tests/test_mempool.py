@@ -8,6 +8,7 @@ from baseline.core.block import Block, BlockHeader, merkle_root_hash
 from baseline.core.chain import GENESIS_PRIVKEY, GENESIS_PUBKEY, Chain
 from baseline.core.tx import COIN, Transaction, TxInput, TxOutput
 from baseline.mempool import Mempool, MempoolError
+from baseline.policy import MIN_RELAY_FEE_RATE
 from baseline.storage import BlockStore, StateDB
 
 
@@ -76,7 +77,7 @@ class MempoolTests(unittest.TestCase):
             block.header.nonce += 1
         return block
 
-    def _signed_spend(self, value: int = 50 * COIN - 1_000) -> Transaction:
+    def _signed_spend(self, value: int = 50 * COIN - MIN_RELAY_FEE_RATE) -> Transaction:
         genesis_txid = self.chain.genesis_block.transactions[0].txid()
         tx = Transaction(
             version=1,
@@ -110,7 +111,7 @@ class MempoolTests(unittest.TestCase):
         child = Transaction(
             version=1,
             inputs=[TxInput(prev_txid=parent.txid(), prev_vout=0, script_sig=b"", sequence=0xFFFFFFFF)],
-            outputs=[TxOutput(value=30 * COIN - 1_000, script_pubkey=self.script_pubkey)],
+            outputs=[TxOutput(value=30 * COIN - MIN_RELAY_FEE_RATE, script_pubkey=self.script_pubkey)],
             lock_time=0,
         )
         sighash = child.signature_hash(0, self.script_pubkey, 0x01)

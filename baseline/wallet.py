@@ -19,6 +19,7 @@ from .core.address import script_from_address
 from .core.block import Block
 from .core.tx import COIN, Transaction, TxInput, TxOutput
 from .mempool import Mempool, MempoolError
+from .policy import MIN_RELAY_FEE_RATE
 from .storage import BlockStore, StateDB
 
 
@@ -271,7 +272,7 @@ class WalletManager:
         dest_address: str,
         amount: Decimal | float | str | int,
         *,
-        fee: int = 1_000,
+        fee: int = MIN_RELAY_FEE_RATE,
         from_addresses: Sequence[str] | None = None,
         change_address: str | None = None,
         comment: str | None = None,

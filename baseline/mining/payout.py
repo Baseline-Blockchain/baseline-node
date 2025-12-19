@@ -13,6 +13,7 @@ from pathlib import Path
 from ..core import crypto
 from ..core.address import script_from_address
 from ..core.tx import Transaction, TxInput, TxOutput
+from ..policy import MIN_RELAY_FEE_RATE
 from ..storage import StateDB, UTXORecord
 
 
@@ -47,7 +48,7 @@ class PayoutTracker:
         self.pending_blocks: list[dict[str, object]] = []
         self.matured_utxos: list[dict[str, object]] = []
         self.pool_balance = 0
-        self.tx_fee = 1_000
+        self.tx_fee = MIN_RELAY_FEE_RATE
         self.lock = threading.RLock()
         self._load()
 

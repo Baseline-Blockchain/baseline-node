@@ -10,6 +10,7 @@ from baseline.core.chain import GENESIS_PRIVKEY, GENESIS_PUBKEY, Chain
 from baseline.core.tx import COIN, Transaction, TxInput, TxOutput
 from baseline.mempool import Mempool
 from baseline.mining.templates import TemplateBuilder
+from baseline.policy import MIN_RELAY_FEE_RATE
 from baseline.rpc.handlers import RPCError, RPCHandlers
 from baseline.storage import BlockStore, StateDB
 from baseline.wallet import WalletManager
@@ -58,7 +59,7 @@ class RPCTestCase(unittest.TestCase):
             version=1,
             inputs=[TxInput(prev_txid=genesis_txid, prev_vout=0, script_sig=b"", sequence=0xFFFFFFFF)],
             outputs=[
-                TxOutput(value=50 * COIN - 1_000, script_pubkey=script_pubkey)
+                TxOutput(value=50 * COIN - MIN_RELAY_FEE_RATE, script_pubkey=script_pubkey)
             ],
             lock_time=0,
         )
