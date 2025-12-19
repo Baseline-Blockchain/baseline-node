@@ -3,7 +3,7 @@
 Baseline is a minimalist, Bitcoin-style payments chain—built for simple transfers, predictable rules, and clean integration. No smart-contract complexity. Just money.
 
 - **Simple payments, not a casino**: standard transactions only, smaller attack surface
-- **Operator-ready**: production-grade RPC + built-in Stratum pool
+- **Operator-ready**: production-grade RPC / Bitcoin Core compatibility + built-in Stratum pool
 - **Understandable by design**: compact codebase, minimal dependencies
 
 ## Network Parameters
