@@ -17,7 +17,7 @@ Baseline loads `config.json`, fills in deterministic defaults from `NodeConfig`,
   "network": {
     "host": "0.0.0.0",
     "port": 9333,
-    "seeds": ["seed1.baseline.org:9333", "seed2.baseline.org:9333"],
+    "seeds": [],
     "max_peers": 64,
     "min_peers": 8,
     "target_outbound": 8,
@@ -49,7 +49,7 @@ Baseline loads `config.json`, fills in deterministic defaults from `NodeConfig`,
     "pool_fee_percent": 1.5,
     "pool_private_key": "<hex|decimal|WIF>",
     "min_payout": 100000000,
-    "foundation_address": "NWbEjugszdRCVHaaX1mDXVqgUr6Yk1uQ8U",
+    "foundation_address": "NMUrmCNAH5VUrjLSvM4ULu7eNtD1i8qcyK",
     "allow_consensus_overrides": false
   },
   "ntp": {

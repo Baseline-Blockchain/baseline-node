@@ -104,7 +104,7 @@ class NTPConfig:
             raise ConfigError("At least one NTP server must be configured")
 
 
-DEFAULT_FOUNDATION_ADDRESS = "NWbEjugszdRCVHaaX1mDXVqgUr6Yk1uQ8U"
+DEFAULT_FOUNDATION_ADDRESS = "NMUrmCNAH5VUrjLSvM4ULu7eNtD1i8qcyK"
 
 
 @dataclass(slots=True)

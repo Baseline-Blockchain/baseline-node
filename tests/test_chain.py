@@ -12,6 +12,7 @@ from baseline.storage import BlockStore, StateDB
 
 
 class ChainTests(unittest.TestCase):
+    GENESIS_ADDRESS = crypto.address_from_pubkey(GENESIS_PUBKEY)
     def setUp(self) -> None:
         self.tmpdir = tempfile.TemporaryDirectory()
         data_dir = Path(self.tmpdir.name)
@@ -19,6 +20,7 @@ class ChainTests(unittest.TestCase):
         self.config.data_dir = data_dir
         self.config.mining.allow_consensus_overrides = True
         self.config.mining.coinbase_maturity = 2
+        self.config.mining.foundation_address = self.GENESIS_ADDRESS
         self.config.ensure_data_layout()
         self.block_store = BlockStore(data_dir / "blocks")
         self.state_db = StateDB(data_dir / "chainstate" / "state.sqlite3")

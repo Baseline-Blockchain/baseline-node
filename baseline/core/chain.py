@@ -27,6 +27,7 @@ class ChainError(Exception):
 GENESIS_PRIVKEY = 1
 GENESIS_PUBKEY = crypto.generate_pubkey(GENESIS_PRIVKEY)
 GENESIS_MESSAGE = b"Baseline genesis"
+GENESIS_LEGACY_SUBSIDY = 50 * COIN
 MAX_FUTURE_BLOCK_TIME = 15 * 60  # 15 minutes
 
 FOUNDATION_FEE_NUMERATOR = 1
@@ -41,7 +42,7 @@ CONSENSUS_DEFAULTS = {
     "retarget_interval": 20,
     "initial_bits": 0x207FFFFF,
     "subsidy_halving_interval": 4_158_884,
-    "foundation_address": "NWbEjugszdRCVHaaX1mDXVqgUr6Yk1uQ8U",
+    "foundation_address": "NMUrmCNAH5VUrjLSvM4ULu7eNtD1i8qcyK",
 }
 
 
@@ -114,6 +115,7 @@ class Chain:
 
     def _build_genesis_block(self) -> Block:
         coinbase_script = self._encode_coinbase_script(height=0, extra=GENESIS_MESSAGE)
+        genesis_subsidy = GENESIS_LEGACY_SUBSIDY if self.config.mining.allow_consensus_overrides else 0
         coinbase = Transaction(
             version=1,
             inputs=[
@@ -126,7 +128,7 @@ class Chain:
             ],
             outputs=[
                 TxOutput(
-                    value=50 * COIN,
+                    value=genesis_subsidy,
                     script_pubkey=self.foundation_script,
                 )
             ],
@@ -170,6 +172,8 @@ class Chain:
             self.block_store.append_block(bytes.fromhex(genesis_hash), raw)
         created = []
         for idx, txout in enumerate(self.genesis_block.transactions[0].outputs):
+            if txout.value <= 0:
+                continue
             created.append(
                 UTXORecord(
                     txid=self.genesis_block.transactions[0].txid(),
