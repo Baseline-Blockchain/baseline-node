@@ -479,6 +479,8 @@ class StratumServer:
             if self.network:
                 self.network.announce_block(block.block_hash())
             self.log.info("Block found at height %s hash=%s", job.template.height, block.block_hash())
+        elif status in {"rejected", "duplicate", "side"}:
+            self.log.debug("Submitted block %s rejected (%s)", block.block_hash(), status)
         else:
             error_text = result.get("error")
             if error_text:

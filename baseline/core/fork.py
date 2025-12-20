@@ -360,6 +360,16 @@ class ForkManager:
                 # No fork detected, normal block processing
                 return True, False
 
+            has_more_work = fork_info.fork_chain_work > fork_info.main_chain_work
+            if not has_more_work:
+                self.log.debug(
+                    "Ignoring fork at height %d: fork_work=%d main_work=%d",
+                    fork_info.fork_height,
+                    fork_info.fork_chain_work,
+                    fork_info.main_chain_work,
+                )
+                return False, False
+
             self.log.info(
                 "Fork detected: height=%d, main_work=%d, fork_work=%d",
                 fork_info.fork_height,
@@ -382,8 +392,8 @@ class ForkManager:
                     self._attempt_recovery()
                     return False, False
             else:
-                # Fork has less work, ignore it
-                self.log.info("Fork has less work, staying on main chain")
+                # Fork has more work but reorganization is currently not allowed (rate limiting, etc.)
+                self.log.info("Fork has more work but reorganization is currently not allowed")
                 return False, False
 
         except Exception as exc:
