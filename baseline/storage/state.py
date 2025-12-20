@@ -628,7 +628,9 @@ class StateDB:
         addresses: Sequence[str],
         start: int | None = None,
         end: int | None = None,
-    ) -> list[str]:
+        *,
+        include_height: bool = False,
+    ) -> list[Any]:
         self._ensure_open()
         if not addresses:
             return []
@@ -647,7 +649,15 @@ class StateDB:
         query += " GROUP BY txid ORDER BY height"
         with self._lock:
             rows = self._conn.execute(query, tuple(params)).fetchall()
-        return [row["txid"] for row in rows]
+        if not include_height:
+            return [row["txid"] for row in rows]
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            height = row["height"]
+            header = self.get_main_header_at_height(height)
+            block_hash = header.hash if header else None
+            results.append({"txid": row["txid"], "height": height, "blockhash": block_hash})
+        return results
 
     def _upsert_address_utxo(self, conn: sqlite3.Connection, record: UTXORecord) -> None:
         address = self._address_from_script(record.script_pubkey)

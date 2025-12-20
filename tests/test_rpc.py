@@ -278,6 +278,15 @@ class RPCTestCase(unittest.TestCase):
         self.assertAlmostEqual(balance["received"], 5.0)
         txids = self.handlers.dispatch("getaddresstxids", [{"addresses": [recv_address]}])
         self.assertIn(payment.txid(), txids)
+        detailed = self.handlers.dispatch(
+            "getaddresstxids",
+            [{"addresses": [recv_address], "include_height": True}],
+        )
+        self.assertEqual(len(detailed), len(txids))
+        first = detailed[0]
+        self.assertEqual(first["txid"], payment.txid())
+        self.assertIsInstance(first["height"], int)
+        self.assertIsInstance(first["blockhash"], str)
 
     def test_importprivkey_via_rpc(self) -> None:
         priv = 424242
@@ -358,6 +367,25 @@ class RPCTestCase(unittest.TestCase):
             self.assertIn(field, stats)
         self.assertEqual(stats["height"], 0)
         self.assertGreaterEqual(stats["txouts"], 1)
+
+    def test_getrawtransaction_reports_fee_and_values(self) -> None:
+        dest = self.handlers.dispatch("getnewaddress", [])
+        tx = self._build_payment_tx(dest, 49 * COIN)
+        txid = self.handlers.dispatch("sendrawtransaction", [tx.serialize().hex()])
+        self.assertEqual(txid, tx.txid())
+        verbose = self.handlers.dispatch("getrawtransaction", [txid, True])
+        self.assertIn("fee_liners", verbose)
+        expected_fee = 50 * COIN - 49 * COIN
+        self.assertEqual(verbose["fee_liners"], expected_fee)
+        self.assertAlmostEqual(verbose["fee"], expected_fee / COIN)
+        self.assertTrue(all("value" in vin or "coinbase" in vin for vin in verbose["vin"]))
+
+    def test_getindexinfo_reports_index_status(self) -> None:
+        info = self.handlers.dispatch("getindexinfo", [])
+        self.assertIn("txindex", info)
+        self.assertTrue(info["txindex"]["synced"])
+        self.assertIn("addressindex", info)
+        self.assertTrue(info["addressindex"]["synced"])
 
     def test_uptime_monotonic(self) -> None:
         first = self.handlers.dispatch("uptime", [])

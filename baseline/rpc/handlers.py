@@ -168,9 +168,17 @@ class RPCHandlers:
             "received": received / COIN,
         }
 
-    def getaddresstxids(self, options: Any) -> list[str]:
+    def getaddresstxids(self, options: Any) -> list[Any]:
+        include_height = False
+        if isinstance(options, dict):
+            include_height = bool(options.get("include_height"))
         addresses, start, end = self._parse_address_list_with_range(options)
-        return self.state_db.get_address_txids(addresses, start=start, end=end)
+        return self.state_db.get_address_txids(
+            addresses,
+            start=start,
+            end=end,
+            include_height=include_height,
+        )
 
     def getblockhash(self, height: int) -> str:
         header = self.state_db.get_main_header_at_height(int(height))
@@ -223,10 +231,27 @@ class RPCHandlers:
             raise RPCError(-5, "No such transaction")
         if not verbose:
             return tx.serialize().hex()
+        prev_cache: dict[str, Transaction] = {}
+        fee_liners = self._transaction_fee(tx, cache=prev_cache)
         best = self.state_db.get_best_tip()
         confirmations = 0
         if best and height is not None:
             confirmations = max(0, best[1] - height + 1)
+        vin_entries: list[dict[str, Any]] = []
+        for vin in tx.inputs:
+            if vin.prev_txid == "00" * 32 and vin.prev_vout == 0xFFFFFFFF:
+                vin_entries.append({"coinbase": vin.script_sig.hex(), "sequence": vin.sequence})
+                continue
+            value = self._resolve_prev_output_value(vin.prev_txid, vin.prev_vout, prev_cache)
+            entry: dict[str, Any] = {
+                "txid": vin.prev_txid,
+                "vout": vin.prev_vout,
+                "sequence": vin.sequence,
+            }
+            if value is not None:
+                entry["value_liners"] = value
+                entry["value"] = value / COIN
+            vin_entries.append(entry)
         return {
             "txid": tx.txid(),
             "hash": tx.txid(),
@@ -234,11 +259,10 @@ class RPCHandlers:
             "hex": tx.serialize().hex(),
             "blockhash": block_hash,
             "confirmations": confirmations,
+            "fee": fee_liners / COIN,
+            "fee_liners": fee_liners,
             "time": int(time.time()),
-            "vin": [
-                {"txid": vin.prev_txid, "vout": vin.prev_vout, "sequence": vin.sequence}
-                for vin in tx.inputs
-            ],
+            "vin": vin_entries,
             "vout": [
                 {"n": idx, "value": txout.value, "scriptPubKey": txout.script_pubkey.hex()}
                 for idx, txout in enumerate(tx.outputs)
@@ -475,6 +499,11 @@ class RPCHandlers:
         best_height = best[1] if best else 0
         info = {
             "txindex": {
+                "synced": True,
+                "best_block_height": best_height,
+                "best_block_hash": best_hash,
+            },
+            "addressindex": {
                 "synced": True,
                 "best_block_height": best_height,
                 "best_block_hash": best_hash,
@@ -886,6 +915,44 @@ class RPCHandlers:
                 break
             current_hash = header.prev_hash
         return None, None, None
+
+    def _resolve_prev_output_value(
+        self,
+        prev_txid: str,
+        prev_vout: int,
+        cache: dict[str, Transaction],
+    ) -> int | None:
+        utxo = self.state_db.get_utxo(prev_txid, prev_vout)
+        if utxo:
+            return utxo.amount
+        prev_tx = cache.get(prev_txid)
+        if prev_tx is None:
+            prev_tx, _, _ = self._find_transaction(prev_txid)
+            if prev_tx:
+                cache[prev_txid] = prev_tx
+        if prev_tx and 0 <= prev_vout < len(prev_tx.outputs):
+            return prev_tx.outputs[prev_vout].value
+        return None
+
+    def _transaction_fee(self, tx: Transaction, *, cache: dict[str, Transaction] | None = None) -> int:
+        """Derive the fee for a transaction by summing referenced outputs."""
+        if tx.is_coinbase():
+            return 0
+        output_sum = sum(out.value for out in tx.outputs)
+        input_sum = 0
+        prev_cache: dict[str, Transaction] = cache if cache is not None else {}
+        for vin in tx.inputs:
+            value = self._resolve_prev_output_value(vin.prev_txid, vin.prev_vout, prev_cache)
+            if value is None:
+                logging.warning(
+                    "Unable to resolve input %s:%s while computing fee for %s",
+                    vin.prev_txid,
+                    vin.prev_vout,
+                    tx.txid(),
+                )
+                continue
+            input_sum += value
+        return max(0, input_sum - output_sum)
 
     def gettimesyncinfo(self) -> dict[str, Any]:
         """Get time synchronization status and information."""

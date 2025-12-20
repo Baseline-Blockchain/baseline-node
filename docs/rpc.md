@@ -30,7 +30,7 @@ Responses follow the standard {"result": ..., "error": null, "id": ...} pattern.
 | `getdifficulty` | Current PoW difficulty computed from header bits. |
 | `getindexinfo` | Reports the status of always-on indexes (`txindex`, `addressindex`, etc.) so tooling can confirm historical lookups will succeed. |
 | `getrawmempool [verbose]` | List txids (or detailed entries) currently in the mempool. |
-| `getrawtransaction txid [verbose] [blockhash]` | Search mempool/chain for a tx; optional `blockhash` makes lookups O(1) for explorers. |
+| `getrawtransaction txid [verbose] [blockhash]` | Search mempool/chain for a tx; optional `blockhash` makes lookups O(1). Verbose replies expose per-input `value`/`value_liners` plus `fee`/`fee_liners` to keep explorer math accurate even without extra RPCs. |
 | `gettxout txid vout [include_mempool]` | Inspect UTXO set or mempool outputs. |
 | `gettxoutsetinfo [hash_type]` | Returns aggregate UTXO stats (height, txouts, total_amount, MuHash/hash_serialized_2 digests). |
 | `sendrawtransaction hex` | Broadcast a signed transaction. |
@@ -40,10 +40,20 @@ Responses follow the standard {"result": ..., "error": null, "id": ...} pattern.
 | `getpeerinfo` | Per-connection diagnostics (addr, version, latencies, bytes sent/received). |
 | `getmininginfo` | Mining status (difficulty, blocks, pooled tx count, network hash estimate). |
 | `getmempoolinfo` | Current mempool occupancy (tx count, bytes, min relay fee). |
-| `getnettotals` | Aggregate bytes sent/received since node startup (needed by explorers’ live bandwidth meters). |
-| `estimatesmartfee target [mode]` | Conservative fee floor (matches Bitcoin Core signature so wallets/explorers don’t fail feature detection). |
+| `getnettotals` | Aggregate bytes sent/received since node startup (needed by explorers' live bandwidth meters). |
+| `estimatesmartfee target [mode]` | Conservative fee floor (matches Bitcoin Core signature so wallets/explorers don't fail feature detection). |
 | `gettimesyncinfo` | Status of the built-in NTP client (enabled flag, offset, drift). |
 | `uptime` | Seconds since the RPC server was instantiated (mirrors `bitcoind` uptime). |
+
+## Address Index Helpers
+
+Baseline ships with address/tx indexes enabled so block explorers can stay in sync without extra nodes.
+
+| Method | Description |
+|--------|-------------|
+| `getaddressutxos {"addresses":[...]} ` | Returns spendable outputs for the provided addresses (liners + scripts + height). |
+| `getaddressbalance {"addresses":[...]}` | Aggregate confirmed balance + total received (both in liners and BLINE). |
+| `getaddresstxids {"addresses":[...], "include_height":true}` | Lists transaction ids touching any of the addresses. When `include_height` is `true` each entry becomes `{ "txid": "...", "height": 123, "blockhash": "..." }`, which is crucial for explorers that want to fetch block-aware details in one pass. |
 
 ## Wallet Methods (when wallet enabled)
 
