@@ -191,7 +191,8 @@ class RPCHandlers:
             "nonce": header.nonce,
             "bits": f"{header.bits:08x}",
             "previousblockhash": header.prev_hash,
-            "tx": [tx.serialize().hex() for tx in block.transactions],
+            "tx": [tx.txid() for tx in block.transactions],
+            "nTx": len(block.transactions),
         }
         return result
 
