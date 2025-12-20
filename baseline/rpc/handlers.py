@@ -68,6 +68,7 @@ class RPCHandlers:
             "getmininginfo": self.getmininginfo,
             "submitblock": self.submitblock,
             "gettimesyncinfo": self.gettimesyncinfo,
+            "getindexinfo": self.getindexinfo,
         }
         if self.wallet:
             self._methods.update(
@@ -443,6 +444,25 @@ class RPCHandlers:
             "chain": "main",
             "warnings": ""
         }
+
+    def getindexinfo(self) -> dict[str, Any]:
+        """Expose index status similar to Bitcoin Core."""
+        best = self.state_db.get_best_tip()
+        best_hash = best[0] if best else self.chain.genesis_hash
+        best_height = best[1] if best else 0
+        info = {
+            "txindex": {
+                "synced": True,
+                "best_block_height": best_height,
+                "best_block_hash": best_hash,
+            },
+            "coinstatsindex": {
+                "synced": False,
+                "best_block_height": best_height,
+                "best_block_hash": best_hash,
+            },
+        }
+        return info
 
     def _require_wallet(self) -> WalletManager:
         if not self.wallet:
