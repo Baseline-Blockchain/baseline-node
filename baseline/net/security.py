@@ -164,7 +164,7 @@ class MessageValidator:
 
     # Maximum message sizes by type
     MAX_MESSAGE_SIZES = {
-        "version": 1024,
+        "version": 4096,
         "verack": 64,
         "ping": 64,
         "pong": 64,
@@ -173,8 +173,8 @@ class MessageValidator:
         "tx": 100000,  # Max 100KB for transaction
         "block": 4000000,  # Max 4MB for block
         "headers": 2000000,  # Max 2MB for headers
-        "getblocks": 1024,
-        "getheaders": 1024,
+        "getblocks": 4096,
+        "getheaders": 4096,
         "addr": 10000,  # Max 10KB for addresses
         "getaddr": 64,
     }

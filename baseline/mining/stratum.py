@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import json
 import logging
 import os
@@ -28,6 +29,8 @@ from .templates import Template, TemplateBuilder
 MAX_MESSAGE_BYTES = 4_096
 MAX_SHARE_ERRORS = 8
 JOB_EXPIRY = 15 * 60
+EXPECTED_SOCKET_ERRNOS = {errno.ECONNRESET, errno.EPIPE, errno.ECONNABORTED}
+EXPECTED_WINERRORS = {64, 995}
 
 
 @dataclass(slots=True)
@@ -75,6 +78,11 @@ class StratumSession:
                     await self.send_error(None, -32700, "invalid json")
                     continue
                 await self.server.handle_message(self, message)
+        except Exception as exc:
+            if _is_connection_reset_error(exc):
+                self.log.debug("Stratum session %s disconnected: %s", self.session_id, exc)
+            else:
+                self.log.exception("Stratum session %s failed", self.session_id)
         finally:
             await self.close()
 
@@ -85,8 +93,11 @@ class StratumSession:
         try:
             self.writer.close()
             await self.writer.wait_closed()
-        except Exception:  # noqa: BLE001
-            self.server.log.exception("Stratum session close failed")
+        except Exception as exc:  # noqa: BLE001
+            if _is_connection_reset_error(exc):
+                self.server.log.debug("Stratum session %s closed by peer: %s", self.session_id, exc)
+            else:
+                self.server.log.exception("Stratum session close failed")
 
     async def send_response(self, msg_id: int | str | None, result: object) -> None:
         payload = {"id": msg_id, "result": result, "error": None}
@@ -192,6 +203,11 @@ class StratumServer:
         base = self.chain.max_target
         target = int(base / difficulty_value)
         return max(target, 1)
+
+    @staticmethod
+    def _hash_to_int(block_hash: str) -> int:
+        hash_bytes = bytes.fromhex(block_hash)
+        return int.from_bytes(hash_bytes[::-1], "big")
 
     async def start(self) -> None:
         if self.server:
@@ -348,7 +364,7 @@ class StratumServer:
             await self._maybe_disconnect(session)
             return
         block_hash = block.block_hash()
-        hash_int = int(block_hash, 16)
+        hash_int = self._hash_to_int(block_hash)
         if hash_int > session.share_target:
             await session.send_error(msg_id, 37, "low difficulty share")
             session.invalid_shares += 1
@@ -464,7 +480,11 @@ class StratumServer:
                 self.network.announce_block(block.block_hash())
             self.log.info("Block found at height %s hash=%s", job.template.height, block.block_hash())
         else:
-            self.log.info("Submitted block %s rejected (%s)", block.block_hash(), status)
+            error_text = result.get("error")
+            if error_text:
+                self.log.info("Submitted block %s rejected (%s: %s)", block.block_hash(), status, error_text)
+            else:
+                self.log.info("Submitted block %s rejected (%s)", block.block_hash(), status)
 
     def _extract_address(self, worker_name: str, password: str) -> str | None:
         candidates: list[str] = []
@@ -503,3 +523,13 @@ class StratumServer:
             self.log.warning("Disconnecting %s due to invalid shares", session.session_id)
             await session.close()
             self.sessions.pop(session.session_id, None)
+def _is_connection_reset_error(exc: BaseException) -> bool:
+    if isinstance(exc, (ConnectionResetError, BrokenPipeError, ConnectionAbortedError)):
+        return True
+    if isinstance(exc, OSError):
+        if exc.errno in EXPECTED_SOCKET_ERRNOS:
+            return True
+        winerror = getattr(exc, "winerror", None)
+        if winerror in EXPECTED_WINERRORS:
+            return True
+    return False

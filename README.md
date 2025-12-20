@@ -106,7 +106,7 @@ Every node ships with a Stratum v1 pool so you can mine right away-ASICs connect
 1. Launch the node with your configured payout key (see Quick Start). The Stratum listener comes up automatically.
 2. Point miners:
    ```bash
-   bfgminer -o stratum+tcp://127.0.0.1:3333 -u worker1 -p x --set-device bitcoin:clock=500
+   bfgminer -o stratum+tcp://127.0.0.1:3333 -u YOURRECEIVERADDRESS.worker1 -p x --set-device bitcoin:clock=500
    ```
    Workers are tracked by username for payouts; shares accrue until coinbase rewards mature (20 blocks), then the payout tracker crafts and broadcasts the payment transaction..
 
