@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ..core import difficulty
-from ..core.block import Block
+from ..core.block import Block, BlockHeader
 from ..core.chain import Chain, ChainError
 from ..core.tx import COIN, Transaction
 from ..mempool import Mempool, MempoolError
@@ -479,24 +479,34 @@ class RPCHandlers:
         }
 
     def getblockheader(self, block_hash: str, verbose: bool = True) -> Any:
-        block, header = self._load_block_by_hash(block_hash)
+        header = self.state_db.get_header(block_hash)
+        if header is None:
+            raise RPCError(-5, "Block not found")
         best = self.state_db.get_best_tip()
         confirmations = 0
         if best and header.status == 0:
             confirmations = max(0, best[1] - header.height + 1)
         if not verbose:
-            return block.header.serialize().hex()
+            header_obj = BlockHeader(
+                version=getattr(header, "version", 1),
+                prev_hash=header.prev_hash or "00" * 32,
+                merkle_root=header.merkle_root,
+                timestamp=header.timestamp,
+                bits=header.bits,
+                nonce=header.nonce,
+            )
+            return header_obj.serialize().hex()
         next_header = self.state_db.get_main_header_at_height(header.height + 1)
         return {
             "hash": header.hash,
             "confirmations": confirmations,
             "height": header.height,
-            "version": block.header.version,
-            "versionHex": f"{block.header.version:08x}",
+            "version": getattr(header, "version", 1),
+            "versionHex": f"{getattr(header, 'version', 1):08x}",
             "merkleroot": header.merkle_root,
             "time": header.timestamp,
             "mediantime": header.timestamp,
-            "nonce": block.header.nonce,
+            "nonce": header.nonce,
             "bits": f"{header.bits:08x}",
             "difficulty": self._difficulty_from_bits(header.bits),
             "chainwork": header.chainwork,
