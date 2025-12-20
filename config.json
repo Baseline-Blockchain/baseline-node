@@ -1,7 +1,9 @@
 {
   "data_dir": "./data",
   "network": {
-    "seeds": []
+    "seeds": [
+      "109.104.154.151:9333"
+    ]
   },
   "rpc": {
     "username": "localuser",
