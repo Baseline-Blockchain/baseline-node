@@ -5,18 +5,19 @@ JSON-RPC method handlers for Baseline.
 from __future__ import annotations
 
 import logging
+import math
 import time
 from pathlib import Path
 from typing import Any
 
 from ..core import difficulty
 from ..core.block import Block, BlockHeader
-from ..core.chain import Chain, ChainError
+from ..core.chain import Chain, ChainError, UTXOView
 from ..core.tx import COIN, Transaction
 from ..mempool import Mempool, MempoolError
 from ..mining.templates import TemplateBuilder
 from ..policy import MIN_RELAY_FEE_RATE
-from ..storage import BlockStore, HeaderData, StateDB
+from ..storage import BlockStore, HeaderData, StateDB, UTXORecord
 from ..time_sync import TimeManager
 from ..wallet import WalletError, WalletLockedError, WalletManager, coins_to_liners
 
@@ -72,6 +73,7 @@ class RPCHandlers:
             "estimatesmartfee": self.estimatesmartfee,
             "getblockheader": self.getblockheader,
             "getchaintxstats": self.getchaintxstats,
+            "getblockstats": self.getblockstats,
         }
         if self.wallet:
             self._methods.update(
@@ -182,24 +184,35 @@ class RPCHandlers:
         confirmations = 0
         if best and header.status == 0:
             confirmations = best[1] - header.height + 1
+        median_time = self.chain._median_time_past(header.hash)
+        next_header = self.state_db.get_main_header_at_height(header.height + 1)
+        difficulty_value = self._difficulty_from_bits(header.bits)
         result = {
             "hash": header.hash,
             "confirmations": confirmations,
             "size": len(raw),
+             "strippedsize": len(raw),
+             "weight": block.weight(),
             "height": header.height,
             "version": block.header.version,
+            "versionHex": f"{block.header.version:08x}",
             "merkleroot": header.merkle_root,
             "time": header.timestamp,
+            "mediantime": median_time,
             "nonce": header.nonce,
             "bits": f"{header.bits:08x}",
+            "difficulty": difficulty_value,
+            "chainwork": header.chainwork,
             "previousblockhash": header.prev_hash,
+            "nextblockhash": next_header.hash if next_header else None,
             "tx": [tx.txid() for tx in block.transactions],
             "nTx": len(block.transactions),
+            "hex": raw.hex(),
         }
         return result
 
-    def getrawtransaction(self, txid: str, verbose: bool = False) -> Any:
-        tx, block_hash, height = self._find_transaction(txid)
+    def getrawtransaction(self, txid: str, verbose: bool = False, block_hash: str | None = None) -> Any:
+        tx, block_hash, height = self._find_transaction(txid, block_hash=block_hash)
         if tx is None:
             raise RPCError(-5, "No such transaction")
         if not verbose:
@@ -512,6 +525,7 @@ class RPCHandlers:
             "chainwork": header.chainwork,
             "previousblockhash": header.prev_hash,
             "nextblockhash": next_header.hash if next_header else None,
+            "nTx": 0,
         }
 
     def getchaintxstats(self, nblocks: int | None = None, blockhash: str | None = None) -> dict[str, Any]:
@@ -554,6 +568,25 @@ class RPCHandlers:
             "window_tx_count": window_tx,
             "txrate": txrate,
         }
+
+    def getblockstats(self, hash_or_height: Any, stats: list[str] | None = None) -> dict[str, Any]:
+        if isinstance(hash_or_height, str):
+            header = self.state_db.get_header(hash_or_height)
+            if header is None:
+                raise RPCError(-5, "Block not found")
+            block_hash = header.hash
+        else:
+            height = int(hash_or_height)
+            header = self.state_db.get_main_header_at_height(height)
+            if header is None:
+                raise RPCError(-8, "Block height out of range")
+            block_hash = header.hash
+        block, _ = self._load_block_by_hash(block_hash)
+        stats_all = self._compute_block_stats(block, header)
+        if stats:
+            filtered = {key: stats_all[key] for key in stats if key in stats_all}
+            return filtered
+        return stats_all
 
     def _require_wallet(self) -> WalletManager:
         if not self.wallet:
@@ -712,7 +745,22 @@ class RPCHandlers:
             raise RPCError(-8, "Block height out of range")
         return self._load_block_by_hash(header.hash)
 
-    def _find_transaction(self, txid: str) -> tuple[Transaction | None, str | None, int | None]:
+    def _find_transaction(
+        self,
+        txid: str,
+        *,
+        block_hash: str | None = None,
+    ) -> tuple[Transaction | None, str | None, int | None]:
+        if block_hash:
+            try:
+                block, header = self._load_block_by_hash(block_hash)
+            except RPCError:
+                pass
+            else:
+                for tx in block.transactions:
+                    if tx.txid() == txid:
+                        return tx, block_hash, header.height
+                return None, None, None
         tx = self.mempool.get(txid)
         if tx:
             return tx, None, None
@@ -786,3 +834,126 @@ class RPCHandlers:
         target = difficulty.compact_to_target(bits)
         max_target = difficulty.compact_to_target(self.chain.config.mining.initial_bits)
         return max_target / target if target > 0 else 1.0
+
+    def _compute_block_stats(self, block: Block, header: HeaderData) -> dict[str, Any]:
+        block_bytes = block.serialize()
+        block_size = len(block_bytes)
+        block_weight = block.weight()
+        tx_sizes: list[int] = []
+        tx_fees: list[int] = []
+        fee_rates: list[int] = []
+        total_outputs = 0
+        total_fee = 0
+        inputs_count = 0
+        outputs_count = 0
+        coinbase_outputs = 0
+        if header.height > 0:
+            view = self.chain._build_view_for_parent(header.prev_hash or self.chain.genesis_hash)
+        else:
+            view = UTXOView(self.state_db)
+        for index, tx in enumerate(block.transactions):
+            serialized = tx.serialize()
+            tx_size = len(serialized)
+            tx_sizes.append(tx_size)
+            outputs_count += len(tx.outputs)
+            output_sum = sum(out.value for out in tx.outputs)
+            total_outputs += output_sum
+            if index == 0:
+                coinbase_outputs = output_sum
+            else:
+                inputs_count += len(tx.inputs)
+                input_sum = 0
+                for txin in tx.inputs:
+                    utxo = view.get(txin.prev_txid, txin.prev_vout)
+                    if utxo is None:
+                        raise RPCError(-5, "Missing referenced output while computing block stats")
+                    view.spend(txin.prev_txid, txin.prev_vout)
+                    input_sum += utxo.amount
+                fee = max(0, input_sum - output_sum)
+                total_fee += fee
+                tx_fees.append(fee)
+                fee_rate = fee // max(1, tx_size)
+                fee_rates.append(fee_rate)
+            # add outputs for intra-block spends
+            for out_index, txout in enumerate(tx.outputs):
+                record = UTXORecord(
+                    txid=tx.txid(),
+                    vout=out_index,
+                    amount=txout.value,
+                    script_pubkey=txout.script_pubkey,
+                    height=header.height,
+                    coinbase=index == 0,
+                )
+                view.add(record)
+        subsidy = self.chain._block_subsidy(header.height)
+        if coinbase_outputs and total_fee == 0:
+            implied_fee = max(0, coinbase_outputs - subsidy)
+            total_fee = implied_fee
+        avg_fee = int(round(total_fee / max(1, len(tx_fees)))) if tx_fees else 0
+        avg_fee_rate = int(round(sum(fee_rates) / len(fee_rates))) if fee_rates else 0
+        avg_tx_size = int(round(sum(tx_sizes) / len(tx_sizes))) if tx_sizes else 0
+        median_fee = self._median(tx_fees)
+        median_tx_size = self._median(tx_sizes)
+        percentiles = self._percentiles(fee_rates, [10, 25, 50, 75, 90])
+        utxo_increase = outputs_count - inputs_count
+        return {
+            "avgfee": avg_fee,
+            "avgfeerate": avg_fee_rate,
+            "avgtxsize": avg_tx_size,
+            "blockhash": header.hash,
+            "feerate_percentiles": percentiles,
+            "height": header.height,
+            "ins": inputs_count,
+            "maxfee": max(tx_fees) if tx_fees else 0,
+            "maxfeerate": max(fee_rates) if fee_rates else 0,
+            "maxtxsize": max(tx_sizes) if tx_sizes else 0,
+            "medianfee": median_fee,
+            "mediantime": self.chain._median_time_past(header.hash),
+            "mediantxsize": median_tx_size,
+            "minfee": min(tx_fees) if tx_fees else 0,
+            "minfeerate": min(fee_rates) if fee_rates else 0,
+            "mintxsize": min(tx_sizes) if tx_sizes else 0,
+            "outs": outputs_count,
+            "subsidy": subsidy,
+            "swtotal_size": 0,
+            "swtotal_weight": 0,
+            "swtxs": 0,
+            "time": header.timestamp,
+            "total_out": total_outputs,
+            "total_size": block_size,
+            "total_weight": block_weight,
+            "totalfee": total_fee,
+            "txs": len(block.transactions),
+            "utxo_increase": utxo_increase,
+            "utxo_size_inc": utxo_increase * 117,
+        }
+
+    def _median(self, values: list[int]) -> int:
+        if not values:
+            return 0
+        sorted_vals = sorted(values)
+        mid = len(sorted_vals) // 2
+        if len(sorted_vals) % 2 == 1:
+            return sorted_vals[mid]
+        return int(round((sorted_vals[mid - 1] + sorted_vals[mid]) / 2))
+
+    def _percentiles(self, values: list[int], percentiles: list[int]) -> list[int]:
+        if not values:
+            return [0 for _ in percentiles]
+        sorted_vals = sorted(values)
+        n = len(sorted_vals)
+        results: list[int] = []
+        for pct in percentiles:
+            if n == 1:
+                results.append(sorted_vals[0])
+                continue
+            rank = pct / 100 * (n - 1)
+            low = math.floor(rank)
+            high = math.ceil(rank)
+            if low == high:
+                results.append(sorted_vals[low])
+            else:
+                fraction = rank - low
+                interpolated = sorted_vals[low] + (sorted_vals[high] - sorted_vals[low]) * fraction
+                results.append(int(round(interpolated)))
+        return results
