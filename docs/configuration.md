@@ -49,6 +49,7 @@ Baseline loads `config.json`, fills in deterministic defaults from `NodeConfig`,
     "pool_fee_percent": 1.5,
     "pool_private_key": "<hex|decimal|WIF>",
     "min_payout": 100000000,
+    "foundation_address": "NWbEjugszdRCVHaaX1mDXVqgUr6Yk1uQ8U",
     "allow_consensus_overrides": false
   },
   "ntp": {
@@ -87,6 +88,8 @@ Tuple/list values accept comma-delimited strings (`BASELINE_NETWORK__SEEDS="node
 
 `subsidy_halving_interval` now represents the *half-life* of the smooth exponential subsidy curve. Every `subsidy_halving_interval` blocks (~4.16 million by default, or ~2.6 years) the per-block reward falls by 50% without a discrete cliff, and the geometric decay converges to ~300 million BLINE total supply.
 
+`foundation_address` sets the pay-to-pubkey-hash address that receives the 1% Foundation allocation from every subsidy. Update this to the Foundation-controlled private key before launching a public network; every validator must use the same address or the chain will fork (the value is part of the consensus lock).
+
 ### Time Sync
 
 - `ntp.enabled`: toggles the asynchronous NTP client. Disable if the host already enforces strict kernel time discipline and you do not want outbound UDP traffic.
@@ -99,7 +102,7 @@ Tuple/list values accept comma-delimited strings (`BASELINE_NETWORK__SEEDS="node
 
 ### Consensus Overrides
 
-Consensus-critical values (`coinbase_maturity`, `block_interval_target`, `retarget_interval`, `initial_bits`, `subsidy_halving_interval`) are **locked** on mainnet. The node compares your config against the compiled defaults and refuses to start if they differ. This prevents accidental forks or runaway inflation.
+Consensus-critical values (`coinbase_maturity`, `block_interval_target`, `retarget_interval`, `initial_bits`, `subsidy_halving_interval`, `foundation_address`) are **locked** on mainnet. The node compares your config against the compiled defaults and refuses to start if they differ. This prevents accidental forks or runaway inflation.
 
 - `mining.allow_consensus_overrides`: defaults to `false`. Setting it to `true` suppresses the safety check and logs a warning, allowing you to run bespoke devnets or integration tests. Never enable it on public networks; doing so will cause your node to diverge from the canonical chain.
 

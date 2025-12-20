@@ -49,7 +49,12 @@ class TemplateBuilderTests(unittest.TestCase):
         total_extranonce = len(extranonce1) + len(extranonce2)
         self.assertTrue(script_sig.endswith(extranonce1 + extranonce2))
         self.assertEqual(script_sig[-(total_extranonce + 1)], total_extranonce)
-        self.assertEqual(coinbase.outputs[0].script_pubkey, self.pool_script)
+        subsidy = self.chain._block_subsidy(template.height)
+        foundation = self.chain._foundation_reward(subsidy)
+        if foundation:
+            self.assertEqual(coinbase.outputs[0].script_pubkey, self.chain.foundation_script)
+            self.assertEqual(coinbase.outputs[0].value, foundation)
+        self.assertEqual(coinbase.outputs[-1].script_pubkey, self.pool_script)
         self.assertEqual(len(template.merkle_branches), 0)
 
 
@@ -85,7 +90,9 @@ class PayoutTrackerTests(unittest.TestCase):
         self.tmpdir.cleanup()
 
     def test_payout_transaction_created_after_maturity(self) -> None:
-        reward = 50 * COIN
+        subsidy = 50 * COIN
+        foundation = (subsidy + 99) // 100
+        reward = subsidy - foundation
         txid = "ab" * 32
         self.tracker.record_share(self.worker_id, self.worker_address, difficulty=1.0)
         self.tracker.record_block(height=5, coinbase_txid=txid, reward=reward)

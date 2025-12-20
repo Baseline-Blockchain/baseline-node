@@ -11,14 +11,14 @@ Baseline is a minimalist, Bitcoin-style payments chain—built for simple transf
 ## Network Parameters
 
 - **Consensus**: SHA256d proof-of-work, 32-byte block hashes, 0x207fffff genesis target (roughly Bitcoin regtest difficulty).
-- **Timing**: 20-second block target, retarget every 20 blocks (≈6.7 minutes) with 4× dampening to stay responsive without oscillations.
+- **Timing**: 20-second block target, retarget every 20 blocks (≈6.7 minutes) with a tighter 2× clamp for the first 10,000 blocks and 4× thereafter to stay responsive without oscillations.
 - **Difficulty** is the target hash threshold miners must beat; lower targets = harder work. Baseline encodes this exactly like Bitcoin in the header `bits` field.
 Every **20 blocks** (~6.7 minutes) the node compares the actual elapsed time with the expected `20 * 20s = 400s`. If blocks arrive too fast, the target tightens; too slow and it loosens.
-Adjustments are clamped to 4× faster/slower than expected so that hash-rate spikes do not cause whiplash while the 20-second cadence stays smooth.
-- **Rewards**: 50 BLINE base subsidy decays smoothly every block using an exponential curve with a 4,158,884-block half-life (~2.64 years).
+Adjustments are clamped to 2× faster/slower for the first 10,000 blocks, then 4× after the warm-up so that hash-rate spikes do not cause whiplash while the 20-second cadence stays smooth.
+- **Premine**: None.
+- **Rewards**: 50 BLINE base subsidy decays smoothly every block using an exponential curve with a 4,158,884-block half-life (~2.64 years). The remaining 99% of each subsidy (plus all transaction fees) flows to miners, while a mandatory 1% is automatically sent to the Baseline Foundation address (configured via `mining.foundation_address`) to fund protocol stewardship.
 - **Coinbase maturity**: 5 blocks before mined funds can be spent.
 - **Fees**: Minimum relay fee is 5,000 liners per kB; non-standard scripts are rejected, so typical P2PKH transactions should pay at least ~0.0000125 BLINE for a 250-byte tx.
-- **Premine**: Reserve 2.5% of total supply (3,750,000 BLINE) by mining ~75,000 blocks at launch. At 20-second blocks that is ~17.4 days of private mining before opening the network.
 - **Ports**: P2P `9333`, RPC `8832`, Stratum `3333`.
 
 ### Supply Schedule
@@ -50,6 +50,7 @@ Baseline targets **Python 3.12 or newer** (3.12/3.13 verified). Make sure your `
   A starter `config.json` lives at the repo root with reasonable defaults. Before launching your node, make two important changes:
 
 - Pick RPC creds: Modify `rpc.username` and `rpc.password` in `config.json` and keep them secret; all wallet tooling and miners authenticate with them.
+- Set the Foundation address: Update `mining.foundation_address` to the Base58 P2PKH address whose private key the Baseline Foundation controls. Every node must use the same address or it will diverge from consensus.
 - Set peers: In `network.seeds`, add reachable Baseline nodes as a list to help your node find peers or **leave it empty** to start a private testnet.
 
 ### 4. Create the pool payout key

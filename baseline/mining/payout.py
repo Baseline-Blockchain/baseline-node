@@ -97,7 +97,7 @@ class PayoutTracker:
             self.round_shares[worker_id] = self.round_shares.get(worker_id, 0.0) + max(difficulty, 1.0)
             self._save()
 
-    def record_block(self, height: int, coinbase_txid: str, reward: int) -> None:
+    def record_block(self, height: int, coinbase_txid: str, reward: int, vout: int = 0) -> None:
         with self.lock:
             if not self.round_shares:
                 return
@@ -113,6 +113,7 @@ class PayoutTracker:
                     "distributable": distributable,
                     "pool_fee": pool_fee,
                     "shares": snapshot,
+                    "vout": vout,
                     "time": time.time(),
                 }
             )
@@ -147,7 +148,9 @@ class PayoutTracker:
                     paid += portion
                 leftover = distributable - paid
                 self.pool_balance += int(entry["pool_fee"]) + leftover
-                self.matured_utxos.append({"txid": entry["txid"], "amount": entry["total_reward"]})
+                self.matured_utxos.append(
+                    {"txid": entry["txid"], "amount": entry["total_reward"], "vout": entry.get("vout", 0)}
+                )
             if changed:
                 self._save()
 
@@ -170,7 +173,8 @@ class PayoutTracker:
             consumed: list[dict[str, object]] = []
             input_sum = 0
             for utxo_info in list(self.matured_utxos):
-                record = state_db.get_utxo(utxo_info["txid"], 0)
+                vout = int(utxo_info.get("vout", 0))
+                record = state_db.get_utxo(utxo_info["txid"], vout)
                 if record is None:
                     self.matured_utxos.remove(utxo_info)
                     continue

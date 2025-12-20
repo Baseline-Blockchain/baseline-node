@@ -44,9 +44,17 @@ def check_proof_of_work(block_hash: str, bits: int) -> bool:
     return hash_int <= target
 
 
-def calculate_new_bits(prev_bits: int, actual_timespan: int, target_timespan: int, max_target: int) -> int:
-    lower_bound = target_timespan // 4
-    upper_bound = target_timespan * 4
+def calculate_new_bits(
+    prev_bits: int,
+    actual_timespan: int,
+    target_timespan: int,
+    max_target: int,
+    *,
+    clamp_factor: int = 4,
+) -> int:
+    clamp_factor = max(1, clamp_factor)
+    lower_bound = max(1, target_timespan // clamp_factor)
+    upper_bound = target_timespan * clamp_factor
     actual_timespan = max(lower_bound, min(actual_timespan, upper_bound))
     prev_target = compact_to_target(prev_bits)
     new_target = prev_target * actual_timespan // target_timespan

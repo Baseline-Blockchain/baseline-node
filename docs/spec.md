@@ -27,13 +27,10 @@ This document captures the normative behavior implemented by the current Baselin
 - Initial subsidy: 50 BLINE (= 5,000,000,000 liners).
 - Smooth decay: `subsidy_halving_interval` represents the half-life of the exponential subsidy curve. Default is 4,158,884 blocks (~2.64 years at 20 s/block), so rewards fall continuously instead of cliff halvings.
 - Theoretical supply cap: ~300,000,000 BLINE. The exponential series converges to `initial_reward / (1 - 2^(-1 / subsidy_halving_interval))`, so the slower half-life doubles the asymptote while keeping per-block issuance smooth.
+- Foundation allocation: 1% of every subsidy must be paid to the canonical Foundation script defined by `mining.foundation_address` (a legacy Base58 P2PKH). Nodes verify the coinbase includes at least that output before accepting the block.
 - Transaction fees (input minus output sum) accrue entirely to the miner of the block that includes the transaction. No burning or redistribution occurs.
 - Relay/miner fee floor: 5 000 liners per kB (rounded up) as implemented in `baseline/policy.py`.
 - Nodes verify that local `MiningConfig` values match these constants at startup. Any deviation causes initialization to fail unless `allow_consensus_overrides=true` is explicitly set for private testnets, in which case the node logs a warning and may diverge from mainnet.
-
-### Premine
-
-Genesis plus the first ~75,000 blocks can be mined privately to preallocate 2.5% (3,750,000 BLINE) before opening the network. This is a social policy, not a consensus rule.
 
 ## 4. Blocks
 
@@ -48,7 +45,7 @@ Genesis plus the first ~75,000 blocks can be mined privately to preallocate 2.5%
 ```
 actual_span = parent.timestamp - ancestor.timestamp
 target_span = block_interval_target * retarget_interval = 20 s * 20 = 400 s
-actual_span is clamped to [target_span/4, target_span*4]
+If height ≤ 10,000, actual_span is clamped to [target_span/2, target_span*2]; afterwards it clamps to [target_span/4, target_span*4]
 new_target = prev_target * actual_span / target_span
 new_target ≤ max_target (set by genesis bits 0x207fffff)
 ```
@@ -92,7 +89,7 @@ new_target ≤ max_target (set by genesis bits 0x207fffff)
 
 ## 10. Deviations from Bitcoin
 
-- Faster block target (20 s) and short retarget window (20 blocks) with 4× clamp.
+- Faster block target (20 s) and short retarget window (20 blocks) with a 2× clamp for the first 10,000 blocks, then 4× afterwards.
 - Enforced standardness: only P2PKH outputs are acceptable to mempool/miners.
 - Append-only block store implemented in `baseline/storage/blockstore.py`.
 - No SegWit, no scripts beyond legacy P2PKH, no compact blocks, no BIP37, etc.

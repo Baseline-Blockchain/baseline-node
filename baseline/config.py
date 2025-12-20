@@ -104,6 +104,9 @@ class NTPConfig:
             raise ConfigError("At least one NTP server must be configured")
 
 
+DEFAULT_FOUNDATION_ADDRESS = "NWbEjugszdRCVHaaX1mDXVqgUr6Yk1uQ8U"
+
+
 @dataclass(slots=True)
 class MiningConfig:
     coinbase_maturity: int = 5
@@ -114,6 +117,7 @@ class MiningConfig:
     pool_fee_percent: float = 1.0
     pool_private_key: str = "1337133713371337133713371337133713371337133713371337133713371337"
     min_payout: int = 50_000_000
+    foundation_address: str = DEFAULT_FOUNDATION_ADDRESS
     allow_consensus_overrides: bool = False
 
     def validate(self) -> None:
@@ -126,6 +130,12 @@ class MiningConfig:
         if self.min_payout <= 0:
             raise ConfigError("min_payout must be positive")
         _ = parse_pool_private_key(self.pool_private_key)
+        try:
+            from .core.address import script_from_address
+
+            script_from_address(self.foundation_address)
+        except Exception as exc:  # noqa: BLE001
+            raise ConfigError("foundation_address must be a valid P2PKH address") from exc
 
 
 @dataclass(slots=True)

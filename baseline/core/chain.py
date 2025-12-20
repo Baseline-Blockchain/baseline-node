@@ -10,6 +10,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from ..config import ConfigError, NodeConfig
+from ..core.address import script_from_address
 from ..storage import BlockStore, HeaderData, StateDB, UTXORecord
 from ..time_sync import synchronized_time_int
 from . import crypto, difficulty, script
@@ -28,12 +29,19 @@ GENESIS_PUBKEY = crypto.generate_pubkey(GENESIS_PRIVKEY)
 GENESIS_MESSAGE = b"Baseline genesis"
 MAX_FUTURE_BLOCK_TIME = 15 * 60  # 15 minutes
 
+FOUNDATION_FEE_NUMERATOR = 1
+FOUNDATION_FEE_DENOMINATOR = 100
+EARLY_RETARGET_HEIGHT = 10_000
+EARLY_RETARGET_CLAMP = 2
+DEFAULT_RETARGET_CLAMP = 4
+
 CONSENSUS_DEFAULTS = {
     "coinbase_maturity": 5,
     "block_interval_target": 20,
     "retarget_interval": 20,
     "initial_bits": 0x207FFFFF,
     "subsidy_halving_interval": 4_158_884,
+    "foundation_address": "NWbEjugszdRCVHaaX1mDXVqgUr6Yk1uQ8U",
 }
 
 
@@ -89,6 +97,10 @@ class Chain:
         self.block_store = block_store
         self.log = logging.getLogger("baseline.chain")
         self.max_target = difficulty.compact_to_target(self.config.mining.initial_bits)
+        try:
+            self.foundation_script = script_from_address(self.config.mining.foundation_address)
+        except ValueError as exc:  # noqa: BLE001
+            raise ConfigError("Invalid foundation address in config") from exc
         self.genesis_block = self._build_genesis_block()
         self.genesis_hash = self.genesis_block.block_hash()
 
@@ -115,7 +127,7 @@ class Chain:
             outputs=[
                 TxOutput(
                     value=50 * COIN,
-                    script_pubkey=b"\x76\xa9\x14" + crypto.hash160(GENESIS_PUBKEY) + b"\x88\xac",
+                    script_pubkey=self.foundation_script,
                 )
             ],
             lock_time=0,
@@ -328,6 +340,11 @@ class Chain:
             view.add(record)
             created_records.append(record)
         subsidy = self._block_subsidy(height)
+        foundation_required = self._foundation_reward(subsidy)
+        if foundation_required > 0:
+            paid = sum(out.value for out in coinbase_tx.outputs if out.script_pubkey == self.foundation_script)
+            if paid < foundation_required:
+                raise ChainError("Foundation fee missing")
         for _tx_index, tx in enumerate(block.transactions[1:], start=1):
             if tx.is_coinbase():
                 raise ChainError("Multiple coinbase transactions")
@@ -386,6 +403,11 @@ class Chain:
         subsidy = int((50 * COIN) * decay)
         return max(subsidy, 0)
 
+    def _foundation_reward(self, subsidy: int) -> int:
+        if subsidy <= 0:
+            return 0
+        return (subsidy * FOUNDATION_FEE_NUMERATOR + FOUNDATION_FEE_DENOMINATOR - 1) // FOUNDATION_FEE_DENOMINATOR
+
     def _expected_bits(self, height: int, parent_header: HeaderData) -> int:
         interval = self.config.mining.retarget_interval
         if height % interval != 0 or height < interval:
@@ -398,7 +420,14 @@ class Chain:
             raise ChainError("Missing ancestor for retarget")
         actual_span = parent_header.timestamp - ancestor.timestamp
         target_span = self.config.mining.block_interval_target * interval
-        return difficulty.calculate_new_bits(parent_header.bits, actual_span, target_span, self.max_target)
+        clamp = EARLY_RETARGET_CLAMP if height <= EARLY_RETARGET_HEIGHT else DEFAULT_RETARGET_CLAMP
+        return difficulty.calculate_new_bits(
+            parent_header.bits,
+            actual_span,
+            target_span,
+            self.max_target,
+            clamp_factor=clamp,
+        )
 
     def _ancestor_hash(self, block_hash: str, steps: int) -> str | None:
         current = block_hash

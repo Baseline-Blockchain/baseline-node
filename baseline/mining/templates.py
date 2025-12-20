@@ -32,6 +32,9 @@ class Template:
     fees: int
     target: int
     coinbase_value: int
+    foundation_reward: int
+    miner_reward: int
+    pool_vout: int
 
 
 class TemplateBuilder:
@@ -54,8 +57,10 @@ class TemplateBuilder:
         view = self.chain._build_view_for_parent(prev_hash)
         selected, total_fees = self._select_transactions(height, view)
         subsidy = self.chain._block_subsidy(height)
+        foundation_reward = self.chain._foundation_reward(subsidy)
+        miner_reward = max(0, subsidy - foundation_reward) + total_fees
         coinbase_value = subsidy + total_fees
-        coinb1, coinb2 = self._build_coinbase_parts(height, coinbase_value)
+        coinb1, coinb2, pool_vout = self._build_coinbase_parts(height, miner_reward, foundation_reward)
         merkle_branches = self._build_merkle_branches(selected)
         timestamp = max(synchronized_time_int(), parent_header.timestamp + 1)
         bits = self.chain._expected_bits(height, parent_header)
@@ -73,6 +78,9 @@ class TemplateBuilder:
             fees=total_fees,
             target=target,
             coinbase_value=coinbase_value,
+            foundation_reward=foundation_reward,
+            miner_reward=miner_reward,
+            pool_vout=pool_vout,
         )
 
     def _select_transactions(self, height: int, view: UTXOView) -> tuple[list[Transaction], int]:
@@ -122,7 +130,9 @@ class TemplateBuilder:
             view.overlay = snapshot
             return False
 
-    def _build_coinbase_parts(self, height: int, reward: int) -> tuple[bytes, bytes]:
+    def _build_coinbase_parts(
+        self, height: int, miner_reward: int, foundation_reward: int
+    ) -> tuple[bytes, bytes, int]:
         version = (1).to_bytes(4, "little")
         input_count = encode_varint(1)
         prev = bytes.fromhex("00" * 32)
@@ -134,10 +144,11 @@ class TemplateBuilder:
         script_len = len(height_push) + len(flags_push) + len(extranonce_push) + extranonce_total
         script_len_varint = encode_varint(script_len)
         sequence = (0xFFFFFFFF).to_bytes(4, "little")
-        output_count = encode_varint(1)
-        output_value = reward.to_bytes(8, "little")
-        script_pubkey = self.payout_script
-        script_pubkey_len = encode_varint(len(script_pubkey))
+        outputs: list[tuple[int, bytes]] = []
+        if foundation_reward > 0:
+            outputs.append((foundation_reward, self.chain.foundation_script))
+        outputs.append((miner_reward, self.payout_script))
+        output_count = encode_varint(len(outputs))
         lock_time = (0).to_bytes(4, "little")
 
         coinb1 = b"".join(
@@ -152,17 +163,19 @@ class TemplateBuilder:
                 extranonce_push,
             ]
         )
+        coinb2_body = b"".join(
+            value.to_bytes(8, "little") + encode_varint(len(script)) + script for value, script in outputs
+        )
         coinb2 = b"".join(
             [
                 sequence,
                 output_count,
-                output_value,
-                script_pubkey_len,
-                script_pubkey,
+                coinb2_body,
                 lock_time,
             ]
         )
-        return coinb1, coinb2
+        pool_vout = len(outputs) - 1
+        return coinb1, coinb2, pool_vout
 
     def _encode_push(self, data: bytes) -> bytes:
         if len(data) < 0x4c:

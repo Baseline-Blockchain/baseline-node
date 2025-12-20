@@ -46,6 +46,11 @@ class MempoolTests(unittest.TestCase):
             value = self.chain._block_subsidy(height)
         height_bytes = height.to_bytes((height.bit_length() + 7) // 8 or 1, "little")
         script_sig = len(height_bytes).to_bytes(1, "little") + height_bytes + b"\x01"
+        foundation = self.chain._foundation_reward(value)
+        outputs = []
+        if foundation:
+            outputs.append(TxOutput(value=foundation, script_pubkey=self.chain.foundation_script))
+        outputs.append(TxOutput(value=value - foundation, script_pubkey=self.script_pubkey))
         tx = Transaction(
             version=1,
             inputs=[
@@ -56,7 +61,7 @@ class MempoolTests(unittest.TestCase):
                     sequence=0xFFFFFFFF,
                 )
             ],
-            outputs=[TxOutput(value=value, script_pubkey=self.script_pubkey)],
+            outputs=outputs,
             lock_time=0,
         )
         return tx

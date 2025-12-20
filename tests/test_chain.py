@@ -55,6 +55,11 @@ class ChainTests(unittest.TestCase):
             value = self.chain._block_subsidy(height)
         height_bytes = height.to_bytes((height.bit_length() + 7) // 8 or 1, "little")
         script_sig = len(height_bytes).to_bytes(1, "little") + height_bytes + b"\x01"
+        foundation = self.chain._foundation_reward(value)
+        payouts = []
+        if foundation:
+            payouts.append(TxOutput(value=foundation, script_pubkey=self.chain.foundation_script))
+        payouts.append(TxOutput(value=value - foundation, script_pubkey=self.script_pubkey))
         tx = Transaction(
             version=1,
             inputs=[
@@ -65,7 +70,7 @@ class ChainTests(unittest.TestCase):
                     sequence=0xFFFFFFFF,
                 )
             ],
-            outputs=[TxOutput(value=value, script_pubkey=self.script_pubkey)],
+            outputs=payouts,
             lock_time=0,
         )
         return tx

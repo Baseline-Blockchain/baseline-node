@@ -29,10 +29,16 @@ class NodeSim:
     def _make_coinbase(self, height: int) -> Transaction:
         height_bytes = height.to_bytes((height.bit_length() + 7) // 8 or 1, "little")
         script_sig = len(height_bytes).to_bytes(1, "little") + height_bytes
+        subsidy = self.chain._block_subsidy(height)
+        foundation = self.chain._foundation_reward(subsidy)
+        outputs = []
+        if foundation:
+            outputs.append(TxOutput(value=foundation, script_pubkey=self.chain.foundation_script))
+        outputs.append(TxOutput(value=subsidy - foundation, script_pubkey=self.script))
         return Transaction(
             version=1,
             inputs=[TxInput(prev_txid="00" * 32, prev_vout=0xFFFFFFFF, script_sig=script_sig, sequence=0xFFFFFFFF)],
-            outputs=[TxOutput(value=self.chain._block_subsidy(height), script_pubkey=self.script)],
+            outputs=outputs,
             lock_time=0,
         )
 

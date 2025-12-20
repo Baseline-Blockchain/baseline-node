@@ -88,12 +88,21 @@ class RPCTestCase(unittest.TestCase):
     def _make_coinbase(self, height: int) -> Transaction:
         height_bytes = height.to_bytes((height.bit_length() + 7) // 8 or 1, "little")
         script_sig = len(height_bytes).to_bytes(1, "little") + height_bytes + b"\x01"
+        subsidy = self.chain._block_subsidy(height)
+        foundation = self.chain._foundation_reward(subsidy)
+        outputs = []
+        if foundation:
+            outputs.append(TxOutput(value=foundation, script_pubkey=self.chain.foundation_script))
+        outputs.append(
+            TxOutput(
+                value=subsidy - foundation,
+                script_pubkey=b"\x76\xa9\x14" + crypto.hash160(GENESIS_PUBKEY) + b"\x88\xac",
+            )
+        )
         return Transaction(
             version=1,
             inputs=[TxInput(prev_txid="00" * 32, prev_vout=0xFFFFFFFF, script_sig=script_sig, sequence=0xFFFFFFFF)],
-            outputs=[
-                TxOutput(value=self.chain._block_subsidy(height), script_pubkey=b"\x76\xa9\x14" + crypto.hash160(GENESIS_PUBKEY) + b"\x88\xac")
-            ],
+            outputs=outputs,
             lock_time=0,
         )
 

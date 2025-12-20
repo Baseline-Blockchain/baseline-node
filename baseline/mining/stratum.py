@@ -457,7 +457,9 @@ class StratumServer:
         if status in {"connected", "reorganized"}:
             coinbase_tx = block.transactions[0]
             coinbase_txid = coinbase_tx.txid()
-            self.payouts.record_block(job.template.height, coinbase_txid, job.template.coinbase_value)
+            self.payouts.record_block(
+                job.template.height, coinbase_txid, job.template.miner_reward, job.template.pool_vout
+            )
             if self.network:
                 self.network.announce_block(block.block_hash())
             self.log.info("Block found at height %s hash=%s", job.template.height, block.block_hash())

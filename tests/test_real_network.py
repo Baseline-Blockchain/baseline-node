@@ -124,8 +124,16 @@ class RealNetworkIntegrationTests(unittest.TestCase):
                 node.payout_tracker.record_share("worker-1", worker_address, difficulty=1.0)
                 block, height = await asyncio.to_thread(self._mine_block_full, node)
                 coinbase = block.transactions[0]
-                reward = coinbase.outputs[0].value
-                node.payout_tracker.record_block(height, coinbase.txid(), reward)
+                assert node.payout_tracker is not None
+                pool_script = node.payout_tracker.pool_script
+                pool_vout = next(
+                    (idx for idx, output in enumerate(coinbase.outputs) if output.script_pubkey == pool_script),
+                    None,
+                )
+                self.assertIsNotNone(pool_vout, "Pool payout output missing")
+                assert pool_vout is not None
+                reward = coinbase.outputs[pool_vout].value
+                node.payout_tracker.record_block(height, coinbase.txid(), reward, pool_vout)
                 await asyncio.to_thread(self._mine_block_full, node)
                 best = node.chain.state_db.get_best_tip()
                 assert best is not None
