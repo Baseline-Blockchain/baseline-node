@@ -5,7 +5,7 @@ pc.host:rpc.port (default 127.0.0.1:8832).
 
 ## Status Panel
 
-Performing an authenticated `GET /` against the RPC endpoint (e.g. `http://127.0.0.1:8832/`) returns a plain-text dashboard instead of JSON. The panel uses the same Basic Auth credentials and shows the current height, best block hash, peer counts, mempool size, sync status, uptime, wallet/NT P status, and other quick diagnostics. It's a handy way to confirm a node is healthy from a browser or terminal without making individual RPC calls.
+Performing an authenticated `GET /` against the RPC endpoint (e.g. `http://127.0.0.1:8832/`) returns a plain-text dashboard instead of JSON. The panel uses the same Basic Auth credentials and shows the current height, best block hash, peer counts, mempool size, sync status, uptime, wallet + NTP status, and other quick diagnostics. The wallet row now reflects the background sync state (`ready`, `syncing`, processed height) so you can tell at a glance whether wallet RPC results are current.
 
 ## Request Format
 
@@ -75,7 +75,7 @@ Baseline ships with address/tx indexes enabled so block explorers can stay in sy
 | importwallet path [rescan] | Restore from a dump file. |
 | importaddress address [label] [rescan] | Add watch-only entries. |
 | importprivkey wif [label] [rescan] | Import individual keys (e.g., pool payout key). |
-| walletinfo | Encryption + height status. |
+| walletinfo | Encryption + height status plus `syncing`, `last_sync`, and `processed_height` fields that mirror the status panel. |
 
 ## Error Handling
 
@@ -86,15 +86,15 @@ ode.log.
 
 - Bind RPC to localhost; use SSH tunnels or reverse proxies if remote control is required.
 - Rotate credentials regularly and never share them with miners.
-- Limit request size with 
-pc.max_request_bytes (defaults to 256 kB) to avoid DoS via giant payloads.
+- Limit request size with `rpc.max_request_bytes` (defaults to 256 kB) and take advantage of the built-in per-IP rate limiter/timeouts to keep untrusted clients from saturating the server. These knobs live under `[rpc]` in `config.json`.
 - Monitor logs for repeated authentication failures.
 
 ## Tooling
 
 Two helper CLIs wrap RPC:
 
-- aseline-wallet (	ools/wallet_cli.py) – interactive wallet commands.
-- aseline-miner (	ools/simple_miner.py) – CPU reference miner.
+- baseline-wallet (`tools/wallet_cli.py`) - interactive wallet commands.
+- baseline-miner (`tools/simple_miner.py`) - CPU reference miner.
+- rpc-stress (`tools/rpc_stress.py`) - lightweight load tester that opens multiple concurrent RPC clients and reports aggregate throughput/latencies.
 
 Both respect --config and reuse the RPC credentials defined there.
