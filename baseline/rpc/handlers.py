@@ -69,6 +69,7 @@ class RPCHandlers:
             "submitblock": self.submitblock,
             "gettimesyncinfo": self.gettimesyncinfo,
             "getindexinfo": self.getindexinfo,
+            "estimatesmartfee": self.estimatesmartfee,
         }
         if self.wallet:
             self._methods.update(
@@ -463,6 +464,16 @@ class RPCHandlers:
             },
         }
         return info
+
+    def estimatesmartfee(self, target_blocks: int = 1, estimate_mode: str | None = None) -> dict[str, Any]:
+        """Return a static fee estimate compatible with Bitcoin Core."""
+        feerate = max(MIN_RELAY_FEE_RATE, 1) / COIN
+        return {
+            "feerate": feerate,
+            "blocks": int(target_blocks),
+            "errors": [],
+            "estimate_mode": estimate_mode or "CONSERVATIVE",
+        }
 
     def _require_wallet(self) -> WalletManager:
         if not self.wallet:
