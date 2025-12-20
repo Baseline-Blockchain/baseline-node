@@ -186,6 +186,20 @@ class Chain:
             )
         self.state_db.apply_utxo_changes([], created)
         self.state_db.index_block_addresses(self.genesis_block, 0)
+        self.state_db.index_block_transactions(
+            genesis_hash,
+            0,
+            [tx.txid() for tx in self.genesis_block.transactions],
+        )
+        self.state_db.record_block_metrics(
+            genesis_hash,
+            0,
+            self.genesis_block.header.timestamp,
+            len(self.genesis_block.transactions),
+            total_fee=0,
+            total_weight=self.genesis_block.weight(),
+            total_size=len(self.genesis_block.serialize()),
+        )
         header = HeaderData(
             hash=genesis_hash,
             prev_hash=None,
@@ -291,7 +305,17 @@ class Chain:
         spent, created = self._collect_utxo_changes(validation)
         self.state_db.apply_utxo_changes(spent, created)
         self.state_db.index_block_addresses(block, height)
+        self.state_db.index_block_transactions(block_hash, height, [tx.txid() for tx in block.transactions])
         self.state_db.store_undo_data(block_hash, validation.spent)
+        self.state_db.record_block_metrics(
+            block_hash,
+            height,
+            block.header.timestamp,
+            len(block.transactions),
+            total_fee=validation.fees,
+            total_weight=block.weight(),
+            total_size=len(block.serialize()),
+        )
         self.state_db.set_header_status(block_hash, 0)
         self.state_db.set_best_tip(block_hash, height)
         self.state_db.set_meta("best_work", str(chainwork))
@@ -562,6 +586,8 @@ class Chain:
         for record in undo:
             self.state_db.add_utxo(record)
         self.state_db.remove_block_address_index(block)
+        self.state_db.remove_block_transactions(block_hash)
+        self.state_db.remove_block_metrics(block_hash)
         self.state_db.delete_undo_data(block_hash)
         self.state_db.set_header_status(block_hash, 1)
         self.state_db.upsert_chain_tip(block_hash, header.height, header.chainwork)

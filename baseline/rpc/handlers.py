@@ -362,42 +362,24 @@ class RPCHandlers:
             best_hash, height = best
             best_header = self.state_db.get_header(best_hash)
 
-        # Calculate difficulty from current bits
         current_difficulty = self._current_difficulty()
-
-        # Calculate chainwork (cumulative work)
-        chainwork = 0
-        if best_header:
-            # Sum work from genesis to current tip
-            current_hash = best_hash
-            while current_hash and current_hash != "00" * 32:
-                header = self.state_db.get_header(current_hash)
-                if header is None:
-                    break
-                chainwork += difficulty.block_work(header.bits)
-                current_hash = header.prev_hash
-
-        # Get block time and median time
         block_time = int(time.time())
-        median_time = int(time.time())
+        median_time = block_time
         if best_header:
             block_time = best_header.timestamp
-            # Calculate median time past (simplified - just use current block time)
             median_time = best_header.timestamp
 
         size_on_disk = self._chain_storage_bytes()
-
         headers_height = self.state_db.get_max_header_height()
-        verification_progress = 0.0
-        if headers_height > 0:
-            verification_progress = min(1.0, height / headers_height)
+        verification_progress = min(1.0, height / headers_height) if headers_height else 0.0
         now = int(time.time())
         is_ibd = True
         if best_header:
             synced_height = height >= max(1, self.chain.config.mining.retarget_interval)
             recent_enough = best_header.timestamp > now - 24 * 60 * 60
             is_ibd = not (synced_height and recent_enough)
-
+        best_work = int(self.state_db.get_meta("best_work") or "0")
+        chainwork_hex = f"{best_work:016x}"
         return {
             "chain": "main",  # Could be made configurable
             "blocks": height,
@@ -408,7 +390,7 @@ class RPCHandlers:
             "mediantime": median_time,
             "verificationprogress": verification_progress,
             "initialblockdownload": is_ibd,
-            "chainwork": f"{chainwork:016x}",
+            "chainwork": chainwork_hex,
             "size_on_disk": size_on_disk,
             "pruned": False,
             "warnings": []
@@ -576,36 +558,32 @@ class RPCHandlers:
         if not best:
             raise RPCError(-8, "Blockchain not initialized")
         if blockhash:
-            end_header = self.state_db.get_header(blockhash)
-            if end_header is None:
-                raise RPCError(-5, "Block not found")
+            end_metrics = self.state_db.get_block_metrics_by_hash(blockhash)
+            if end_metrics is None:
+                return self._compute_chaintxstats_slow(nblocks, blockhash)
         else:
-            end_header = self.state_db.get_header(best[0])
-        assert end_header is not None
-        end_height = end_header.height
+            _, best_height = best
+            end_metrics = self.state_db.get_block_metrics_by_height(best_height)
+            if end_metrics is None:
+                return self._compute_chaintxstats_slow(nblocks, blockhash)
+        end_height = end_metrics["height"]
         if nblocks is None or nblocks <= 0:
             start_height = 0
         else:
             start_height = max(0, end_height - int(nblocks))
-        start_header = self.state_db.get_main_header_at_height(start_height)
-        if start_header is None:
-            raise RPCError(-8, "Start block missing")
-        total_tx = 0
-        window_tx = 0
-        for height in range(0, end_height + 1):
-            block, _ = self._block_by_height(height)
-            tx_count = len(block.transactions)
-            total_tx += tx_count
-            if height > start_height:
-                window_tx += tx_count
-        window_interval = max(1, end_header.timestamp - start_header.timestamp)
+        start_metrics = self.state_db.get_block_metrics_by_height(start_height)
+        if start_metrics is None:
+            return self._compute_chaintxstats_slow(nblocks, blockhash)
+        total_tx = int(end_metrics["cumulative_tx"])
+        window_tx = total_tx - int(start_metrics["cumulative_tx"])
+        window_interval = max(1, int(end_metrics["timestamp"]) - int(start_metrics["timestamp"]))
         window_block_count = end_height - start_height
-        txrate = window_tx / window_interval if window_interval > 0 else 0
+        txrate = window_tx / window_interval if window_interval > 0 else 0.0
         return {
-            "time": end_header.timestamp,
+            "time": int(end_metrics["timestamp"]),
             "txcount": total_tx,
             "window_final_block_height": end_height,
-            "window_final_block_hash": end_header.hash,
+            "window_final_block_hash": end_metrics["hash"],
             "window_block_count": window_block_count,
             "window_interval": window_interval,
             "window_tx_count": window_tx,
@@ -901,6 +879,22 @@ class RPCHandlers:
         best = self.state_db.get_best_tip()
         if not best:
             return None, None, None
+        location = self.state_db.get_transaction_location(txid)
+        if location:
+            located_hash, _, _ = location
+            try:
+                block, header = self._load_block_by_hash(located_hash)
+            except RPCError:
+                pass
+            else:
+                position = location[2]
+                if 0 <= position < len(block.transactions):
+                    candidate = block.transactions[position]
+                    if candidate.txid() == txid:
+                        return candidate, located_hash, header.height
+                for candidate in block.transactions:
+                    if candidate.txid() == txid:
+                        return candidate, located_hash, header.height
         current_hash = best[0]
         while current_hash:
             header = self.state_db.get_header(current_hash)
@@ -1129,3 +1123,44 @@ class RPCHandlers:
                 interpolated = sorted_vals[low] + (sorted_vals[high] - sorted_vals[low]) * fraction
                 results.append(int(round(interpolated)))
         return results
+
+    def _compute_chaintxstats_slow(self, nblocks: int | None, blockhash: str | None) -> dict[str, Any]:
+        best = self.state_db.get_best_tip()
+        if not best:
+            raise RPCError(-8, "Blockchain not initialized")
+        if blockhash:
+            end_header = self.state_db.get_header(blockhash)
+            if end_header is None:
+                raise RPCError(-5, "Block not found")
+        else:
+            end_header = self.state_db.get_header(best[0])
+        assert end_header is not None
+        end_height = end_header.height
+        if nblocks is None or nblocks <= 0:
+            start_height = 0
+        else:
+            start_height = max(0, end_height - int(nblocks))
+        start_header = self.state_db.get_main_header_at_height(start_height)
+        if start_header is None:
+            raise RPCError(-8, "Start block missing")
+        total_tx = 0
+        window_tx = 0
+        for height in range(0, end_height + 1):
+            block, _ = self._block_by_height(height)
+            tx_count = len(block.transactions)
+            total_tx += tx_count
+            if height > start_height:
+                window_tx += tx_count
+        window_interval = max(1, end_header.timestamp - start_header.timestamp)
+        window_block_count = end_height - start_height
+        txrate = window_tx / window_interval if window_interval > 0 else 0
+        return {
+            "time": end_header.timestamp,
+            "txcount": total_tx,
+            "window_final_block_height": end_height,
+            "window_final_block_hash": end_header.hash,
+            "window_block_count": window_block_count,
+            "window_interval": window_interval,
+            "window_tx_count": window_tx,
+            "txrate": txrate,
+        }

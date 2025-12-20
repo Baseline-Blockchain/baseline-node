@@ -103,51 +103,56 @@ class Mempool:
         txid = tx.txid()
         size = len(tx.serialize())
         now = time.time()
+        best = self.chain.state_db.get_best_tip()
+        next_height = (best[1] + 1) if best else 0
+        resolved_inputs: dict[OutPoint, UTXORecord] = {}
+        pending_db: list[OutPoint] = []
+        depends: set[str] = set()
         with self.lock:
             if txid in self.entries:
                 raise MempoolError("Transaction already in mempool")
             if tx.is_coinbase():
                 raise MempoolError("Coinbase transactions are invalid in mempool")
             self._rate_limit_peer(peer_id, size)
-            result = self._validate_and_insert(tx, txid, size, now, peer_id)
-        if result.get("status") == "accepted":
-            self._notify_new_tx(tx)
-            if propagate:
-                self._process_new_outputs(txid, len(tx.outputs))
-        return result
+            for vin in tx.inputs:
+                outpoint = (vin.prev_txid, vin.prev_vout)
+                if outpoint in self.spent_outpoints:
+                    raise MempoolError("Input already spent by mempool entry")
+                parent_entry = self.entries.get(vin.prev_txid)
+                if parent_entry:
+                    if vin.prev_vout >= len(parent_entry.tx.outputs):
+                        raise MempoolError("Referenced output index out of range")
+                    parent_out = parent_entry.tx.outputs[vin.prev_vout]
+                    resolved_inputs[outpoint] = UTXORecord(
+                        txid=vin.prev_txid,
+                        vout=vin.prev_vout,
+                        amount=parent_out.value,
+                        script_pubkey=parent_out.script_pubkey,
+                        height=0,
+                        coinbase=False,
+                    )
+                    depends.add(vin.prev_txid)
+                else:
+                    pending_db.append(outpoint)
 
-    def _validate_and_insert(
-        self,
-        tx: Transaction,
-        txid: str,
-        size: int,
-        now: float,
-        peer_id: str | None,
-    ) -> dict[str, int | str | list[OutPoint]]:
         missing: set[OutPoint] = set()
-        depends: set[str] = set()
-        total_input = 0
-        best = self.chain.state_db.get_best_tip()
-        next_height = (best[1] + 1) if best else 0
-        for vin in tx.inputs:
-            outpoint = (vin.prev_txid, vin.prev_vout)
-            if outpoint in self.spent_outpoints:
-                raise MempoolError("Input already spent by mempool entry")
-            fetched = self._fetch_utxo(vin)
-            if fetched is None:
-                missing.add(outpoint)
+        maturity = self.chain.config.mining.coinbase_maturity
+        for prev_txid, prev_vout in pending_db:
+            utxo = self.chain.state_db.get_utxo(prev_txid, prev_vout)
+            if utxo is None:
+                missing.add((prev_txid, prev_vout))
                 continue
-            value, script_pubkey, height, coinbase, from_mempool = fetched
-            if coinbase:
-                maturity = self.chain.config.mining.coinbase_maturity
-                if next_height - height < maturity:
-                    raise MempoolError("Coinbase input not matured")
-            total_input += value
-            if from_mempool:
-                depends.add(vin.prev_txid)
+            if utxo.coinbase and next_height - utxo.height < maturity:
+                raise MempoolError("Coinbase input not matured")
+            resolved_inputs[(prev_txid, prev_vout)] = utxo
         if missing:
-            self._add_orphan(tx, missing, peer_id, now)
+            with self.lock:
+                self._add_orphan(tx, missing, peer_id, now)
             return {"status": "orphan", "missing": list(missing)}
+
+        if len(resolved_inputs) != len(tx.inputs):
+            raise MempoolError("Missing referenced output")
+        total_input = sum(record.amount for record in resolved_inputs.values())
         total_output = sum(out.value for out in tx.outputs)
         fee = total_input - total_output
         if fee < 0:
@@ -156,15 +161,29 @@ class Mempool:
             check_standard_tx(tx, fee, size, self.min_fee_rate)
         except PolicyError as exc:
             raise MempoolError(str(exc)) from exc
-        self._verify_scripts(tx)
-        entry = MempoolEntry(tx=tx, fee=fee, size=size, time=now, depends=depends, peer_id=peer_id)
-        self.entries[txid] = entry
-        for dep in depends:
-            self.dep_index.setdefault(dep, set()).add(txid)
-        for vin in tx.inputs:
-            self.spent_outpoints.add((vin.prev_txid, vin.prev_vout))
-        self.total_weight += entry.weight
-        self._evict_if_needed()
+        self._verify_scripts(tx, resolved_inputs=resolved_inputs)
+
+        entry = MempoolEntry(tx=tx, fee=fee, size=size, time=now, depends=set(depends), peer_id=peer_id)
+        outpoints = [(vin.prev_txid, vin.prev_vout) for vin in tx.inputs]
+        with self.lock:
+            if txid in self.entries:
+                raise MempoolError("Transaction already in mempool")
+            for dep in depends:
+                if dep not in self.entries:
+                    raise MempoolError("Missing parent transaction in mempool")
+            for outpoint in outpoints:
+                if outpoint in self.spent_outpoints:
+                    raise MempoolError("Input already spent by mempool entry")
+            self.entries[txid] = entry
+            for dep in depends:
+                self.dep_index.setdefault(dep, set()).add(txid)
+            for outpoint in outpoints:
+                self.spent_outpoints.add(outpoint)
+            self.total_weight += entry.weight
+            self._evict_if_needed()
+        self._notify_new_tx(tx)
+        if propagate:
+            self._process_new_outputs(txid, len(tx.outputs))
         return {"status": "accepted", "txid": txid, "fee": fee, "size": size}
 
     def contains(self, txid: str) -> bool:
@@ -175,9 +194,13 @@ class Mempool:
         with self.lock:
             return self.entries.get(txid)
 
-    def _verify_scripts(self, tx: Transaction) -> None:
+    def _verify_scripts(self, tx: Transaction, resolved_inputs: dict[OutPoint, UTXORecord] | None = None) -> None:
         for idx, txin in enumerate(tx.inputs):
-            utxo = self._lookup_output(txin.prev_txid, txin.prev_vout)
+            utxo = None
+            if resolved_inputs:
+                utxo = resolved_inputs.get((txin.prev_txid, txin.prev_vout))
+            if utxo is None:
+                utxo = self._lookup_output(txin.prev_txid, txin.prev_vout)
             if utxo is None:
                 raise MempoolError("Missing UTXO during script verification")
             ctx = script.ExecutionContext(transaction=tx, input_index=idx)

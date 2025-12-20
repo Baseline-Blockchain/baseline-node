@@ -68,6 +68,9 @@ class StateDB:
         self._conn.execute("PRAGMA synchronous=FULL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.row_factory = sqlite3.Row
+        self._reader_local = threading.local()
+        self._reader_lock = threading.Lock()
+        self._reader_conns: set[sqlite3.Connection] = set()
         self._closed = False
         self._init_schema()
         self.run_startup_checks()
@@ -79,6 +82,7 @@ class StateDB:
             with self._lock:
                 self._conn.close()
                 self._closed = True
+        self._close_readers()
 
     def __del__(self):
         with contextlib.suppress(Exception):
@@ -159,12 +163,51 @@ class StateDB:
                 );
                 CREATE INDEX IF NOT EXISTS address_utxos_address_idx
                     ON address_utxos(address);
+                CREATE TABLE IF NOT EXISTS tx_index (
+                    txid TEXT PRIMARY KEY,
+                    block_hash TEXT NOT NULL,
+                    height INTEGER NOT NULL,
+                    position INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS tx_index_height_idx ON tx_index(height);
+                CREATE TABLE IF NOT EXISTS block_metrics (
+                    hash TEXT PRIMARY KEY,
+                    height INTEGER NOT NULL,
+                    tx_count INTEGER NOT NULL,
+                    timestamp INTEGER NOT NULL,
+                    total_fee INTEGER NOT NULL,
+                    total_weight INTEGER NOT NULL,
+                    total_size INTEGER NOT NULL,
+                    cumulative_tx INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS block_metrics_height_idx ON block_metrics(height);
                 """
             )
 
     def _ensure_open(self) -> None:
         if self._closed:
             raise StateDBError("StateDB connection is closed")
+
+    def _reader_conn(self) -> sqlite3.Connection:
+        self._ensure_open()
+        conn = getattr(self._reader_local, "conn", None)
+        if conn is not None:
+            return conn
+        conn = sqlite3.connect(self.db_path, timeout=30, isolation_level=None, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON")
+        with self._reader_lock:
+            self._reader_conns.add(conn)
+        self._reader_local.conn = conn
+        return conn
+
+    def _close_readers(self) -> None:
+        with self._reader_lock:
+            conns = list(self._reader_conns)
+            self._reader_conns.clear()
+        for conn in conns:
+            with contextlib.suppress(Exception):
+                conn.close()
 
     @contextlib.contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
@@ -193,11 +236,11 @@ class StateDB:
 
     def get_meta(self, key: str, default: str | None = None) -> str | None:
         self._ensure_open()
-        with self._lock:
-            row = self._conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
-            if row is None:
-                return default
-            return row["value"]
+        conn = self._reader_conn()
+        row = conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        if row is None:
+            return default
+        return row["value"]
 
     def store_header(self, header: HeaderData) -> None:
         self._ensure_open()
@@ -231,12 +274,12 @@ class StateDB:
 
     def get_header(self, block_hash: str) -> HeaderData | None:
         self._ensure_open()
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT hash, prev_hash, height, bits, nonce, timestamp, merkle_root, chainwork, status "
-                "FROM headers WHERE hash=?",
-                (block_hash,),
-            ).fetchone()
+        conn = self._reader_conn()
+        row = conn.execute(
+            "SELECT hash, prev_hash, height, bits, nonce, timestamp, merkle_root, chainwork, status "
+            "FROM headers WHERE hash=?",
+            (block_hash,),
+        ).fetchone()
         if row is None:
             return None
         return HeaderData(
@@ -267,9 +310,8 @@ class StateDB:
 
     def get_best_tip(self) -> tuple[str, int] | None:
         self._ensure_open()
-        with self._lock:
-            best_hash = self.get_meta("best_hash")
-            best_height = self.get_meta("best_height")
+        best_hash = self.get_meta("best_hash")
+        best_height = self.get_meta("best_height")
         if best_hash is None or best_height is None:
             return None
         return best_hash, int(best_height)
@@ -290,11 +332,11 @@ class StateDB:
 
     def list_chain_tips(self) -> list[tuple[str, int, str]]:
         self._ensure_open()
-        with self._lock:
-            rows = self._conn.execute(
-                "SELECT hash, height, work FROM chain_tips ORDER BY height DESC"
-            ).fetchall()
-            return [(row["hash"], row["height"], row["work"]) for row in rows]
+        conn = self._reader_conn()
+        rows = conn.execute(
+            "SELECT hash, height, work FROM chain_tips ORDER BY height DESC"
+        ).fetchall()
+        return [(row["hash"], row["height"], row["work"]) for row in rows]
 
     def set_header_status(self, block_hash: str, status: int) -> None:
         self._ensure_open()
@@ -303,22 +345,22 @@ class StateDB:
 
     def get_header_status(self, block_hash: str) -> int | None:
         self._ensure_open()
-        with self._lock:
-            row = self._conn.execute("SELECT status FROM headers WHERE hash=?", (block_hash,)).fetchone()
+        conn = self._reader_conn()
+        row = conn.execute("SELECT status FROM headers WHERE hash=?", (block_hash,)).fetchone()
         if row is None:
             return None
         return row["status"]
 
     def get_main_header_at_height(self, height: int) -> HeaderData | None:
         self._ensure_open()
-        with self._lock:
-            row = self._conn.execute(
-                """
-                SELECT hash, prev_hash, height, bits, nonce, timestamp, merkle_root, chainwork, status
-                FROM headers WHERE height=? AND status=0
-                """,
-                (height,),
-            ).fetchone()
+        conn = self._reader_conn()
+        row = conn.execute(
+            """
+            SELECT hash, prev_hash, height, bits, nonce, timestamp, merkle_root, chainwork, status
+            FROM headers WHERE height=? AND status=0
+            """,
+            (height,),
+        ).fetchone()
         if row is None:
             return None
         return HeaderData(
@@ -357,8 +399,8 @@ class StateDB:
 
     def load_undo_data(self, block_hash: str) -> list[UTXORecord]:
         self._ensure_open()
-        with self._lock:
-            row = self._conn.execute("SELECT data FROM block_undo WHERE hash=?", (block_hash,)).fetchone()
+        conn = self._reader_conn()
+        row = conn.execute("SELECT data FROM block_undo WHERE hash=?", (block_hash,)).fetchone()
         if row is None:
             return []
         blob = row["data"]
@@ -415,14 +457,14 @@ class StateDB:
 
     def get_utxo(self, txid: str, vout: int) -> UTXORecord | None:
         self._ensure_open()
-        with self._lock:
-            row = self._conn.execute(
-                """
-                SELECT txid, vout, amount, script_pubkey, height, coinbase
-                FROM utxos WHERE txid=? AND vout=?
-                """,
-                (txid, vout),
-            ).fetchone()
+        conn = self._reader_conn()
+        row = conn.execute(
+            """
+            SELECT txid, vout, amount, script_pubkey, height, coinbase
+            FROM utxos WHERE txid=? AND vout=?
+            """,
+            (txid, vout),
+        ).fetchone()
         if row is None:
             return None
         return UTXORecord(
@@ -443,8 +485,8 @@ class StateDB:
             "SELECT txid, vout, amount, script_pubkey, height, coinbase "
             f"FROM utxos WHERE script_pubkey IN ({placeholders})"
         )
-        with self._lock:
-            rows = self._conn.execute(query, scripts).fetchall()
+        conn = self._reader_conn()
+        rows = conn.execute(query, scripts).fetchall()
         return [
             UTXORecord(
                 txid=row["txid"],
@@ -463,24 +505,22 @@ class StateDB:
         total_amount = 0
         txouts = 0
         hasher = hashlib.sha256()
-        with self._lock:
-            cursor = self._conn.execute(
-                "SELECT txid, vout, amount, script_pubkey FROM utxos ORDER BY txid, vout"
-            )
-            for row in cursor:
-                txouts += 1
-                amount = row["amount"]
-                total_amount += amount
-                txid = row["txid"]
-                vout = row["vout"]
-                script_pubkey = row["script_pubkey"]
-                hasher.update(txid.encode("utf-8"))
-                hasher.update(vout.to_bytes(4, "little"))
-                if isinstance(script_pubkey, bytes):
-                    hasher.update(script_pubkey)
-                else:
-                    hasher.update(bytes(script_pubkey))
-            transactions_row = self._conn.execute("SELECT COUNT(DISTINCT txid) AS cnt FROM utxos").fetchone()
+        conn = self._reader_conn()
+        cursor = conn.execute("SELECT txid, vout, amount, script_pubkey FROM utxos ORDER BY txid, vout")
+        for row in cursor:
+            txouts += 1
+            amount = row["amount"]
+            total_amount += amount
+            txid = row["txid"]
+            vout = row["vout"]
+            script_pubkey = row["script_pubkey"]
+            hasher.update(txid.encode("utf-8"))
+            hasher.update(vout.to_bytes(4, "little"))
+            if isinstance(script_pubkey, bytes):
+                hasher.update(script_pubkey)
+            else:
+                hasher.update(bytes(script_pubkey))
+        transactions_row = conn.execute("SELECT COUNT(DISTINCT txid) AS cnt FROM utxos").fetchone()
         best = self.get_best_tip()
         best_hash = best[0] if best else "00" * 32
         height = best[1] if best else 0
@@ -592,8 +632,8 @@ class StateDB:
             "SELECT address, txid, vout, amount, height, script_pubkey "
             f"FROM address_utxos WHERE address IN ({placeholders}) ORDER BY height, txid, vout"
         )
-        with self._lock:
-            rows = self._conn.execute(query, tuple(addresses)).fetchall()
+        conn = self._reader_conn()
+        rows = conn.execute(query, tuple(addresses)).fetchall()
         return [
             {
                 "address": row["address"],
@@ -612,15 +652,15 @@ class StateDB:
             return 0, 0
         placeholders = ",".join("?" for _ in addresses)
         params = tuple(addresses)
-        with self._lock:
-            balance = self._conn.execute(
-                f"SELECT COALESCE(SUM(amount), 0) as total FROM address_utxos WHERE address IN ({placeholders})",
-                params,
-            ).fetchone()["total"]
-            received = self._conn.execute(
-                f"SELECT COALESCE(SUM(amount), 0) as total FROM address_history WHERE address IN ({placeholders})",
-                params,
-            ).fetchone()["total"]
+        conn = self._reader_conn()
+        balance = conn.execute(
+            f"SELECT COALESCE(SUM(amount), 0) as total FROM address_utxos WHERE address IN ({placeholders})",
+            params,
+        ).fetchone()["total"]
+        received = conn.execute(
+            f"SELECT COALESCE(SUM(amount), 0) as total FROM address_history WHERE address IN ({placeholders})",
+            params,
+        ).fetchone()["total"]
         return int(balance or 0), int(received or 0)
 
     def get_address_txids(
@@ -647,8 +687,8 @@ class StateDB:
             query += " AND height <= ?"
             params.append(int(end))
         query += " GROUP BY txid ORDER BY height"
-        with self._lock:
-            rows = self._conn.execute(query, tuple(params)).fetchall()
+        conn = self._reader_conn()
+        rows = conn.execute(query, tuple(params)).fetchall()
         if not include_height:
             return [row["txid"] for row in rows]
         results: list[dict[str, Any]] = []
@@ -658,6 +698,120 @@ class StateDB:
             block_hash = header.hash if header else None
             results.append({"txid": row["txid"], "height": height, "blockhash": block_hash})
         return results
+
+    # Transaction + block metrics helpers --------------------------------------
+
+    def index_block_transactions(self, block_hash: str, height: int, txids: Sequence[str]) -> None:
+        self._ensure_open()
+        if not txids:
+            return
+        with self.transaction() as conn:
+            for position, txid in enumerate(txids):
+                conn.execute(
+                    """
+                    INSERT INTO tx_index(txid, block_hash, height, position)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(txid) DO UPDATE SET
+                        block_hash=excluded.block_hash,
+                        height=excluded.height,
+                        position=excluded.position
+                    """,
+                    (txid, block_hash, height, position),
+                )
+
+    def remove_block_transactions(self, block_hash: str) -> None:
+        self._ensure_open()
+        with self.transaction() as conn:
+            conn.execute("DELETE FROM tx_index WHERE block_hash=?", (block_hash,))
+
+    def get_transaction_location(self, txid: str) -> tuple[str, int, int] | None:
+        self._ensure_open()
+        conn = self._reader_conn()
+        row = conn.execute(
+            "SELECT block_hash, height, position FROM tx_index WHERE txid=?",
+            (txid,),
+        ).fetchone()
+        if row is None:
+            return None
+        return row["block_hash"], row["height"], row["position"]
+
+    def record_block_metrics(
+        self,
+        block_hash: str,
+        height: int,
+        timestamp: int,
+        tx_count: int,
+        *,
+        total_fee: int,
+        total_weight: int,
+        total_size: int,
+    ) -> None:
+        self._ensure_open()
+        prev_cumulative = 0
+        if height > 0:
+            conn = self._reader_conn()
+            row = conn.execute(
+                "SELECT cumulative_tx FROM block_metrics WHERE height=?",
+                (height - 1,),
+            ).fetchone()
+            if row:
+                prev_cumulative = int(row["cumulative_tx"])
+        cumulative_tx = prev_cumulative + tx_count
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO block_metrics(hash, height, tx_count, timestamp, total_fee, total_weight, total_size, cumulative_tx)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(hash) DO UPDATE SET
+                    height=excluded.height,
+                    tx_count=excluded.tx_count,
+                    timestamp=excluded.timestamp,
+                    total_fee=excluded.total_fee,
+                    total_weight=excluded.total_weight,
+                    total_size=excluded.total_size,
+                    cumulative_tx=excluded.cumulative_tx
+                """,
+                (block_hash, height, tx_count, timestamp, total_fee, total_weight, total_size, cumulative_tx),
+            )
+
+    def remove_block_metrics(self, block_hash: str) -> None:
+        self._ensure_open()
+        with self.transaction() as conn:
+            conn.execute("DELETE FROM block_metrics WHERE hash=?", (block_hash,))
+
+    def get_block_metrics_by_height(self, height: int) -> dict[str, Any] | None:
+        self._ensure_open()
+        conn = self._reader_conn()
+        row = conn.execute(
+            """
+            SELECT hash, height, tx_count, timestamp, total_fee, total_weight, total_size, cumulative_tx
+            FROM block_metrics WHERE height=?
+            """,
+            (height,),
+        ).fetchone()
+        if row is None:
+            return None
+        return dict(row)
+
+    def get_block_metrics_by_hash(self, block_hash: str) -> dict[str, Any] | None:
+        self._ensure_open()
+        conn = self._reader_conn()
+        row = conn.execute(
+            """
+            SELECT hash, height, tx_count, timestamp, total_fee, total_weight, total_size, cumulative_tx
+            FROM block_metrics WHERE hash=?
+            """,
+            (block_hash,),
+        ).fetchone()
+        if row is None:
+            return None
+        return dict(row)
+
+    def get_cumulative_tx(self, height: int) -> int:
+        metrics = self.get_block_metrics_by_height(height)
+        if not metrics:
+            return 0
+        return int(metrics["cumulative_tx"])
 
     def _upsert_address_utxo(self, conn: sqlite3.Connection, record: UTXORecord) -> None:
         address = self._address_from_script(record.script_pubkey)
@@ -706,40 +860,40 @@ class StateDB:
     def get_upgrade_activation_height(self, upgrade_name: str) -> int | None:
         """Get the activation height of an upgrade."""
         self._ensure_open()
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT activation_height FROM upgrades WHERE name=?",
-                (upgrade_name,)
-            ).fetchone()
-            return row["activation_height"] if row else None
+        conn = self._reader_conn()
+        row = conn.execute(
+            "SELECT activation_height FROM upgrades WHERE name=?",
+            (upgrade_name,)
+        ).fetchone()
+        return row["activation_height"] if row else None
 
     def get_header_by_height(self, height: int) -> HeaderData | None:
         """Get header by height (assumes main chain)."""
         self._ensure_open()
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT hash, prev_hash, height, bits, nonce, timestamp, merkle_root, chainwork, status "
-                "FROM headers WHERE height=? AND status=0 LIMIT 1",
-                (height,)
-            ).fetchone()
-            if not row:
-                return None
-            return HeaderData(
-                hash=row["hash"],
-                prev_hash=row["prev_hash"],
-                height=row["height"],
-                bits=row["bits"],
-                nonce=row["nonce"],
-                timestamp=row["timestamp"],
-                merkle_root=row["merkle_root"],
-                chainwork=row["chainwork"],
-                status=row["status"],
-            )
+        conn = self._reader_conn()
+        row = conn.execute(
+            "SELECT hash, prev_hash, height, bits, nonce, timestamp, merkle_root, chainwork, status "
+            "FROM headers WHERE height=? AND status=0 LIMIT 1",
+            (height,)
+        ).fetchone()
+        if not row:
+            return None
+        return HeaderData(
+            hash=row["hash"],
+            prev_hash=row["prev_hash"],
+            height=row["height"],
+            bits=row["bits"],
+            nonce=row["nonce"],
+            timestamp=row["timestamp"],
+            merkle_root=row["merkle_root"],
+            chainwork=row["chainwork"],
+            status=row["status"],
+        )
 
     def get_max_header_height(self) -> int:
         self._ensure_open()
-        with self._lock:
-            row = self._conn.execute("SELECT MAX(height) AS max_height FROM headers").fetchone()
+        conn = self._reader_conn()
+        row = conn.execute("SELECT MAX(height) AS max_height FROM headers").fetchone()
         if row is None or row["max_height"] is None:
             return 0
         return int(row["max_height"])
