@@ -16,7 +16,7 @@ from ..core.tx import COIN, Transaction
 from ..mempool import Mempool, MempoolError
 from ..mining.templates import TemplateBuilder
 from ..policy import MIN_RELAY_FEE_RATE
-from ..storage import BlockStore, StateDB
+from ..storage import BlockStore, HeaderData, StateDB
 from ..time_sync import TimeManager
 from ..wallet import WalletError, WalletLockedError, WalletManager, coins_to_liners
 
@@ -70,6 +70,8 @@ class RPCHandlers:
             "gettimesyncinfo": self.gettimesyncinfo,
             "getindexinfo": self.getindexinfo,
             "estimatesmartfee": self.estimatesmartfee,
+            "getblockheader": self.getblockheader,
+            "getchaintxstats": self.getchaintxstats,
         }
         if self.wallet:
             self._methods.update(
@@ -476,6 +478,73 @@ class RPCHandlers:
             "estimate_mode": estimate_mode or "CONSERVATIVE",
         }
 
+    def getblockheader(self, block_hash: str, verbose: bool = True) -> Any:
+        block, header = self._load_block_by_hash(block_hash)
+        best = self.state_db.get_best_tip()
+        confirmations = 0
+        if best and header.status == 0:
+            confirmations = max(0, best[1] - header.height + 1)
+        if not verbose:
+            return block.header.serialize().hex()
+        next_header = self.state_db.get_main_header_at_height(header.height + 1)
+        return {
+            "hash": header.hash,
+            "confirmations": confirmations,
+            "height": header.height,
+            "version": block.header.version,
+            "versionHex": f"{block.header.version:08x}",
+            "merkleroot": header.merkle_root,
+            "time": header.timestamp,
+            "mediantime": header.timestamp,
+            "nonce": block.header.nonce,
+            "bits": f"{header.bits:08x}",
+            "difficulty": self._difficulty_from_bits(header.bits),
+            "chainwork": header.chainwork,
+            "previousblockhash": header.prev_hash,
+            "nextblockhash": next_header.hash if next_header else None,
+        }
+
+    def getchaintxstats(self, nblocks: int | None = None, blockhash: str | None = None) -> dict[str, Any]:
+        best = self.state_db.get_best_tip()
+        if not best:
+            raise RPCError(-8, "Blockchain not initialized")
+        if blockhash:
+            end_header = self.state_db.get_header(blockhash)
+            if end_header is None:
+                raise RPCError(-5, "Block not found")
+        else:
+            end_header = self.state_db.get_header(best[0])
+        assert end_header is not None
+        end_height = end_header.height
+        if nblocks is None or nblocks <= 0:
+            start_height = 0
+        else:
+            start_height = max(0, end_height - int(nblocks))
+        start_header = self.state_db.get_main_header_at_height(start_height)
+        if start_header is None:
+            raise RPCError(-8, "Start block missing")
+        total_tx = 0
+        window_tx = 0
+        for height in range(0, end_height + 1):
+            block, _ = self._block_by_height(height)
+            tx_count = len(block.transactions)
+            total_tx += tx_count
+            if height > start_height:
+                window_tx += tx_count
+        window_interval = max(1, end_header.timestamp - start_header.timestamp)
+        window_block_count = end_height - start_height
+        txrate = window_tx / window_interval if window_interval > 0 else 0
+        return {
+            "time": end_header.timestamp,
+            "txcount": total_tx,
+            "window_final_block_height": end_height,
+            "window_final_block_hash": end_header.hash,
+            "window_block_count": window_block_count,
+            "window_interval": window_interval,
+            "window_tx_count": window_tx,
+            "txrate": txrate,
+        }
+
     def _require_wallet(self) -> WalletManager:
         if not self.wallet:
             raise RPCError(-32601, "Wallet disabled")
@@ -619,6 +688,20 @@ class RPCHandlers:
 
     # Helper utilities ----------------------------------------------------------
 
+    def _load_block_by_hash(self, block_hash: str) -> tuple[Block, HeaderData]:
+        header = self.state_db.get_header(block_hash)
+        if header is None:
+            raise RPCError(-5, "Block not found")
+        raw = self.block_store.get_block(block_hash)
+        block = Block.parse(raw)
+        return block, header
+
+    def _block_by_height(self, height: int) -> tuple[Block, HeaderData]:
+        header = self.state_db.get_main_header_at_height(int(height))
+        if header is None:
+            raise RPCError(-8, "Block height out of range")
+        return self._load_block_by_hash(header.hash)
+
     def _find_transaction(self, txid: str) -> tuple[Transaction | None, str | None, int | None]:
         tx = self.mempool.get(txid)
         if tx:
@@ -671,9 +754,7 @@ class RPCHandlers:
         header = self.state_db.get_header(best[0])
         if header is None:
             return 1.0
-        target = difficulty.compact_to_target(header.bits)
-        max_target = difficulty.compact_to_target(self.chain.config.mining.initial_bits)
-        return max_target / target if target > 0 else 1.0
+        return self._difficulty_from_bits(header.bits)
 
     def _chain_storage_bytes(self) -> int:
         total = 0
@@ -690,3 +771,8 @@ class RPCHandlers:
             if isinstance(path, Path) and path.exists():
                 total += path.stat().st_size
         return total
+
+    def _difficulty_from_bits(self, bits: int) -> float:
+        target = difficulty.compact_to_target(bits)
+        max_target = difficulty.compact_to_target(self.chain.config.mining.initial_bits)
+        return max_target / target if target > 0 else 1.0
