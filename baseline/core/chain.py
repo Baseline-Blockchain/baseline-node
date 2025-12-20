@@ -36,7 +36,7 @@ EARLY_RETARGET_CLAMP = 2
 DEFAULT_RETARGET_CLAMP = 4
 
 CONSENSUS_DEFAULTS = {
-    "coinbase_maturity": 5,
+    "coinbase_maturity": 20,
     "block_interval_target": 20,
     "retarget_interval": 20,
     "initial_bits": 0x207FFFFF,

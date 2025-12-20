@@ -18,7 +18,7 @@ This document captures the normative behavior implemented by the current Baselin
 
 1. No transaction may create money: sum(outputs) ≤ sum(inputs).
 2. Coinbase transaction must include the block height as the first push in `scriptSig` (BIP34-style).
-3. Coinbase outputs mature after `coinbase_maturity` (=5) blocks. Spending them earlier is invalid.
+3. Coinbase outputs mature after `coinbase_maturity` (=20) blocks. Spending them earlier is invalid.
 4. Maximum serialized transaction size enforced by policy is 100 kB; scripts ≥1,650 bytes (`scriptSig`) or ≥10 kB (`scriptPubKey`) are rejected by the mempool.
 5. Script execution follows Bitcoin’s stack machine with standard P2PKH validation.
 

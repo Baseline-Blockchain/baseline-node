@@ -109,7 +109,7 @@ DEFAULT_FOUNDATION_ADDRESS = "NWbEjugszdRCVHaaX1mDXVqgUr6Yk1uQ8U"
 
 @dataclass(slots=True)
 class MiningConfig:
-    coinbase_maturity: int = 5
+    coinbase_maturity: int = 20
     block_interval_target: int = 20  # seconds
     retarget_interval: int = 20  # blocks
     initial_bits: int = 0x207fffff

@@ -27,7 +27,7 @@ When a worker submits a share above the network difficulty, the Stratum server c
 
 1. **Share submission** → `record_share(worker_id, address, difficulty)` accumulates per-worker virtual shares.
 2. **Block found** → `record_block(height, coinbase_txid, reward)` snapshots shares, subtracts pool fee (`mining.pool_fee_percent`), and adds the entry to `pending_blocks`.
-3. **Maturity** → `process_maturity(best_height)` waits `mining.coinbase_maturity` blocks (5 by default) before moving pending rewards to worker balances. Fees + rounding dust accumulate in `pool_balance`.
+3. **Maturity** → `process_maturity(best_height)` waits `mining.coinbase_maturity` blocks (20 by default) before moving pending rewards to worker balances. Fees + rounding dust accumulate in `pool_balance`.
 4. **Payout transaction** → `create_payout_transaction(state_db)` sweeps matured coinbase UTXOs into a multi-output transaction once enough workers exceed `mining.min_payout` (denominated in liners). The tx is signed with `mining.pool_private_key` and broadcast through the mempool.
 
 ### Ledger Anatomy
@@ -66,7 +66,7 @@ Monitor this file (or expose it via tooling) to audit payouts.
 
 ## Coinbase Maturity & Wallet Integration
 
-- Coinbase outputs require `mining.coinbase_maturity` confirmations before being spendable.
+- Coinbase outputs require `mining.coinbase_maturity` confirmations (20 by default) before being spendable.
 - Once matured, payouts call into the wallet/mempool; set `min_payout` high enough to avoid dust and keep transactions under ~100 kB.
 - To monitor rewards, import the pool’s private key into a watch-only wallet or decode the payout transaction via `listtransactions`.
 

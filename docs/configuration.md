@@ -41,7 +41,7 @@ Baseline loads `config.json`, fills in deterministic defaults from `NodeConfig`,
     "max_jobs": 12
   },
   "mining": {
-    "coinbase_maturity": 5,
+    "coinbase_maturity": 20,
     "block_interval_target": 20,
     "retarget_interval": 20,
     "initial_bits": 546098431,
