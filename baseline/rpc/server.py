@@ -8,11 +8,35 @@ import asyncio
 import base64
 import contextlib
 import json
+import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from ..config import NodeConfig
 from .handlers import RPCError, RPCHandlers
+
+
+class _TokenBucket:
+    """Simple token bucket used for per-client rate limiting."""
+
+    __slots__ = ("capacity", "tokens", "refill_rate", "updated")
+
+    def __init__(self, capacity: int, refill_rate: float):
+        self.capacity = max(1, capacity)
+        self.tokens = float(self.capacity)
+        self.refill_rate = refill_rate
+        self.updated = time.monotonic()
+
+    def consume(self, amount: float = 1.0) -> bool:
+        now = time.monotonic()
+        elapsed = now - self.updated
+        self.updated = now
+        self.tokens = min(self.capacity, self.tokens + elapsed * self.refill_rate)
+        if self.tokens >= amount:
+            self.tokens -= amount
+            return True
+        return False
 
 
 class RPCServer:
@@ -23,15 +47,27 @@ class RPCServer:
         self.host = config.rpc.host
         self.port = config.rpc.port
         self.max_request_bytes = config.rpc.max_request_bytes
+        self.request_timeout = config.rpc.request_timeout
         self.username = config.rpc.username
         self.password = config.rpc.password
         self.server: asyncio.AbstractServer | None = None
         self._stop_event = asyncio.Event()
         self._start_time = time.time()
+        self._worker_threads = max(1, config.rpc.worker_threads)
+        self._max_batch_size = config.rpc.max_batch_size
+        self._max_batch_concurrency = config.rpc.max_batch_concurrency
+        self._max_requests_per_minute = config.rpc.max_requests_per_minute
+        self._executor: ThreadPoolExecutor | None = None
+        self._rate_limits: dict[str, _TokenBucket] = {}
+        self._body_chunk = 64 * 1024
 
     async def start(self) -> None:
         if self.server:
             return
+        if self._executor is None:
+            # Bump worker count relative to available CPUs for better throughput
+            max_workers = self._worker_threads or max(4, (os.cpu_count() or 4))
+            self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="baseline-rpc")
         self._stop_event.clear()
         self.server = await asyncio.start_server(self._handle_client, self.host, self.port)
 
@@ -42,61 +78,114 @@ class RPCServer:
         self.server.close()
         await self.server.wait_closed()
         self.server = None
+        self._rate_limits.clear()
+        if self._executor:
+            self._executor.shutdown(wait=False)
+            self._executor = None
 
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        peer = writer.get_extra_info("peername") or ("unknown", 0)
+        client_ip = peer[0] if isinstance(peer, tuple) else str(peer)
         try:
-            request_line = await self._read_line(reader)
-            if request_line is None:
-                await self._write_response(writer, 400, b"Bad Request", b"")
-                return
-            parts = request_line.decode("utf-8", "replace").strip().split()
-            if len(parts) != 3:
-                await self._write_response(writer, 400, b"Bad Request", b"")
-                return
-            method, _path, _version = parts
-            method = method.upper()
-            headers = await self._read_headers(reader)
-            if headers is None:
-                await self._write_response(writer, 400, b"Bad Request", b"")
-                return
-            if method == "GET":
-                if not self._check_auth(headers.get("authorization")):
+            while not self._stop_event.is_set():
+                request_line = await self._read_line(reader)
+                if request_line is None:
+                    break
+                if not request_line.strip():
+                    continue
+                parts = request_line.decode("utf-8", "replace").strip().split()
+                if len(parts) != 3:
+                    await self._write_response(writer, 400, b"Bad Request", b"", keep_alive=False)
+                    break
+                method, _path, version = parts
+                method = method.upper()
+                headers = await self._read_headers(reader)
+                if headers is None:
+                    await self._write_response(writer, 400, b"Bad Request", b"", keep_alive=False)
+                    break
+                client_keep_alive = self._client_wants_keep_alive(headers, version)
+                auth_header = headers.get("authorization")
+                if method == "GET":
+                    if not self._check_auth(auth_header):
+                        await self._write_response(
+                            writer,
+                            401,
+                            b"Unauthorized",
+                            b"",
+                            keep_alive=False,
+                            extra_headers={"WWW-Authenticate": 'Basic realm="baseline"'},
+                        )
+                        break
+                    if not self._consume_rate_limit(client_ip):
+                        await self._write_response(
+                            writer,
+                            429,
+                            b"Too Many Requests",
+                            b"Rate limit exceeded",
+                            keep_alive=False,
+                            extra_headers={"Retry-After": "1"},
+                        )
+                        break
+                    panel = self._render_status_panel()
+                    await self._write_response(
+                        writer,
+                        200,
+                        b"OK",
+                        panel,
+                        keep_alive=client_keep_alive,
+                        content_type="text/plain; charset=utf-8",
+                    )
+                    if not client_keep_alive:
+                        break
+                    continue
+                if method != "POST":
+                    await self._write_response(writer, 405, b"Method Not Allowed", b"", keep_alive=False)
+                    break
+                if not self._check_auth(auth_header):
                     await self._write_response(
                         writer,
                         401,
                         b"Unauthorized",
                         b"",
+                        keep_alive=False,
                         extra_headers={"WWW-Authenticate": 'Basic realm="baseline"'},
                     )
-                    return
-                panel = self._render_status_panel()
-                await self._write_response(writer, 200, b"OK", panel, content_type="text/plain; charset=utf-8")
-                return
-            if method != "POST":
-                await self._write_response(writer, 405, b"Method Not Allowed", b"")
-                return
-            if not self._check_auth(headers.get("authorization")):
+                    break
+                if not self._consume_rate_limit(client_ip):
+                    await self._write_response(
+                        writer,
+                        429,
+                        b"Too Many Requests",
+                        b"Rate limit exceeded",
+                        keep_alive=False,
+                        extra_headers={"Retry-After": "1"},
+                    )
+                    break
+                try:
+                    content_length = int(headers.get("content-length", "0"))
+                except ValueError:
+                    await self._write_response(writer, 411, b"Length Required", b"", keep_alive=False)
+                    break
+                if content_length < 0 or content_length > self.max_request_bytes:
+                    await self._write_response(writer, 413, b"Request Entity Too Large", b"", keep_alive=False)
+                    break
+                body = await self._read_body(reader, content_length)
+                if body is None:
+                    await self._write_response(writer, 400, b"Bad Request", b"", keep_alive=False)
+                    break
+                response_payload = await self._handle_payload(body)
                 await self._write_response(
                     writer,
-                    401,
-                    b"Unauthorized",
-                    b"",
-                    extra_headers={"WWW-Authenticate": 'Basic realm="baseline"'},
+                    200,
+                    b"OK",
+                    response_payload,
+                    keep_alive=client_keep_alive,
+                    content_type="application/json",
                 )
-                return
-            try:
-                content_length = int(headers.get("content-length", "0"))
-            except ValueError:
-                await self._write_response(writer, 411, b"Length Required", b"")
-                return
-            if content_length < 0 or content_length > self.max_request_bytes:
-                await self._write_response(writer, 413, b"Request Entity Too Large", b"")
-                return
-            body = await reader.readexactly(content_length) if content_length else b""
-            response_payload = await self._handle_payload(body)
-            await self._write_response(writer, 200, b"OK", response_payload, content_type="application/json")
+                if not client_keep_alive:
+                    break
         except asyncio.IncompleteReadError:
-            await self._write_response(writer, 400, b"Bad Request", b"")
+            await self._write_response(writer, 400, b"Bad Request", b"", keep_alive=False)
         finally:
             writer.close()
             with contextlib.suppress(Exception):
@@ -108,9 +197,23 @@ class RPCServer:
         except json.JSONDecodeError:
             return json.dumps(self._error_response(None, -32700, "Parse error")).encode("utf-8")
         if isinstance(request, list):
-            responses = [await self._handle_call(item) for item in request]
+            if len(request) > self._max_batch_size:
+                return json.dumps(self._error_response(None, -32600, "Batch too large")).encode("utf-8")
+            responses = await self._handle_batch(request)
             return json.dumps(responses).encode("utf-8")
         return json.dumps(await self._handle_call(request)).encode("utf-8")
+
+    async def _handle_batch(self, batch: list[Any]) -> list[dict[str, Any]]:
+        if not batch:
+            return []
+        concurrency = max(1, self._max_batch_concurrency)
+        semaphore = asyncio.Semaphore(concurrency)
+
+        async def run(message: Any) -> dict[str, Any]:
+            async with semaphore:
+                return await self._handle_call(message)
+
+        return await asyncio.gather(*(run(entry) for entry in batch))
 
     async def _handle_call(self, message: Any) -> dict[str, Any]:
         if not isinstance(message, dict):
@@ -122,16 +225,26 @@ class RPCServer:
             return self._error_response(msg_id, -32600, "Invalid Request")
         if not isinstance(params, list):
             return self._error_response(msg_id, -32602, "Invalid params")
+        loop = asyncio.get_running_loop()
+        executor = self._executor
+        if executor is None:
+            return self._error_response(msg_id, -32603, "RPC executor unavailable")
         try:
-            result = await asyncio.to_thread(self.handlers.dispatch, method, params)
+            future = loop.run_in_executor(executor, self.handlers.dispatch, method, params)
+            result = await asyncio.wait_for(future, timeout=self.request_timeout)
         except RPCError as exc:
             return self._error_response(msg_id, exc.code, exc.message)
+        except TimeoutError:
+            return self._error_response(msg_id, -32603, "RPC handler timed out")
         except Exception as exc:  # pragma: no cover - defensive
             return self._error_response(msg_id, -32603, f"Internal error: {exc}")
         return {"jsonrpc": "2.0", "result": result, "error": None, "id": msg_id}
 
     async def _read_line(self, reader: asyncio.StreamReader) -> bytes | None:
-        line = await reader.readline()
+        try:
+            line = await asyncio.wait_for(reader.readline(), timeout=self.request_timeout)
+        except TimeoutError:
+            return None
         if not line:
             return None
         if len(line) > self.max_request_bytes:
@@ -141,7 +254,10 @@ class RPCServer:
     async def _read_headers(self, reader: asyncio.StreamReader) -> dict[str, str] | None:
         headers: dict[str, str] = {}
         while True:
-            line = await reader.readline()
+            try:
+                line = await asyncio.wait_for(reader.readline(), timeout=self.request_timeout)
+            except TimeoutError:
+                return None
             if not line:
                 return None
             if line in (b"\r\n", b"\n"):
@@ -153,6 +269,23 @@ class RPCServer:
             except ValueError:
                 return None
             headers[name.strip().lower()] = value.strip()
+
+    async def _read_body(self, reader: asyncio.StreamReader, total: int) -> bytes | None:
+        if total <= 0:
+            return b""
+        remaining = total
+        chunks: list[bytes] = []
+        while remaining > 0:
+            chunk_size = min(self._body_chunk, remaining)
+            try:
+                chunk = await asyncio.wait_for(reader.read(chunk_size), timeout=self.request_timeout)
+            except TimeoutError:
+                return None
+            if not chunk:
+                return None
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
 
     def _check_auth(self, header: str | None) -> bool:
         if not header or not header.startswith("Basic "):
@@ -175,13 +308,14 @@ class RPCServer:
         reason: bytes,
         body: bytes,
         *,
+        keep_alive: bool = False,
         content_type: str = "text/plain",
         extra_headers: dict[str, str] | None = None,
     ) -> None:
         headers = {
             "Content-Length": str(len(body)),
             "Content-Type": content_type,
-            "Connection": "close",
+            "Connection": "keep-alive" if keep_alive else "close",
         }
         if extra_headers:
             headers.update(extra_headers)
@@ -193,6 +327,25 @@ class RPCServer:
         writer.write(body)
         await writer.drain()
 
+    def _client_wants_keep_alive(self, headers: dict[str, str], version: str) -> bool:
+        connection = (headers.get("connection") or "").lower()
+        version = version.upper()
+        if version == "HTTP/1.0":
+            return connection == "keep-alive"
+        if connection == "close":
+            return False
+        return True
+
+    def _consume_rate_limit(self, client_ip: str) -> bool:
+        limit = self._max_requests_per_minute
+        if limit <= 0:
+            return True
+        bucket = self._rate_limits.get(client_ip)
+        if bucket is None:
+            bucket = _TokenBucket(limit, limit / 60.0)
+            self._rate_limits[client_ip] = bucket
+        return bucket.consume()
+
     def _render_status_panel(self) -> bytes:
         stats = self._collect_status_metrics()
         rows = [
@@ -203,7 +356,7 @@ class RPCServer:
             ("Peers", f"{stats['peers']} (in {stats['inbound']}/out {stats['outbound']})"),
             ("Sync State", stats["sync_state"]),
             ("RPC Uptime", stats["uptime"]),
-            ("Wallet", "enabled" if stats["wallet_enabled"] else "disabled"),
+            ("Wallet", stats["wallet_status"]),
             ("NTP", stats["ntp_status"]),
         ]
         label_width = max(len(label) for label, _ in rows)
@@ -248,7 +401,12 @@ class RPCServer:
             else:
                 sync_state = "steady"
         uptime = self._format_duration(now - self._start_time)
-        wallet_enabled = self.handlers.wallet is not None
+        wallet_status = "disabled"
+        if self.handlers.wallet:
+            status = self.handlers.wallet.sync_status()
+            phase = "syncing" if status["syncing"] else "ready"
+            processed = status["processed_height"]
+            wallet_status = f"{phase} ({processed:,}/{height:,})" if height else phase
         ntp = self.handlers.time_manager.get_sync_status() if self.handlers.time_manager else None
         ntp_status = "disabled"
         if ntp:
@@ -268,7 +426,7 @@ class RPCServer:
             "outbound": outbound,
             "sync_state": sync_state,
             "uptime": uptime,
-            "wallet_enabled": wallet_enabled,
+            "wallet_status": wallet_status,
             "ntp_status": ntp_status,
         }
 

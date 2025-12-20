@@ -7,9 +7,10 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import queue
 import sqlite3
 import threading
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -71,6 +72,12 @@ class StateDB:
         self._reader_local = threading.local()
         self._reader_lock = threading.Lock()
         self._reader_conns: set[sqlite3.Connection] = set()
+        self._write_queue: queue.Queue[
+            tuple[Callable[[sqlite3.Connection], Any] | None, threading.Event, list[Any]]
+        ] = queue.Queue()
+        self._writer_stop = threading.Event()
+        self._writer_thread = threading.Thread(target=self._writer_loop, name="state-writer", daemon=True)
+        self._writer_thread.start()
         self._closed = False
         self._init_schema()
         self.run_startup_checks()
@@ -80,6 +87,12 @@ class StateDB:
             # Serialize shutdown with any in-flight readers/writers so we don't
             # close the SQLite handle while another thread is mid-transaction.
             with self._lock:
+                self._writer_stop.set()
+                sentinel_done = threading.Event()
+                self._write_queue.put((None, sentinel_done, []))
+                sentinel_done.wait()
+                if self._writer_thread.is_alive():
+                    self._writer_thread.join(timeout=1.0)
                 self._conn.close()
                 self._closed = True
         self._close_readers()
@@ -209,30 +222,42 @@ class StateDB:
             with contextlib.suppress(Exception):
                 conn.close()
 
-    @contextlib.contextmanager
-    def transaction(self) -> Iterator[sqlite3.Connection]:
-        self._ensure_open()
-        with self._lock:
-            cursor = self._conn.cursor()
-            cursor.execute("BEGIN IMMEDIATE")
-            try:
-                yield self._conn
-            except Exception:
-                self._conn.rollback()
-                raise
-            else:
-                self._conn.commit()
-            finally:
-                cursor.close()
+    def transaction(self) -> contextlib.AbstractContextManager[sqlite3.Connection]:
+        class _WriteContext:
+            def __init__(self, outer: StateDB):
+                self.outer = outer
+                self.conn: sqlite3.Connection | None = None
+
+            def __enter__(self) -> sqlite3.Connection:
+                self.outer._ensure_open()
+                self.outer._lock.acquire()
+                self.conn = self.outer._conn
+                return self.conn
+
+            def __exit__(self, exc_type, exc, tb) -> bool:
+                conn = self.conn
+                self.conn = None
+                try:
+                    if conn is not None:
+                        if exc_type:
+                            conn.rollback()
+                        else:
+                            conn.commit()
+                finally:
+                    self.outer._lock.release()
+                return False
+
+        return _WriteContext(self)
 
     def set_meta(self, key: str, value: str) -> None:
         self._ensure_open()
-        with self.transaction() as conn:
-            conn.execute(
+        self._enqueue_write(
+            lambda conn: conn.execute(
                 "INSERT INTO meta(key, value) VALUES (?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (key, value),
             )
+        )
 
     def get_meta(self, key: str, default: str | None = None) -> str | None:
         self._ensure_open()
@@ -244,8 +269,8 @@ class StateDB:
 
     def store_header(self, header: HeaderData) -> None:
         self._ensure_open()
-        with self.transaction() as conn:
-            conn.execute(
+        self._enqueue_write(
+            lambda conn: conn.execute(
                 """
                 INSERT INTO headers(hash, prev_hash, height, bits, nonce, timestamp, merkle_root, chainwork, status)
                 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -271,6 +296,7 @@ class StateDB:
                     header.status,
                 ),
             )
+        )
 
     def get_header(self, block_hash: str) -> HeaderData | None:
         self._ensure_open()
@@ -296,7 +322,7 @@ class StateDB:
 
     def set_best_tip(self, block_hash: str, height: int) -> None:
         self._ensure_open()
-        with self.transaction() as conn:
+        def _update(conn: sqlite3.Connection) -> None:
             conn.execute(
                 "INSERT INTO meta(key, value) VALUES('best_hash', ?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -307,6 +333,7 @@ class StateDB:
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (str(height),),
             )
+        self._enqueue_write(_update)
 
     def get_best_tip(self) -> tuple[str, int] | None:
         self._ensure_open()
@@ -318,17 +345,17 @@ class StateDB:
 
     def upsert_chain_tip(self, block_hash: str, height: int, work: str) -> None:
         self._ensure_open()
-        with self.transaction() as conn:
-            conn.execute(
+        self._enqueue_write(
+            lambda conn: conn.execute(
                 "INSERT INTO chain_tips(hash, height, work) VALUES (?, ?, ?) "
                 "ON CONFLICT(hash) DO UPDATE SET height=excluded.height, work=excluded.work",
                 (block_hash, height, work),
             )
+        )
 
     def remove_chain_tip(self, block_hash: str) -> None:
         self._ensure_open()
-        with self.transaction() as conn:
-            conn.execute("DELETE FROM chain_tips WHERE hash=?", (block_hash,))
+        self._enqueue_write(lambda conn: conn.execute("DELETE FROM chain_tips WHERE hash=?", (block_hash,)))
 
     def list_chain_tips(self) -> list[tuple[str, int, str]]:
         self._ensure_open()
@@ -340,8 +367,7 @@ class StateDB:
 
     def set_header_status(self, block_hash: str, status: int) -> None:
         self._ensure_open()
-        with self.transaction() as conn:
-            conn.execute("UPDATE headers SET status=? WHERE hash=?", (status, block_hash))
+        self._enqueue_write(lambda conn: conn.execute("UPDATE headers SET status=? WHERE hash=?", (status, block_hash)))
 
     def get_header_status(self, block_hash: str) -> int | None:
         self._ensure_open()
@@ -390,12 +416,13 @@ class StateDB:
                 for rec in records
             ]
         ).encode("utf-8")
-        with self.transaction() as conn:
-            conn.execute(
+        self._enqueue_write(
+            lambda conn: conn.execute(
                 "INSERT INTO block_undo(hash, data) VALUES(?, ?) "
                 "ON CONFLICT(hash) DO UPDATE SET data=excluded.data",
                 (block_hash, payload),
             )
+        )
 
     def load_undo_data(self, block_hash: str) -> list[UTXORecord]:
         self._ensure_open()
@@ -604,7 +631,7 @@ class StateDB:
                 entries.append((address, txid, vout, txout.value, height))
         if not entries:
             return
-        with self.transaction() as conn:
+        def _write(conn: sqlite3.Connection) -> None:
             for address, txid, vout, amount, h in entries:
                 conn.execute(
                     """
@@ -613,15 +640,17 @@ class StateDB:
                     """,
                     (address, txid, vout, amount, h),
                 )
+        self._enqueue_write(_write)
 
     def remove_block_address_index(self, block: Block) -> None:
         self._ensure_open()
         txids = [tx.txid() for tx in block.transactions]
         if not txids:
             return
-        with self.transaction() as conn:
+        def _write(conn: sqlite3.Connection) -> None:
             for txid in txids:
                 conn.execute("DELETE FROM address_history WHERE txid=?", (txid,))
+        self._enqueue_write(_write)
 
     def get_address_utxos(self, addresses: Sequence[str]) -> list[dict[str, Any]]:
         self._ensure_open()
@@ -705,7 +734,7 @@ class StateDB:
         self._ensure_open()
         if not txids:
             return
-        with self.transaction() as conn:
+        def _write(conn: sqlite3.Connection) -> None:
             for position, txid in enumerate(txids):
                 conn.execute(
                     """
@@ -718,11 +747,11 @@ class StateDB:
                     """,
                     (txid, block_hash, height, position),
                 )
+        self._enqueue_write(_write)
 
     def remove_block_transactions(self, block_hash: str) -> None:
         self._ensure_open()
-        with self.transaction() as conn:
-            conn.execute("DELETE FROM tx_index WHERE block_hash=?", (block_hash,))
+        self._enqueue_write(lambda conn: conn.execute("DELETE FROM tx_index WHERE block_hash=?", (block_hash,)))
 
     def get_transaction_location(self, txid: str) -> tuple[str, int, int] | None:
         self._ensure_open()
@@ -757,8 +786,8 @@ class StateDB:
             if row:
                 prev_cumulative = int(row["cumulative_tx"])
         cumulative_tx = prev_cumulative + tx_count
-        with self.transaction() as conn:
-            conn.execute(
+        self._enqueue_write(
+            lambda conn: conn.execute(
                 """
                 INSERT INTO block_metrics(hash, height, tx_count, timestamp, total_fee, total_weight, total_size, cumulative_tx)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -773,11 +802,11 @@ class StateDB:
                 """,
                 (block_hash, height, tx_count, timestamp, total_fee, total_weight, total_size, cumulative_tx),
             )
+        )
 
     def remove_block_metrics(self, block_hash: str) -> None:
         self._ensure_open()
-        with self.transaction() as conn:
-            conn.execute("DELETE FROM block_metrics WHERE hash=?", (block_hash,))
+        self._enqueue_write(lambda conn: conn.execute("DELETE FROM block_metrics WHERE hash=?", (block_hash,)))
 
     def get_block_metrics_by_height(self, height: int) -> dict[str, Any] | None:
         self._ensure_open()
@@ -897,3 +926,32 @@ class StateDB:
         if row is None or row["max_height"] is None:
             return 0
         return int(row["max_height"])
+    def _enqueue_write(self, fn: Callable[[sqlite3.Connection], Any]) -> None:
+        if self._closed:
+            raise StateDBError("StateDB connection is closed")
+        done = threading.Event()
+        result: list[Any] = []
+        self._write_queue.put((fn, done, result))
+        done.wait()
+        if result and isinstance(result[0], Exception):
+            raise result[0]
+
+    def _writer_loop(self) -> None:
+        while not self._writer_stop.is_set():
+            try:
+                fn, done, result_holder = self._write_queue.get()
+            except Exception:
+                continue
+            if fn is None:
+                done.set()
+                if self._writer_stop.is_set():
+                    break
+                continue
+            try:
+                with self.transaction() as conn:
+                    fn(conn)
+                result_holder.append(None)
+            except Exception as exc:
+                result_holder.append(exc)
+            finally:
+                done.set()

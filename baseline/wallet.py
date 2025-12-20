@@ -72,13 +72,28 @@ class WalletManager:
         self.block_store = block_store
         self.mempool = mempool
         self.lock = threading.RLock()
+        self._sync_lock = threading.Lock()
         self._unlocked_seed: bytes | None = None
         self._unlock_until: float | None = None
         self._active_key: bytes | None = None
         self.data: dict[str, object] = {}
+        self._sync_event = threading.Event()
+        self._sync_stop = threading.Event()
+        self._sync_thread: threading.Thread | None = None
+        self._sync_should_abort: Callable[[], bool] | None = None
+        self._pending_sync_lock = threading.Lock()
+        self._pending_sync_max_blocks: int | None = None
+        self._sync_status_lock = threading.Lock()
+        self._sync_status: dict[str, object] = {
+            "syncing": False,
+            "last_error": "",
+            "last_sync": None,
+            "processed_height": -1,
+        }
         self._load()
         if not self.data["addresses"] and not self.is_encrypted():
             self.get_new_address("default")
+        self._sync_status["processed_height"] = int(self.data.get("processed_height", -1))
 
     def _load(self) -> None:
         if not self.path.exists():
@@ -394,9 +409,12 @@ class WalletManager:
         if not best:
             return True
         best_height = best[1]
-        start = int(self.data.get("processed_height", -1)) + 1
+        processed_height = int(self.data.get("processed_height", -1))
+        start = processed_height + 1
         if start > best_height:
+            self._update_sync_status(processed_height=processed_height, syncing=False)
             return True
+        self._update_sync_status(syncing=True, last_error="")
 
         def aborted() -> bool:
             return bool(should_abort and should_abort())
@@ -462,7 +480,14 @@ class WalletManager:
                 break
         if dirty:
             self._save()
-        return self.data.get("processed_height", -1) >= best_height
+        processed_height = int(self.data.get("processed_height", -1))
+        self._update_sync_status(
+            syncing=False,
+            last_sync=time.time(),
+            processed_height=processed_height,
+            last_error="",
+        )
+        return processed_height >= best_height
 
     def get_transaction(self, txid: str) -> dict[str, object] | None:
         txs: dict[str, dict] = self.data.get("transactions", {})
@@ -509,13 +534,66 @@ class WalletManager:
 
     def wallet_info(self) -> dict[str, object]:
         best = self.state_db.get_best_tip()
+        status = self.sync_status()
         return {
             "encrypted": self.is_encrypted(),
             "locked": self.is_locked(),
             "address_count": len(self.data.get("addresses", {})),
             "next_index": int(self.data.get("next_index", 0)),
             "best_height": best[1] if best else -1,
+            "syncing": bool(status["syncing"]),
+            "last_sync": status["last_sync"],
+            "processed_height": status["processed_height"],
         }
+
+    # Background sync management ------------------------------------------------
+
+    def start_background_sync(self, should_abort: Callable[[], bool] | None = None) -> None:
+        with self._sync_lock:
+            if self._sync_thread and self._sync_thread.is_alive():
+                return
+            if should_abort is not None:
+                self._sync_should_abort = should_abort
+            self._sync_stop.clear()
+            thread = threading.Thread(target=self._sync_worker, name="wallet-sync", daemon=True)
+            self._sync_thread = thread
+            thread.start()
+
+    def ensure_background_sync(self, should_abort: Callable[[], bool] | None = None) -> None:
+        if self._sync_thread and self._sync_thread.is_alive():
+            return
+        self.start_background_sync(should_abort or self._sync_should_abort)
+
+    def stop_background_sync(self) -> None:
+        with self._sync_lock:
+            if not self._sync_thread:
+                return
+            self._sync_stop.set()
+            self._sync_event.set()
+            thread = self._sync_thread
+            self._sync_thread = None
+        thread.join(timeout=1.0)
+
+    def request_sync(self, max_blocks: int | None = None) -> None:
+        with self._pending_sync_lock:
+            if max_blocks is None:
+                self._pending_sync_max_blocks = None
+            elif self._pending_sync_max_blocks is None:
+                self._pending_sync_max_blocks = max_blocks
+            else:
+                self._pending_sync_max_blocks = max(max_blocks, self._pending_sync_max_blocks)
+        self._sync_event.set()
+
+    def needs_sync(self) -> bool:
+        best = self.state_db.get_best_tip()
+        if not best:
+            return False
+        processed = int(self.data.get("processed_height", -1))
+        return processed < best[1]
+
+    def sync_status(self) -> dict[str, object]:
+        with self._sync_status_lock:
+            return dict(self._sync_status)
 
     def list_addresses(self) -> list[dict[str, object]]:
         result: list[dict[str, object]] = []
@@ -756,3 +834,32 @@ class WalletManager:
             self._save()
         if rescan:
             self.sync_chain()
+
+    def _sync_worker(self) -> None:
+        while not self._sync_stop.is_set():
+            self._sync_event.wait()
+            self._sync_event.clear()
+            if self._sync_stop.is_set():
+                break
+            max_blocks = self._drain_pending_sync_request()
+            try:
+                self.sync_chain(self._background_should_abort, max_blocks)
+            except Exception as exc:  # noqa: BLE001 - background logging
+                self._update_sync_status(syncing=False, last_error=str(exc))
+
+    def _drain_pending_sync_request(self) -> int | None:
+        with self._pending_sync_lock:
+            value = self._pending_sync_max_blocks
+            self._pending_sync_max_blocks = None
+            return value
+
+    def _background_should_abort(self) -> bool:
+        if self._sync_stop.is_set():
+            return True
+        if self._sync_should_abort and self._sync_should_abort():
+            return True
+        return False
+
+    def _update_sync_status(self, **updates: object) -> None:
+        with self._sync_status_lock:
+            self._sync_status.update(updates)

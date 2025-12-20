@@ -57,6 +57,7 @@ class RPCTestCase(unittest.TestCase):
         )
 
     def tearDown(self) -> None:
+        self.wallet.stop_background_sync()
         self.state_db.close()
         self.tmpdir.cleanup()
 

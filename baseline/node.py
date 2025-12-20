@@ -78,7 +78,9 @@ class BaselineNode:
             raise
         self._stop_event.clear()
         self._started = True
-        self._tasks["housekeeping"] = asyncio.create_task(self._housekeeping(), name="housekeeping")
+        self._tasks["payouts"] = asyncio.create_task(self._payout_task(), name="payouts")
+        self._tasks["wallet-maint"] = asyncio.create_task(self._wallet_task(), name="wallet-maint")
+        self._tasks["time-monitor"] = asyncio.create_task(self._time_monitor_task(), name="time-monitor")
 
     async def stop(self) -> None:
         if not self._started:
@@ -103,8 +105,12 @@ class BaselineNode:
         if self.time_manager:
             self.time_manager.stop()
             self.time_manager = None
+        if self.wallet:
+            self.wallet.stop_background_sync()
         if self.network:
             await self.network.stop()
+        if self.mempool:
+            self.mempool.close()
         self._started = False
 
     def close(self) -> None:
@@ -127,20 +133,41 @@ class BaselineNode:
         self.log.warning("Shutdown requested")
         self._stop_event.set()
 
-    async def _housekeeping(self) -> None:
-        while not self._stop_event.is_set():
-            await asyncio.sleep(5)
-            if self._shutdown_requested:
-                break
-            await self._run_payout_cycle()
-            if self._shutdown_requested:
-                break
-            if self.wallet:
-                self.wallet.sync_chain(self._wallet_should_abort, 200)
-                if self._shutdown_requested:
-                    break
-                self.wallet.tick()
-            self._monitor_time_sync()
+    async def _wait_or_stop(self, timeout: float) -> bool:
+        if self._stop_event.is_set():
+            return True
+        try:
+            await asyncio.wait_for(self._stop_event.wait(), timeout=timeout)
+            return True
+        except TimeoutError:
+            return False
+
+    async def _payout_task(self) -> None:
+        try:
+            while not await self._wait_or_stop(5):
+                await self._run_payout_cycle()
+        except asyncio.CancelledError:  # pragma: no cover - shutdown path
+            pass
+
+    async def _wallet_task(self) -> None:
+        try:
+            while not await self._wait_or_stop(5):
+                if not self.wallet:
+                    continue
+                try:
+                    self.wallet.request_sync(max_blocks=200)
+                    self.wallet.tick()
+                except Exception:  # pragma: no cover - defensive
+                    self.log.exception("Wallet maintenance loop failed")
+        except asyncio.CancelledError:  # pragma: no cover - shutdown path
+            pass
+
+    async def _time_monitor_task(self) -> None:
+        try:
+            while not await self._wait_or_stop(10):
+                self._monitor_time_sync()
+        except asyncio.CancelledError:  # pragma: no cover - shutdown path
+            pass
 
     def _initialize_time_sync(self) -> None:
         """Initialize NTP time synchronization."""
@@ -194,6 +221,8 @@ class BaselineNode:
         wallet_path.parent.mkdir(parents=True, exist_ok=True)
         self.wallet = WalletManager(wallet_path, self.state_db, self.block_store, self.mempool)
         self.wallet.sync_chain(self._wallet_should_abort)
+        self.wallet.start_background_sync(self._wallet_should_abort)
+        self.wallet.request_sync()
 
     def _initialize_rpc(self) -> None:
         if not (self.chain and self.mempool):
@@ -216,11 +245,7 @@ class BaselineNode:
         if not (self.chain and self.payout_tracker and self.mempool):
             return
         try:
-            best = self.chain.state_db.get_best_tip()
-            if not best:
-                return
-            self.payout_tracker.process_maturity(best[1])
-            tx = self.payout_tracker.create_payout_transaction(self.chain.state_db)
+            tx = await asyncio.to_thread(self._prepare_payout_transaction)
             if tx is None:
                 return
             await asyncio.to_thread(self._accept_payout_tx, tx)
@@ -235,6 +260,14 @@ class BaselineNode:
             self.mempool.accept_transaction(tx, peer_id="payout")
         except MempoolError as exc:
             self.log.warning("Failed to enqueue payout tx %s: %s", tx.txid(), exc)
+
+    def _prepare_payout_transaction(self):
+        assert self.chain and self.payout_tracker
+        best = self.chain.state_db.get_best_tip()
+        if not best:
+            return None
+        self.payout_tracker.process_maturity(best[1])
+        return self.payout_tracker.create_payout_transaction(self.chain.state_db)
 
     def _monitor_time_sync(self) -> None:
         """Monitor time synchronization status and log warnings."""

@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
 import time
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +53,13 @@ class RPCHandlers:
         self.wallet = wallet
         self.time_manager = time_manager
         self._start_time = time.time()
+        self._cache_lock = threading.RLock()
+        self._block_cache: OrderedDict[str, tuple[Block, HeaderData]] = OrderedDict()
+        self._block_cache_limit = 64
+        self._tx_cache: OrderedDict[str, tuple[Transaction, str | None, int | None]] = OrderedDict()
+        self._tx_cache_limit = 512
+        self._block_stats_cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        self._block_stats_limit = 128
         self._methods = {
             "getblockcount": self.getblockcount,
             "getbestblockhash": self.getbestblockhash,
@@ -130,17 +139,16 @@ class RPCHandlers:
 
     def getrawmempool(self, verbose: bool = False) -> Any:
         with self.mempool.lock:
-            entries = dict(self.mempool.entries)
-        if not verbose:
-            return list(entries.keys())
-        result = {}
-        for txid, entry in entries.items():
-            result[txid] = {
-                "size": entry.size,
-                "fee": entry.fee / COIN,
-                "time": int(entry.time),
-                "depends": list(entry.depends),
-            }
+            if not verbose:
+                return list(self.mempool.entries.keys())
+            result: dict[str, Any] = {}
+            for txid, entry in self.mempool.entries.items():
+                result[txid] = {
+                    "size": entry.size,
+                    "fee": entry.fee / COIN,
+                    "time": int(entry.time),
+                    "depends": list(entry.depends),
+                }
         return result
 
     def getaddressutxos(self, options: Any) -> list[dict[str, Any]]:
@@ -693,8 +701,13 @@ class RPCHandlers:
             if header is None:
                 raise RPCError(-8, "Block height out of range")
             block_hash = header.hash
-        block, _ = self._load_block_by_hash(block_hash)
-        stats_all = self._compute_block_stats(block, header)
+        cached = self._get_block_stats_cached(block_hash)
+        if cached is None:
+            block, _ = self._load_block_by_hash(block_hash)
+            stats_all = self._compute_block_stats(block, header)
+            self._remember_block_stats(block_hash, stats_all)
+        else:
+            stats_all = cached
         if stats:
             filtered = {key: stats_all[key] for key in stats if key in stats_all}
             return filtered
@@ -707,8 +720,9 @@ class RPCHandlers:
 
     def _wallet_call(self, func, *args, sync: bool = True, **kwargs):
         wallet = self._require_wallet()
-        if sync:
-            wallet.sync_chain()
+        wallet.ensure_background_sync()
+        if sync and wallet.needs_sync():
+            wallet.request_sync()
         try:
             return func(wallet, *args, **kwargs)
         except WalletLockedError as exc:
@@ -843,12 +857,64 @@ class RPCHandlers:
 
     # Helper utilities ----------------------------------------------------------
 
+    def _remember_block(self, block_hash: str, block: Block, header: HeaderData) -> None:
+        with self._cache_lock:
+            cache = self._block_cache
+            cache[block_hash] = (block, header)
+            cache.move_to_end(block_hash)
+            if len(cache) > self._block_cache_limit:
+                cache.popitem(last=False)
+
+    def _get_cached_block(self, block_hash: str) -> tuple[Block, HeaderData] | None:
+        with self._cache_lock:
+            cached = self._block_cache.get(block_hash)
+            if cached:
+                self._block_cache.move_to_end(block_hash)
+                return cached
+            return None
+
+    def _remember_tx(self, tx: Transaction, block_hash: str | None, height: int | None) -> None:
+        with self._cache_lock:
+            cache = self._tx_cache
+            cache[tx.txid()] = (tx, block_hash, height)
+            cache.move_to_end(tx.txid())
+            if len(cache) > self._tx_cache_limit:
+                cache.popitem(last=False)
+
+    def _get_cached_tx(self, txid: str) -> tuple[Transaction, str | None, int | None] | None:
+        with self._cache_lock:
+            cached = self._tx_cache.get(txid)
+            if cached:
+                self._tx_cache.move_to_end(txid)
+                return cached
+            return None
+
+    def _remember_block_stats(self, block_hash: str, stats: dict[str, Any]) -> None:
+        with self._cache_lock:
+            cache = self._block_stats_cache
+            cache[block_hash] = stats
+            cache.move_to_end(block_hash)
+            if len(cache) > self._block_stats_limit:
+                cache.popitem(last=False)
+
+    def _get_block_stats_cached(self, block_hash: str) -> dict[str, Any] | None:
+        with self._cache_lock:
+            stats = self._block_stats_cache.get(block_hash)
+            if stats:
+                self._block_stats_cache.move_to_end(block_hash)
+                return stats
+            return None
+
     def _load_block_by_hash(self, block_hash: str) -> tuple[Block, HeaderData]:
+        cached = self._get_cached_block(block_hash)
+        if cached:
+            return cached
         header = self.state_db.get_header(block_hash)
         if header is None:
             raise RPCError(-5, "Block not found")
         raw = self.block_store.get_block(block_hash)
         block = Block.parse(raw)
+        self._remember_block(block_hash, block, header)
         return block, header
 
     def _block_by_height(self, height: int) -> tuple[Block, HeaderData]:
@@ -863,6 +929,9 @@ class RPCHandlers:
         *,
         block_hash: str | None = None,
     ) -> tuple[Transaction | None, str | None, int | None]:
+        cached = self._get_cached_tx(txid)
+        if cached:
+            return cached
         if block_hash:
             try:
                 block, header = self._load_block_by_hash(block_hash)
@@ -871,10 +940,12 @@ class RPCHandlers:
             else:
                 for tx in block.transactions:
                     if tx.txid() == txid:
+                        self._remember_tx(tx, block_hash, header.height)
                         return tx, block_hash, header.height
                 return None, None, None
         tx = self.mempool.get(txid)
         if tx:
+            self._remember_tx(tx, None, None)
             return tx, None, None
         best = self.state_db.get_best_tip()
         if not best:
@@ -891,9 +962,11 @@ class RPCHandlers:
                 if 0 <= position < len(block.transactions):
                     candidate = block.transactions[position]
                     if candidate.txid() == txid:
+                        self._remember_tx(candidate, located_hash, header.height)
                         return candidate, located_hash, header.height
                 for candidate in block.transactions:
                     if candidate.txid() == txid:
+                        self._remember_tx(candidate, located_hash, header.height)
                         return candidate, located_hash, header.height
         current_hash = best[0]
         while current_hash:
@@ -902,8 +975,10 @@ class RPCHandlers:
                 break
             raw = self.block_store.get_block(current_hash)
             block = Block.parse(raw)
+            self._remember_block(current_hash, block, header)
             for tx in block.transactions:
                 if tx.txid() == txid:
+                    self._remember_tx(tx, current_hash, header.height)
                     return tx, current_hash, header.height
             if header.prev_hash is None:
                 break

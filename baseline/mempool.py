@@ -5,9 +5,11 @@ Thread-safe mempool implementation with policy enforcement.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from .core import script
@@ -79,9 +81,17 @@ class Mempool:
         if listeners:
             for listener in listeners:
                 self.register_listener(listener)
+        cpu_count = os.cpu_count() or 2
+        max_workers = max(2, cpu_count // 2)
+        self._script_executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="mempool-verify")
+        self.peer_quota_rpc_bytes = self.peer_quota_bytes / 2
+        self.peer_refill_rpc_per_sec = self.peer_quota_rpc_bytes / 60.0
 
     def register_listener(self, callback: Callable[[Transaction], None]) -> None:
         self._listeners.append(callback)
+
+    def close(self) -> None:
+        self._script_executor.shutdown(wait=False)
 
     def _notify_new_tx(self, tx: Transaction) -> None:
         for cb in list(self._listeners):
@@ -161,7 +171,7 @@ class Mempool:
             check_standard_tx(tx, fee, size, self.min_fee_rate)
         except PolicyError as exc:
             raise MempoolError(str(exc)) from exc
-        self._verify_scripts(tx, resolved_inputs=resolved_inputs)
+        self._verify_scripts_async(tx, resolved_inputs=resolved_inputs)
 
         entry = MempoolEntry(tx=tx, fee=fee, size=size, time=now, depends=set(depends), peer_id=peer_id)
         outpoints = [(vin.prev_txid, vin.prev_vout) for vin in tx.inputs]
@@ -206,6 +216,15 @@ class Mempool:
             ctx = script.ExecutionContext(transaction=tx, input_index=idx)
             if not script.run_script(txin.script_sig, utxo.script_pubkey, ctx):
                 raise MempoolError("Script validation failed")
+
+    def _verify_scripts_async(self, tx: Transaction, resolved_inputs: dict[OutPoint, UTXORecord]) -> None:
+        future = self._script_executor.submit(self._verify_scripts, tx, resolved_inputs)
+        try:
+            future.result()
+        except MempoolError:
+            raise
+        except Exception as exc:  # pragma: no cover - defensive
+            raise MempoolError(f"Unexpected script verification failure: {exc}") from exc
 
     def _fetch_utxo(self, txin: TxInput) -> tuple[int, bytes, int, bool, bool] | None:
         entry = self.entries.get(txin.prev_txid)
@@ -299,9 +318,45 @@ class Mempool:
 
     def _evict_if_needed(self) -> None:
         while self.total_weight > self.max_weight and self.entries:
-            txid, entry = min(self.entries.items(), key=lambda item: item[1].fee_rate)
-            self.log.info("Evicting low feerate tx %s", txid)
+            candidate = self._select_evictable_entry()
+            if candidate is None:
+                break
+            txid, rate = candidate
+            self.log.info("Evicting low feerate package anchored at %s (feerate=%.8f)", txid, rate)
             self._drop_entry(txid)
+
+    def _select_evictable_entry(self) -> tuple[str, float] | None:
+        worst_txid: str | None = None
+        worst_rate: float | None = None
+        for txid in list(self.entries.keys()):
+            fee, weight = self._package_stats(txid)
+            if weight <= 0:
+                continue
+            rate = fee / max(1, weight)
+            if worst_rate is None or rate < worst_rate:
+                worst_rate = rate
+                worst_txid = txid
+        if worst_txid is None or worst_rate is None:
+            return None
+        return worst_txid, worst_rate
+
+    def _package_stats(self, txid: str) -> tuple[int, int]:
+        total_fee = 0
+        total_weight = 0
+        queue = [txid]
+        visited: set[str] = set()
+        while queue:
+            current = queue.pop()
+            if current in visited:
+                continue
+            visited.add(current)
+            entry = self.entries.get(current)
+            if not entry:
+                continue
+            total_fee += entry.fee
+            total_weight += entry.weight
+            queue.extend(self.dep_index.get(current, set()))
+        return total_fee, total_weight
 
     def _drop_entry(self, txid: str) -> None:
         entry = self.entries.pop(txid, None)
@@ -330,9 +385,15 @@ class Mempool:
         if not peer_id:
             return
         now = time.time()
-        tokens, updated = self.peer_stats.get(peer_id, (self.peer_quota_bytes, now))
-        tokens = min(self.peer_quota_bytes, tokens + (now - updated) * self.peer_refill_per_sec)
+        quota, refill = self._peer_budget(peer_id)
+        tokens, updated = self.peer_stats.get(peer_id, (quota, now))
+        tokens = min(quota, tokens + (now - updated) * refill)
         if tokens < cost:
             raise MempoolError("Peer submission rate exceeded")
         tokens -= cost
         self.peer_stats[peer_id] = (tokens, now)
+
+    def _peer_budget(self, peer_id: str) -> tuple[float, float]:
+        if peer_id == "rpc" or peer_id.startswith("rpc"):
+            return self.peer_quota_rpc_bytes, self.peer_refill_rpc_per_sec
+        return self.peer_quota_bytes, self.peer_refill_per_sec

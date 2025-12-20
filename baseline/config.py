@@ -53,12 +53,28 @@ class RPCConfig:
     password: str = "rpcpass"
     max_request_bytes: int = 256_000
     request_timeout: float = 15.0
+    worker_threads: int = 8
+    max_batch_size: int = 32
+    max_batch_concurrency: int = 8
+    max_requests_per_minute: int = 120
 
     def validate(self) -> None:
         if not (1 <= self.port <= 65535):
             raise ConfigError(f"Invalid RPC port {self.port}")
         if not self.username or not self.password:
             raise ConfigError("RPC username/password must be set")
+        if self.max_request_bytes <= 0:
+            raise ConfigError("max_request_bytes must be positive")
+        if self.request_timeout <= 0:
+            raise ConfigError("request_timeout must be positive")
+        if self.worker_threads <= 0:
+            raise ConfigError("worker_threads must be positive")
+        if self.max_batch_size <= 0:
+            raise ConfigError("max_batch_size must be positive")
+        if self.max_batch_concurrency <= 0:
+            raise ConfigError("max_batch_concurrency must be positive")
+        if self.max_requests_per_minute < 0:
+            raise ConfigError("max_requests_per_minute must be >= 0")
 
 
 @dataclass(slots=True)

@@ -84,6 +84,27 @@ class WalletTests(unittest.TestCase):
         self.assertTrue(info["encrypted"])
         self.assertTrue(info["locked"])
 
+    def test_wallet_background_sync_status_transitions(self) -> None:
+        wallet = WalletManager(self.wallet_path, self.state_db, self.block_store, self.mempool)
+        wallet.start_background_sync()
+        try:
+            wallet.request_sync()
+            saw_syncing = False
+            deadline = time.time() + 5.0
+            status = wallet.sync_status()
+            while time.time() < deadline:
+                status = wallet.sync_status()
+                if status.get("syncing"):
+                    saw_syncing = True
+                if status.get("last_sync"):
+                    break
+                time.sleep(0.05)
+            self.assertTrue(status.get("last_sync"))
+            self.assertFalse(status["syncing"])
+            self.assertTrue(saw_syncing or status.get("last_sync"))
+        finally:
+            wallet.stop_background_sync()
+
     def test_list_addresses_returns_known_entries(self) -> None:
         wallet = WalletManager(self.wallet_path, self.state_db, self.block_store, self.mempool)
         addr = wallet.get_new_address("label-1")
