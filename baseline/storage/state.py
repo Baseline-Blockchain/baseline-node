@@ -72,8 +72,11 @@ class StateDB:
 
     def close(self) -> None:
         if not self._closed:
-            self._conn.close()
-            self._closed = True
+            # Serialize shutdown with any in-flight readers/writers so we don't
+            # close the SQLite handle while another thread is mid-transaction.
+            with self._lock:
+                self._conn.close()
+                self._closed = True
 
     def __del__(self):
         with contextlib.suppress(Exception):
