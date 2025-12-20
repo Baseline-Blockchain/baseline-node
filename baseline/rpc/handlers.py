@@ -50,6 +50,7 @@ class RPCHandlers:
         self.network = network
         self.wallet = wallet
         self.time_manager = time_manager
+        self._start_time = time.time()
         self._methods = {
             "getblockcount": self.getblockcount,
             "getbestblockhash": self.getbestblockhash,
@@ -74,6 +75,11 @@ class RPCHandlers:
             "getblockheader": self.getblockheader,
             "getchaintxstats": self.getchaintxstats,
             "getblockstats": self.getblockstats,
+            "getmempoolinfo": self.getmempoolinfo,
+            "getnettotals": self.getnettotals,
+            "getpeerinfo": self.getpeerinfo,
+            "uptime": self.uptime,
+            "gettxoutsetinfo": self.gettxoutsetinfo,
         }
         if self.wallet:
             self._methods.update(
@@ -499,6 +505,14 @@ class RPCHandlers:
         confirmations = 0
         if best and header.status == 0:
             confirmations = max(0, best[1] - header.height + 1)
+        tx_count = 0
+        if verbose:
+            try:
+                block, _ = self._load_block_by_hash(header.hash)
+            except RPCError:
+                tx_count = 0
+            else:
+                tx_count = len(block.transactions)
         if not verbose:
             header_obj = BlockHeader(
                 version=getattr(header, "version", 1),
@@ -525,7 +539,7 @@ class RPCHandlers:
             "chainwork": header.chainwork,
             "previousblockhash": header.prev_hash,
             "nextblockhash": next_header.hash if next_header else None,
-            "nTx": 0,
+            "nTx": tx_count,
         }
 
     def getchaintxstats(self, nblocks: int | None = None, blockhash: str | None = None) -> dict[str, Any]:
@@ -568,6 +582,97 @@ class RPCHandlers:
             "window_tx_count": window_tx,
             "txrate": txrate,
         }
+
+    def getmempoolinfo(self) -> dict[str, Any]:
+        with self.mempool.lock:
+            size = len(self.mempool.entries)
+            total_bytes = sum(entry.size for entry in self.mempool.entries.values())
+            total_weight = self.mempool.total_weight
+        return {
+            "loaded": True,
+            "size": size,
+            "bytes": total_bytes,
+            "usage": total_weight,
+            "maxmempool": self.mempool.max_weight // 4,
+            "mempoolminfee": self.mempool.min_fee_rate / COIN,
+            "minrelaytxfee": MIN_RELAY_FEE_RATE / COIN,
+            "unbroadcastcount": 0,
+            "fullrbf": False,
+        }
+
+    def getnettotals(self) -> dict[str, Any]:
+        now = int(time.time() * 1000)
+        bytes_recv = int(getattr(self.network, "bytes_received", 0) or 0) if self.network else 0
+        bytes_sent = int(getattr(self.network, "bytes_sent", 0) or 0) if self.network else 0
+        return {
+            "totalbytesrecv": bytes_recv,
+            "totalbytessent": bytes_sent,
+            "timemillis": now,
+            "uploadtarget": {
+                "timeframe": 0,
+                "target": 0,
+                "target_reached": False,
+                "serve_historical_blocks": True,
+                "bytes_left_in_cycle": 0,
+                "time_left_in_cycle": 0,
+            },
+        }
+
+    def getpeerinfo(self) -> list[dict[str, Any]]:
+        if not self.network:
+            return []
+        peers = getattr(self.network, "peers", {}) or {}
+        best = self.state_db.get_best_tip()
+        tip_height = best[1] if best else 0
+        local_addr = f"{self.network.host}:{self.network.listen_port}"
+        results: list[dict[str, Any]] = []
+        for peer in peers.values():
+            peer_id = peer.peer_id
+            try:
+                numeric_id = int(peer_id.lstrip("P"))
+            except ValueError:
+                numeric_id = 0
+            remote = peer.remote_version or {}
+            info = {
+                "id": numeric_id,
+                "addr": f"{peer.address[0]}:{peer.address[1]}",
+                "addrlocal": local_addr,
+                "services": remote.get("services", 0),
+                "relaytxes": True,
+                "lastsend": int(peer.last_send),
+                "lastrecv": int(peer.last_message),
+                "bytessent": peer.bytes_sent,
+                "bytesrecv": peer.bytes_received,
+                "conntime": remote.get("timestamp", int(peer.last_message)),
+                "timeoffset": 0,
+                "pingtime": peer.latency or 0,
+                "minping": peer.latency or 0,
+                "version": remote.get("version", 0),
+                "subver": remote.get("agent", ""),
+                "inbound": not peer.outbound,
+                "startingheight": remote.get("height", 0),
+                "synced_blocks": tip_height,
+                "synced_headers": tip_height,
+                "banscore": 0,
+                "whitelisted": False,
+                "permissions": [],
+                "feefilter": self.mempool.min_fee_rate / COIN,
+            }
+            results.append(info)
+        return results
+
+    def uptime(self) -> int:
+        return int(time.time() - self._start_time)
+
+    def gettxoutsetinfo(self, options: Any | None = None) -> dict[str, Any]:
+        stats = self.state_db.get_utxo_set_stats()
+        # Bitcoin Core allows a dict of options; we simply ignore unsupported selectors
+        if isinstance(options, dict):
+            hash_type = options.get("hash_type")
+            if hash_type == "none":
+                stats.pop("muhash", None)
+                stats.pop("hash_serialized_2", None)
+        return stats
 
     def getblockstats(self, hash_or_height: Any, stats: list[str] | None = None) -> dict[str, Any]:
         if isinstance(hash_or_height, str):

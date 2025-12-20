@@ -17,23 +17,33 @@ Responses follow the standard {"result": ..., "error": null, "id": ...} pattern.
 
 ## Chain & Network Methods
 
-| Method               | Description |
-|----------------------|-------------|
-| getblockcount      | Return the current main-chain height. |
-| getbestblockhash   | Return the hash of the tip block. |
-| getblockhash height | Return the hash string for a main-chain height. |
-| getblock hash [verbose] | Fetch a block as raw hex (erbose=false) or decoded header/tx list. |
-| getblockchaininfo | Summary of height, difficulty, chainwork, disk usage, warnings. |
-| getdifficulty | Current PoW difficulty computed from header bits. |
-| getrawmempool [verbose] | List txids (or detailed entries) currently in the mempool. |
-| getrawtransaction txid [verbose] | Search mempool/chain for a tx. |
-| gettxout txid vout [include_mempool] | Inspect UTXO set or mempool outputs. |
-| sendrawtransaction hex | Broadcast a signed transaction. |
-| getblocktemplate [caps] | Return work for external miners (Stratum also uses this). |
-| submitblock hex | Submit solved blocks. |
-| getnetworkinfo | Peer counts, protocol version, relay fees. |
-| getmininginfo | Mining status (difficulty, blocks, pooled tx count, network hash estimate). |
-| gettimesyncinfo | Status of the built-in NTP client (enabled flag, offset, drift). |
+| Method | Description |
+|--------|-------------|
+| `getblockcount` | Return the current main-chain height. |
+| `getbestblockhash` | Return the hash of the tip block. |
+| `getblockhash height` | Return the hash string for a main-chain height. |
+| `getblock hash [verbose]` | Fetch a block as raw hex (`verbose=false`) or decoded header/tx list. Includes Core-compatible fields (`weight`, `mediantime`, `chainwork`, etc.). |
+| `getblockheader hash [verbose]` | Header-only view with confirmations, chainwork, and an accurate `nTx` count so explorers can page without fetching the full block. |
+| `getblockchaininfo` | Summary of height, difficulty, chainwork, disk usage, verification progress, pruning state. |
+| `getblockstats hash_or_height [stats]` | Core-style per-block aggregates (fee percentiles, tx counts, subsidy, utxo deltas). Baseline computes these even without rolling indexes so transparent explorers don’t see “data unavailable.” |
+| `getchaintxstats [nblocks] [blockhash]` | Rolling transaction throughput stats (window count, interval, txrate). |
+| `getdifficulty` | Current PoW difficulty computed from header bits. |
+| `getindexinfo` | Reports the status of always-on indexes (`txindex`, `addressindex`, etc.) so tooling can confirm historical lookups will succeed. |
+| `getrawmempool [verbose]` | List txids (or detailed entries) currently in the mempool. |
+| `getrawtransaction txid [verbose] [blockhash]` | Search mempool/chain for a tx; optional `blockhash` makes lookups O(1) for explorers. |
+| `gettxout txid vout [include_mempool]` | Inspect UTXO set or mempool outputs. |
+| `gettxoutsetinfo [hash_type]` | Returns aggregate UTXO stats (height, txouts, total_amount, MuHash/hash_serialized_2 digests). |
+| `sendrawtransaction hex` | Broadcast a signed transaction. |
+| `getblocktemplate [caps]` | Return work for external miners (Stratum also uses this). |
+| `submitblock hex` | Submit solved blocks. |
+| `getnetworkinfo` | Peer counts, protocol version, relay fees. |
+| `getpeerinfo` | Per-connection diagnostics (addr, version, latencies, bytes sent/received). |
+| `getmininginfo` | Mining status (difficulty, blocks, pooled tx count, network hash estimate). |
+| `getmempoolinfo` | Current mempool occupancy (tx count, bytes, min relay fee). |
+| `getnettotals` | Aggregate bytes sent/received since node startup (needed by explorers’ live bandwidth meters). |
+| `estimatesmartfee target [mode]` | Conservative fee floor (matches Bitcoin Core signature so wallets/explorers don’t fail feature detection). |
+| `gettimesyncinfo` | Status of the built-in NTP client (enabled flag, offset, drift). |
+| `uptime` | Seconds since the RPC server was instantiated (mirrors `bitcoind` uptime). |
 
 ## Wallet Methods (when wallet enabled)
 

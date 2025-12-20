@@ -45,6 +45,9 @@ class Peer:
         self.last_ping = 0.0
         self.known_inventory: set[str] = set()
         self.latency = None
+        self.bytes_sent = 0
+        self.bytes_received = 0
+        self.last_send = 0.0
         self._lock = asyncio.Lock()
 
     async def run(self) -> None:
@@ -52,8 +55,12 @@ class Peer:
             await self._perform_handshake()
             await self.manager.on_peer_ready(self)
             while not self.closed:
-                msg = await protocol.read_message(self.reader, timeout=self.manager.idle_timeout)
+                msg, byte_len = await protocol.read_message(
+                    self.reader, timeout=self.manager.idle_timeout, include_bytes=True
+                )
                 self.last_message = time.time()
+                self.bytes_received += byte_len
+                self.manager.record_bytes_received(byte_len)
                 await self.handle_message(msg)
         except (TimeoutError, asyncio.IncompleteReadError, ConnectionError, protocol.ProtocolError) as exc:
             self.log.info("Connection closed: %s", exc)
@@ -70,7 +77,9 @@ class Peer:
             ))
         timeout = self.manager.handshake_timeout
         while not self.handshake_complete:
-            msg = await protocol.read_message(self.reader, timeout=timeout)
+            msg, byte_len = await protocol.read_message(self.reader, timeout=timeout, include_bytes=True)
+            self.bytes_received += byte_len
+            self.manager.record_bytes_received(byte_len)
             await self.handle_message(msg)
         self.last_message = time.time()
 
@@ -151,6 +160,9 @@ class Peer:
         async with self._lock:
             self.writer.write(data)
             await self.writer.drain()
+        self.bytes_sent += len(data)
+        self.last_send = time.time()
+        self.manager.record_bytes_sent(len(data))
 
     async def close(self) -> None:
         if self.closed:

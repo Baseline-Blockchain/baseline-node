@@ -73,6 +73,8 @@ class P2PServer:
         self._block_last_height = best[1] if best else 0
         self._block_last_time = time.time()
         self._block_timeout = 60.0
+        self.bytes_sent = 0
+        self.bytes_received = 0
         self._load_known_addresses()
         self.mempool.register_listener(self._on_local_tx)
 
@@ -151,6 +153,12 @@ class P2PServer:
             self.peer_tasks.discard(task)
 
         task.add_done_callback(_cleanup)
+
+    def record_bytes_sent(self, count: int) -> None:
+        self.bytes_sent += count
+
+    def record_bytes_received(self, count: int) -> None:
+        self.bytes_received += count
 
     async def _dialer_loop(self) -> None:
         try:

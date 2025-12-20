@@ -1,4 +1,5 @@
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -19,6 +20,10 @@ from baseline.wallet import WalletManager
 class DummyNetwork:
     def __init__(self):
         self.peers = {}
+        self.host = "127.0.0.1"
+        self.listen_port = 9333
+        self.bytes_sent = 0
+        self.bytes_received = 0
 
 
 class RPCTestCase(unittest.TestCase):
@@ -41,12 +46,13 @@ class RPCTestCase(unittest.TestCase):
         self.template_builder = TemplateBuilder(self.chain, self.mempool, payout_script)
         wallet_path = data_dir / "wallet" / "wallet.json"
         self.wallet = WalletManager(wallet_path, self.state_db, self.block_store, self.mempool)
+        self.network = DummyNetwork()
         self.handlers = RPCHandlers(
             self.chain,
             self.mempool,
             self.block_store,
             self.template_builder,
-            DummyNetwork(),
+            self.network,
             self.wallet,
         )
 
@@ -132,6 +138,29 @@ class RPCTestCase(unittest.TestCase):
         res = self.chain.add_block(block, block.serialize())
         self.assertIn(res["status"], {"connected", "reorganized"})
         return block
+
+    def _add_dummy_peer(self, peer_id: str = "P1", outbound: bool = False) -> None:
+        class PeerStub:
+            pass
+
+        peer = PeerStub()
+        now = time.time()
+        peer.peer_id = peer_id
+        peer.address = ("203.0.113.1", 18444)
+        peer.outbound = outbound
+        peer.remote_version = {
+            "services": 1,
+            "height": 0,
+            "version": 1,
+            "agent": "/BaselineTest:0.0.1/",
+            "timestamp": int(now),
+        }
+        peer.last_send = now
+        peer.last_message = now
+        peer.bytes_sent = 1024
+        peer.bytes_received = 2048
+        peer.latency = 0.1
+        self.network.peers[peer_id] = peer
 
     def test_getblockhash(self) -> None:
         result = self.handlers.dispatch("getblockhash", [0])
@@ -290,3 +319,48 @@ class RPCTestCase(unittest.TestCase):
         self.assertEqual(result["subversion"], "/Baseline:0.1.0/")
         self.assertTrue(result["networkactive"])
         self.assertIsInstance(result["networks"], list)
+
+    def test_getmempoolinfo_and_nettotals(self) -> None:
+        mempool_info = self.handlers.dispatch("getmempoolinfo", [])
+        for field in ["loaded", "size", "bytes", "usage", "maxmempool", "mempoolminfee", "minrelaytxfee"]:
+            self.assertIn(field, mempool_info)
+        self.assertEqual(mempool_info["size"], 0)
+        net_totals = self.handlers.dispatch("getnettotals", [])
+        self.assertIn("totalbytesrecv", net_totals)
+        self.assertIn("totalbytessent", net_totals)
+        self.assertGreaterEqual(net_totals["timemillis"], 0)
+
+    def test_getpeerinfo_reports_stub_peer(self) -> None:
+        self._add_dummy_peer()
+        peers = self.handlers.dispatch("getpeerinfo", [])
+        self.assertEqual(len(peers), 1)
+        peer = peers[0]
+        self.assertEqual(peer["addr"], "203.0.113.1:18444")
+        self.assertIn("bytesrecv", peer)
+        self.assertIn("bytessent", peer)
+        self.assertIn("subver", peer)
+
+    def test_gettxoutsetinfo_returns_stats(self) -> None:
+        stats = self.handlers.dispatch("gettxoutsetinfo", [])
+        expected = [
+            "height",
+            "bestblock",
+            "transactions",
+            "txouts",
+            "bogosize",
+            "hash_serialized_2",
+            "muhash",
+            "disk_size",
+            "total_amount",
+            "total_unspendable_amount",
+        ]
+        for field in expected:
+            self.assertIn(field, stats)
+        self.assertEqual(stats["height"], 0)
+        self.assertGreaterEqual(stats["txouts"], 1)
+
+    def test_uptime_monotonic(self) -> None:
+        first = self.handlers.dispatch("uptime", [])
+        time.sleep(0.01)
+        second = self.handlers.dispatch("uptime", [])
+        self.assertGreaterEqual(second, first)

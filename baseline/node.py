@@ -257,10 +257,5 @@ class BaselineNode:
                 status.get("time_since_sync", 0)
             )
 
-        # Log drift rate if available
-        drift_rate = status.get("drift_rate")
-        if drift_rate is not None and abs(drift_rate) > 1e-6:  # More than 1 microsecond per second
-            self.log.info("Clock drift rate: %.2e s/s", drift_rate)
-
     def _wallet_should_abort(self) -> bool:
         return self._shutdown_requested

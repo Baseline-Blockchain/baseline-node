@@ -5,6 +5,7 @@ SQLite-backed blockchain state database.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import sqlite3
 import threading
@@ -14,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..core.address import address_from_script
+from ..core.tx import COIN
 
 if TYPE_CHECKING:
     from ..core.block import Block
@@ -454,6 +456,48 @@ class StateDB:
             )
             for row in rows
         ]
+
+    def get_utxo_set_stats(self) -> dict[str, Any]:
+        """Aggregate statistics for gettxoutsetinfo."""
+        self._ensure_open()
+        total_amount = 0
+        txouts = 0
+        hasher = hashlib.sha256()
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT txid, vout, amount, script_pubkey FROM utxos ORDER BY txid, vout"
+            )
+            for row in cursor:
+                txouts += 1
+                amount = row["amount"]
+                total_amount += amount
+                txid = row["txid"]
+                vout = row["vout"]
+                script_pubkey = row["script_pubkey"]
+                hasher.update(txid.encode("utf-8"))
+                hasher.update(vout.to_bytes(4, "little"))
+                if isinstance(script_pubkey, bytes):
+                    hasher.update(script_pubkey)
+                else:
+                    hasher.update(bytes(script_pubkey))
+            transactions_row = self._conn.execute("SELECT COUNT(DISTINCT txid) AS cnt FROM utxos").fetchone()
+        best = self.get_best_tip()
+        best_hash = best[0] if best else "00" * 32
+        height = best[1] if best else 0
+        total_coins = total_amount / COIN
+        stats = {
+            "height": height,
+            "bestblock": best_hash,
+            "transactions": transactions_row["cnt"] if transactions_row else 0,
+            "txouts": txouts,
+            "bogosize": txouts * 50,
+            "hash_serialized_2": hasher.hexdigest(),
+            "muhash": hasher.hexdigest(),
+            "disk_size": self.db_path.stat().st_size if self.db_path.exists() else 0,
+            "total_amount": total_coins,
+            "total_unspendable_amount": 0,
+        }
+        return stats
 
     def apply_utxo_changes(
         self,

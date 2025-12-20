@@ -26,16 +26,31 @@ def sha256d(data: bytes) -> bytes:
     return hashlib.sha256(hashlib.sha256(data).digest()).digest()
 
 
-def encode_message(message: dict[str, Any]) -> bytes:
+def _serialize_payload(message: dict[str, Any]) -> bytes:
     payload = json.dumps(message, separators=(",", ":"), sort_keys=True).encode("utf-8")
     if len(payload) > MAX_PAYLOAD:
         raise ProtocolError("Message payload too large")
+    return payload
+
+
+def encode_message(message: dict[str, Any]) -> bytes:
+    payload = _serialize_payload(message)
     checksum = sha256d(payload)[:CHECKSUM_FIELD]
     length = len(payload).to_bytes(LEN_FIELD, "big")
     return length + checksum + payload
 
 
-async def read_message(reader: asyncio.StreamReader, timeout: float = 10.0) -> dict[str, Any]:
+def framed_length(message: dict[str, Any]) -> int:
+    payload = _serialize_payload(message)
+    return LEN_FIELD + CHECKSUM_FIELD + len(payload)
+
+
+async def read_message(
+    reader: asyncio.StreamReader,
+    timeout: float = 10.0,
+    *,
+    include_bytes: bool = False,
+) -> dict[str, Any] | tuple[dict[str, Any], int]:
     header = await asyncio.wait_for(reader.readexactly(LEN_FIELD + CHECKSUM_FIELD), timeout)
     length = int.from_bytes(header[:LEN_FIELD], "big")
     if length <= 0 or length > MAX_PAYLOAD:
@@ -52,6 +67,8 @@ async def read_message(reader: asyncio.StreamReader, timeout: float = 10.0) -> d
         raise ProtocolError("Message must be a JSON object")
     if "type" not in message:
         raise ProtocolError("Missing message type")
+    if include_bytes:
+        return message, LEN_FIELD + CHECKSUM_FIELD + length
     return message
 
 
