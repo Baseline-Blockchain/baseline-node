@@ -5,6 +5,7 @@ Blockchain management for Baseline.
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -32,7 +33,7 @@ CONSENSUS_DEFAULTS = {
     "block_interval_target": 20,
     "retarget_interval": 20,
     "initial_bits": 0x207FFFFF,
-    "subsidy_halving_interval": 150_000,
+    "subsidy_halving_interval": 4_158_884,
 }
 
 
@@ -380,10 +381,10 @@ class Chain:
             raise ChainError("Coinbase height mismatch")
 
     def _block_subsidy(self, height: int) -> int:
-        halvings = height // self.config.mining.subsidy_halving_interval
-        subsidy = 50 * COIN
-        subsidy >>= min(halvings, 32)
-        return subsidy
+        interval = max(1, self.config.mining.subsidy_halving_interval)
+        decay = math.pow(0.5, height / interval)
+        subsidy = int((50 * COIN) * decay)
+        return max(subsidy, 0)
 
     def _expected_bits(self, height: int, parent_header: HeaderData) -> int:
         interval = self.config.mining.retarget_interval

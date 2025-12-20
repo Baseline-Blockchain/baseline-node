@@ -110,7 +110,7 @@ class MiningConfig:
     block_interval_target: int = 20  # seconds
     retarget_interval: int = 20  # blocks
     initial_bits: int = 0x207fffff
-    subsidy_halving_interval: int = 150_000
+    subsidy_halving_interval: int = 4_158_884
     pool_fee_percent: float = 1.0
     pool_private_key: str = "1337133713371337133713371337133713371337133713371337133713371337"
     min_payout: int = 50_000_000

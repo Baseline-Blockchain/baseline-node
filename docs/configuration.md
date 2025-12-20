@@ -45,7 +45,7 @@ Baseline loads `config.json`, fills in deterministic defaults from `NodeConfig`,
     "block_interval_target": 20,
     "retarget_interval": 20,
     "initial_bits": 546098431,
-    "subsidy_halving_interval": 150000,
+    "subsidy_halving_interval": 4158884,
     "pool_fee_percent": 1.5,
     "pool_private_key": "<hex|decimal|WIF>",
     "min_payout": 100000000,
@@ -84,6 +84,8 @@ export BASELINE_DATA_DIR=./data-dev
 ```
 
 Tuple/list values accept comma-delimited strings (`BASELINE_NETWORK__SEEDS="node1:9333,node2:9333"`). Paths expand `~` and environment variables automatically.
+
+`subsidy_halving_interval` now represents the *half-life* of the smooth exponential subsidy curve. Every `subsidy_halving_interval` blocks (~4.16 million by default, or ~2.6 years) the per-block reward falls by 50% without a discrete cliff, and the geometric decay converges to ~300 million BLINE total supply.
 
 ### Time Sync
 

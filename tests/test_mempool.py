@@ -41,7 +41,9 @@ class MempoolTests(unittest.TestCase):
             self.assertEqual(res["status"], "connected")
             prev = block.block_hash()
 
-    def _make_coinbase(self, height: int, value: int = 50 * COIN) -> Transaction:
+    def _make_coinbase(self, height: int, value: int | None = None) -> Transaction:
+        if value is None:
+            value = self.chain._block_subsidy(height)
         height_bytes = height.to_bytes((height.bit_length() + 7) // 8 or 1, "little")
         script_sig = len(height_bytes).to_bytes(1, "little") + height_bytes + b"\x01"
         tx = Transaction(

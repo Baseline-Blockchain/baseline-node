@@ -6,7 +6,7 @@ from baseline.config import NodeConfig
 from baseline.core import crypto, difficulty
 from baseline.core.block import Block, BlockHeader, merkle_root_hash
 from baseline.core.chain import Chain
-from baseline.core.tx import COIN, Transaction, TxInput, TxOutput
+from baseline.core.tx import Transaction, TxInput, TxOutput
 from baseline.storage import BlockStore, StateDB
 
 
@@ -32,7 +32,7 @@ class NodeSim:
         return Transaction(
             version=1,
             inputs=[TxInput(prev_txid="00" * 32, prev_vout=0xFFFFFFFF, script_sig=script_sig, sequence=0xFFFFFFFF)],
-            outputs=[TxOutput(value=50 * COIN, script_pubkey=self.script)],
+            outputs=[TxOutput(value=self.chain._block_subsidy(height), script_pubkey=self.script)],
             lock_time=0,
         )
 

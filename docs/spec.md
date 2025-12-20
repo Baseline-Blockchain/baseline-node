@@ -24,17 +24,16 @@ This document captures the normative behavior implemented by the current Baselin
 
 ## 3. Monetary Policy
 
-- Initial subsidy: 50 BLINE (= 5 000 000 000 liners).
-- Halving interval: 150 000 blocks (~34.7 days at 20 s/block).
-- Maximum halvings considered: 32 (after which subsidy stays at zero).
-- Theoretical supply cap: 15 000 000 BLINE (50 * 150 000 * (1 - 2^-32)).
+- Initial subsidy: 50 BLINE (= 5,000,000,000 liners).
+- Smooth decay: `subsidy_halving_interval` represents the half-life of the exponential subsidy curve. Default is 4,158,884 blocks (~2.64 years at 20 s/block), so rewards fall continuously instead of cliff halvings.
+- Theoretical supply cap: ~300,000,000 BLINE. The exponential series converges to `initial_reward / (1 - 2^(-1 / subsidy_halving_interval))`, so the slower half-life doubles the asymptote while keeping per-block issuance smooth.
 - Transaction fees (input minus output sum) accrue entirely to the miner of the block that includes the transaction. No burning or redistribution occurs.
-- Relay/miner fee floor: 5 000 liners per kB (rounded up) as implemented in `baseline/policy.py`.
+- Relay/miner fee floor: 5 000 liners per kB (rounded up) as implemented in `baseline/policy.py`.
 - Nodes verify that local `MiningConfig` values match these constants at startup. Any deviation causes initialization to fail unless `allow_consensus_overrides=true` is explicitly set for private testnets, in which case the node logs a warning and may diverge from mainnet.
 
 ### Premine
 
-Genesis plus the first ~7 500 blocks can be mined privately to preallocate 2.5% (375 000 BLINE) before opening the network. This is a social policy, not a consensus rule.
+Genesis plus the first ~75,000 blocks can be mined privately to preallocate 2.5% (3,750,000 BLINE) before opening the network. This is a social policy, not a consensus rule.
 
 ## 4. Blocks
 

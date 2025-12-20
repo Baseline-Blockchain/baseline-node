@@ -15,11 +15,17 @@ Baseline is a minimalist, Bitcoin-style payments chain—built for simple transf
 - **Difficulty** is the target hash threshold miners must beat; lower targets = harder work. Baseline encodes this exactly like Bitcoin in the header `bits` field.
 Every **20 blocks** (~6.7 minutes) the node compares the actual elapsed time with the expected `20 * 20s = 400s`. If blocks arrive too fast, the target tightens; too slow and it loosens.
 Adjustments are clamped to 4× faster/slower than expected so that hash-rate spikes do not cause whiplash while the 20-second cadence stays smooth.
-- **Rewards**: 50 BLINE block subsidy halving every 150,000 blocks (~34.7 days). Total supply caps at 15 million BLINE (geometric series of 50 * 150k).
+- **Rewards**: 50 BLINE base subsidy decays smoothly every block using an exponential curve with a 4,158,884-block half-life (~2.64 years).
 - **Coinbase maturity**: 5 blocks before mined funds can be spent.
 - **Fees**: Minimum relay fee is 5,000 liners per kB; non-standard scripts are rejected, so typical P2PKH transactions should pay at least ~0.0000125 BLINE for a 250-byte tx.
-- **Premine**: Reserve 2.5% of total supply (375,000 BLINE) by mining ~7,500 blocks at launch. With 20-second blocks, that’s roughly 42 hours of dedicated premining before opening the network.
+- **Premine**: Reserve 2.5% of total supply (3,750,000 BLINE) by mining ~75,000 blocks at launch. At 20-second blocks that is ~17.4 days of private mining before opening the network.
 - **Ports**: P2P `9333`, RPC `8832`, Stratum `3333`.
+
+### Supply Schedule
+
+![Baseline supply schedule](docs/assets/supply_curve.png)
+
+Subsidy decays exponentially each block with a 4,158,884-block half-life (~2.64 years), so rewards glide downward and asymptotically cap supply at ~300 million BLINE without cliff events.
 
 ## Quick Start
 

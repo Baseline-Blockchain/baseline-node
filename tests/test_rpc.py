@@ -92,7 +92,7 @@ class RPCTestCase(unittest.TestCase):
             version=1,
             inputs=[TxInput(prev_txid="00" * 32, prev_vout=0xFFFFFFFF, script_sig=script_sig, sequence=0xFFFFFFFF)],
             outputs=[
-                TxOutput(value=50 * COIN, script_pubkey=b"\x76\xa9\x14" + crypto.hash160(GENESIS_PUBKEY) + b"\x88\xac")
+                TxOutput(value=self.chain._block_subsidy(height), script_pubkey=b"\x76\xa9\x14" + crypto.hash160(GENESIS_PUBKEY) + b"\x88\xac")
             ],
             lock_time=0,
         )

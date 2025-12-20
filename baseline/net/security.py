@@ -307,11 +307,11 @@ class MessageValidator:
                 return False, f"Invalid output {i}: missing value or script_pubkey"
             if not isinstance(out["value"], int) or out["value"] < 0:
                 return False, f"Invalid output {i}: invalid value"
-            if out["value"] > 15_000_000 * 100_000_000:
+            if out["value"] > 300_000_000 * 100_000_000:
                 return False, f"Invalid output {i}: value exceeds maximum"
             total_output_value += out["value"]
 
-        if total_output_value > 15_000_000 * 100_000_000:
+        if total_output_value > 300_000_000 * 100_000_000:
             return False, "Total output value exceeds maximum"
 
         if not isinstance(tx_data["lock_time"], int) or tx_data["lock_time"] < 0:
