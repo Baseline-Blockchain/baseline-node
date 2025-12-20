@@ -23,6 +23,9 @@ class RealNetworkIntegrationTests(unittest.TestCase):
     def test_three_node_cluster_sync_and_resync(self) -> None:
         asyncio.run(self._run_cluster_flow())
 
+    def test_pool_payout_flow(self) -> None:
+        asyncio.run(self._run_payout_flow())
+
     async def _run_cluster_flow(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             base_dir = Path(tmpdir)
@@ -106,6 +109,41 @@ class RealNetworkIntegrationTests(unittest.TestCase):
             finally:
                 await self._stop_nodes(nodes)
 
+    async def _run_payout_flow(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base_dir = Path(tmpdir)
+            config = self._build_config(base_dir, 0, ())
+            config.mining.min_payout = 1_000_000
+            node = await self._start_node(config)
+            try:
+                self.assertIsNotNone(node.wallet, "wallet not initialized")
+                self.assertIsNotNone(node.payout_tracker, "payout tracker missing")
+                assert node.wallet is not None
+                assert node.payout_tracker is not None
+                worker_address = node.wallet.get_new_address("worker")
+                node.payout_tracker.record_share("worker-1", worker_address, difficulty=1.0)
+                block, height = await asyncio.to_thread(self._mine_block_full, node)
+                coinbase = block.transactions[0]
+                reward = coinbase.outputs[0].value
+                node.payout_tracker.record_block(height, coinbase.txid(), reward)
+                await asyncio.to_thread(self._mine_block_full, node)
+                best = node.chain.state_db.get_best_tip()
+                assert best is not None
+                node.payout_tracker.process_maturity(best[1])
+                self.assertTrue(node.payout_tracker.matured_utxos, "No matured coinbase outputs recorded")
+                worker_state = node.payout_tracker.workers.get("worker-1")
+                self.assertIsNotNone(worker_state)
+                assert worker_state is not None
+                self.assertGreater(worker_state.balance, 0, "Worker balance never credited")
+                payout_tx = node.payout_tracker.create_payout_transaction(node.chain.state_db)
+                self.assertIsNotNone(payout_tx, "Payout transaction was not created")
+                assert payout_tx is not None
+                await asyncio.to_thread(node._accept_payout_tx, payout_tx)
+                self.assertTrue(node.mempool.contains(payout_tx.txid()), "Payout transaction missing from mempool")
+                self.assertEqual(worker_state.balance, 0)
+            finally:
+                await self._stop_nodes([node])
+
     async def _mine_blocks(self, miner: BaselineNode, count: int, synced_nodes: list[BaselineNode]) -> None:
         for _ in range(count):
             block_hash, height = await asyncio.to_thread(self._mine_single_block, miner)
@@ -113,6 +151,10 @@ class RealNetworkIntegrationTests(unittest.TestCase):
             await self._wait_for_height(synced_nodes, height, 20.0)
 
     def _mine_single_block(self, miner: BaselineNode) -> tuple[str, int]:
+        block, height = self._mine_block_full(miner)
+        return block.block_hash(), height
+
+    def _mine_block_full(self, miner: BaselineNode):
         if miner.chain is None or miner.template_builder is None or miner.network is None:
             raise AssertionError("Miner node not fully initialized")
         extranonce1 = os.urandom(miner.template_builder.extranonce1_size)
@@ -132,7 +174,7 @@ class RealNetworkIntegrationTests(unittest.TestCase):
                         height = result.get("height")
                         if status in {"connected", "reorganized"} and isinstance(height, int):
                             miner.network.announce_block(block_hash)
-                            return block_hash, height
+                            return block, height
                 timestamp = max(timestamp + 1, int(time.time()))
             extranonce1 = os.urandom(miner.template_builder.extranonce1_size)
 
