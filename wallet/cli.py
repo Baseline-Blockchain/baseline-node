@@ -67,7 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
     lt.add_argument("--watchonly", action="store_true")
 
     enc = sub.add_parser("encrypt", help="Encrypt the wallet with a passphrase")
-    enc.add_argument("passphrase")
+    enc.add_argument("passphrase", nargs="?", help="Provide passphrase or omit to be prompted")
 
     unlock = sub.add_parser("unlock", help="Unlock encrypted wallet for limited time")
     unlock.add_argument("passphrase")
@@ -119,6 +119,14 @@ def generate_key() -> None:
     print("Payout address   :", address)
 
 
+def prompt_new_passphrase() -> str:
+    phrase1 = getpass.getpass("New wallet passphrase: ")
+    phrase2 = getpass.getpass("Confirm passphrase: ")
+    if phrase1 != phrase2 or not phrase1:
+        raise SystemExit("Passphrases did not match or were empty.")
+    return phrase1
+
+
 def maybe_unlock_for_signing(client: RPCClient, passphrase: str | None, timeout: int) -> bool:
     info = fetch_wallet_info(client)
     if not info.get("encrypted"):
@@ -148,11 +156,8 @@ def main() -> None:
         print(f"Wallet locked   : {info['locked']}")
         print(f"Addresses       : {info['address_count']}")
         if args.encrypt and not info["encrypted"]:
-            phrase1 = getpass.getpass("New wallet passphrase: ")
-            phrase2 = getpass.getpass("Confirm passphrase: ")
-            if phrase1 != phrase2 or not phrase1:
-                raise SystemExit("Passphrases did not match or were empty.")
-            client.call("encryptwallet", [phrase1])
+            phrase = prompt_new_passphrase()
+            client.call("encryptwallet", [phrase])
             print("Wallet encrypted. Restart node before continuing.")
         elif info["encrypted"] and info["locked"]:
             print("Wallet is encrypted and locked; use 'unlock' or provide --passphrase when sending.")
@@ -199,7 +204,8 @@ def main() -> None:
         result = client.call("listtransactions", [args.label, args.count, args.skip, args.watchonly])
         print(json.dumps(result, indent=2))
     elif args.command == "encrypt":
-        client.call("encryptwallet", [args.passphrase])
+        phrase = args.passphrase or prompt_new_passphrase()
+        client.call("encryptwallet", [phrase])
         print("Wallet encrypted. Restart node to continue.")
     elif args.command == "unlock":
         client.call("walletpassphrase", [args.passphrase, args.timeout])

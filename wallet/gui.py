@@ -189,6 +189,7 @@ class WalletLauncher(tk.Tk):
 
         wallet_menu = tk.Menu(menubar, tearoff=False)
         wallet_menu.add_command(label="Setup Wallet", command=self._handle_wallet_setup, state=tk.DISABLED)
+        wallet_menu.add_command(label="Encrypt Wallet...", command=self._handle_encrypt_wallet, state=tk.DISABLED)
         wallet_menu.add_command(label="Dump Wallet...", command=self._handle_dump_wallet)
         wallet_menu.add_command(label="Import Wallet...", command=self._handle_import_wallet)
         wallet_menu.add_separator()
@@ -213,6 +214,11 @@ class WalletLauncher(tk.Tk):
         state = tk.DISABLED if has_addresses else tk.NORMAL
         try:
             self.wallet_menu.entryconfig("Setup Wallet", state=state)
+        except tk.TclError:
+            pass
+        encrypt_state = tk.NORMAL if self.rpc_online and not info.get("encrypted") else tk.DISABLED
+        try:
+            self.wallet_menu.entryconfig("Encrypt Wallet...", state=encrypt_state)
         except tk.TclError:
             pass
 
@@ -741,6 +747,12 @@ class WalletLauncher(tk.Tk):
         self._setup_skipped = False
         self._launch_initial_setup(info)
 
+    def _handle_encrypt_wallet(self) -> None:
+        """Encrypt the wallet from the main menu."""
+
+        if self._encrypt_wallet_flow():
+            self.refresh_all()
+
     def _launch_initial_setup(self, info: dict[str, Any]) -> None:
         if self._setup_window and self._setup_window.winfo_exists():
             self._update_setup_labels(info)
@@ -804,21 +816,25 @@ class WalletLauncher(tk.Tk):
         self.refresh_all()
 
     def _setup_encrypt_wallet(self) -> None:
+        if self._encrypt_wallet_flow():
+            self.refresh_all()
+
+    def _encrypt_wallet_flow(self) -> bool:
         pass1 = simpledialog.askstring("Encrypt Wallet", "Enter passphrase:", show="*")
         if not pass1:
-            return
+            return False
         pass2 = simpledialog.askstring("Encrypt Wallet", "Confirm passphrase:", show="*")
         if pass1 != pass2:
             messagebox.showwarning("Encrypt Wallet", "Passphrases did not match.")
-            return
+            return False
         try:
             client = self._build_client()
             client.call("encryptwallet", [pass1])
         except Exception as exc:
             messagebox.showerror("Encrypt Wallet", f"Failed to encrypt wallet: {exc}")
-            return
+            return False
         messagebox.showinfo("Encrypt Wallet", "Wallet encrypted. Restart the node to continue.")
-        self.refresh_all()
+        return True
 
     def _handle_dump_wallet(self) -> None:
         path = filedialog.asksaveasfilename(
