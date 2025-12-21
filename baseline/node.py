@@ -189,7 +189,11 @@ class BaselineNode:
     def _initialize_mining_components(self) -> None:
         if not (self.chain and self.mempool):
             return
-        pool_privkey = parse_pool_private_key(self.config.mining.pool_private_key)
+        pool_key = self.config.mining.pool_private_key
+        if not pool_key:
+            self.log.info("Mining components disabled (pool_private_key not configured)")
+            return
+        pool_privkey = parse_pool_private_key(pool_key)
         pool_pubkey = crypto.generate_pubkey(pool_privkey)
         pool_script = b"\x76\xa9\x14" + crypto.hash160(pool_pubkey) + b"\x88\xac"
         payouts_path = self.config.data_dir / "payouts" / "ledger.json"

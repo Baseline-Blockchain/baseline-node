@@ -201,6 +201,7 @@ class RealNetworkIntegrationTests(unittest.TestCase):
         config.stratum.host = "127.0.0.1"
         config.stratum.port = self.BASE_STRATUM_PORT + node_id
         config.mining.allow_consensus_overrides = True
+        config.mining.pool_private_key = "1337" * 16
         config.ntp.enabled = False
         config.mining.coinbase_maturity = 1
         config.mining.block_interval_target = 1

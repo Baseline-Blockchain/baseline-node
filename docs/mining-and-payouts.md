@@ -4,7 +4,7 @@ Baseline ships with a Stratum v1 server plus a payout tracker so you can operate
 
 ## Stratum Server
 
-- Enabled automatically when `baseline-node` starts.
+- Enabled automatically when `mining.pool_private_key` is configured; leave it `null` to run a validation-only node.
 - Listens on `stratum.host:stratum.port` (defaults to `0.0.0.0:3333`).
 - Accepts any `username:password`; usernames identify workers for accounting.
 - Implements vardiff: `stratum.min_difficulty`, `vardiff_window`, and `session_timeout` control share targets and session expiry.
@@ -28,7 +28,7 @@ When a worker submits a share above the network difficulty, the Stratum server c
 1. **Share submission** → `record_share(worker_id, address, difficulty)` accumulates per-worker virtual shares.
 2. **Block found** → `record_block(height, coinbase_txid, reward)` snapshots shares, subtracts pool fee (`mining.pool_fee_percent`), and adds the entry to `pending_blocks`.
 3. **Maturity** → `process_maturity(best_height)` waits `mining.coinbase_maturity` blocks (20 by default) before moving pending rewards to worker balances. Fees + rounding dust accumulate in `pool_balance`.
-4. **Payout transaction** → `create_payout_transaction(state_db)` sweeps matured coinbase UTXOs into a multi-output transaction once enough workers exceed `mining.min_payout` (denominated in liners). The tx is signed with `mining.pool_private_key` and broadcast through the mempool.
+4. **Payout transaction** → `create_payout_transaction(state_db)` sweeps matured coinbase UTXOs into a multi-output transaction once enough workers exceed `mining.min_payout` (denominated in liners). The tx is signed with `mining.pool_private_key` and broadcast through the mempool. If the key is unset, this step (and the background payout task) is skipped entirely.
 
 ### Ledger Anatomy
 
@@ -73,6 +73,7 @@ Monitor this file (or expose it via tooling) to audit payouts.
 ## Operational Tips
 
 - **Dedicated payout key**: keep `pool_private_key` offline. Use the wallet CLI to generate WIF backups.
+- **Validation-only mode**: set `mining.pool_private_key` to `null` (or remove it) when you need RPC + networking without the built-in pool; `getblocktemplate` will return `"Mining not available"` in this mode.
 - **Worker registration**: Stratum auto-registers workers when the first share arrives, using the address they provide in the mining protocol.
 - **Fee accounting**: `pool_balance` grows with fees and leftover liners. Periodically sweep it to the operator wallet by crafting a manual transaction.
 - **Tx fees**: payout transactions include a flat 5,000 liner fee (matching the network relay floor). Bump it manually (editing `PayoutTracker.tx_fee`) if mempools get congested.

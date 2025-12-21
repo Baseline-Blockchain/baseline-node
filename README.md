@@ -45,32 +45,25 @@ Baseline targets **Python 3.12 or newer** (3.12/3.13 verified). Make sure your `
    ```
    This exposes the `baseline-node`, `baseline-wallet`, and `baseline-miner` executables in your virtual environment.
 
-### 3. Generate keys + config
+### 3. Set config values
 
-  A starter `config.json` lives at the repo root with reasonable defaults. Before launching your node, make two important changes:
+  A starter `config.json` lives at the repo root with reasonable defaults. Before launching your node, make these important changes:
 
-- Pick RPC creds: Modify `rpc.username` and `rpc.password` in `config.json` and keep them secret; all wallet tooling and miners authenticate with them.
+- Pick RPC creds: Modify `rpc.username` and `rpc.password` in `config.json` and keep them secret.
 - Set peers: In `network.seeds`, add reachable Baseline nodes as a list to help your node find peers or **leave it empty** to start a private testnet. The current starter config.json has a seed node for the public Baseline testnet.
 
-### 4. Create the pool payout key
-  This key is separate from the wallet: it controls who receives block rewards from your Stratum pool. Generate one with:
-  ```bash
-  baseline-wallet generate-key
-  ```
-  It prints the 32-byte hex key *and* a WIF string. Replace `"CHANGE-ME"` in `config.json` with the hex value. Keep both hex + WIF offline-import the WIF into any wallet (Baseline or external) whenever you need to manually spend pool-held funds.
-
-### 5. Launch the node
+### 4. Launch the node
    ```bash
    baseline-node --config config.json --log-level info
    ```
-   The runner initializes the append-only block store + SQLite chainstate, starts P2P sync, the Stratum pool, wallet, payout tracker, and the authenticated JSON-RPC server. Use Ctrl+C (or SIGTERM) for graceful shutdown.
+   The runner initializes the append-only block store + SQLite chainstate, and starts P2P sync, wallet, and the authenticated JSON-RPC server. If a pool private key is configured it also spins up the payout tracker and Stratum listener. Use Ctrl+C (or SIGTERM) for graceful shutdown.
    Point a browser or `curl` at `http://127.0.0.1:8832/` (with your RPC username/password) to view the built-in status panel—it summarizes height, peers, mempool size, and uptime at a glance.
 
-### 6. Initialize the wallet once the node is running
+### 5. Initialize the wallet once the node is running
    ```bash
    baseline-wallet --config config.json setup --encrypt
    ```
-   The CLI guides you through creating (and optionally encrypting) the deterministic wallet so you can request payout/operational addresses via `baseline-wallet newaddress`. The wallet auto-creates an initial receiving address; view it (and any later ones) with `baseline-wallet --config config.json listaddresses`, and see per-address balances with `baseline-wallet --config config.json balances`. Wallet funds are distinct from the pool payout key, but you can sweep rewards into the wallet by importing the pool WIF or by mining directly to a wallet-derived address.
+   The CLI guides you through creating (and optionally encrypting) the deterministic wallet so you can request payout/operational addresses via `baseline-wallet newaddress`. The wallet auto-creates an initial receiving address; view it (and any later ones) with `baseline-wallet --config config.json listaddresses`, and see per-address balances with `baseline-wallet --config config.json balances`.
 
 **TIP: Need to resync from scratch?** Stop the node and run:
 ```bash
@@ -101,9 +94,15 @@ The CLI automatically prompts for passphrases when sending or during the `setup 
 
 ## Mining
 
-Every node ships with a Stratum v1 pool so you can mine right away-ASICs connect via `stratum+tcp://<host>:3333` and authenticate with any `worker:password` pair. Steps:
+### 1. Create the pool payout key
+  This key is separate from the wallet: it controls who receives block rewards from your Stratum pool. Generate one with:
+  ```bash
+  baseline-wallet generate-key
+  ```
+  It prints the 32-byte hex key *and* a WIF string. Replace `mining.pool_private_key` (which defaults to `null`) in `config.json` with the hex value. Keep both hex + WIF offline-import the WIF into any wallet (Baseline or external) whenever you need to manually spend pool-held funds.
 
-1. Launch the node with your configured payout key (see Quick Start). The Stratum listener comes up automatically.
+### 2. Start mining with Stratum
+1. Launch the node with your configured payout key. The Stratum listener will come up automatically whenever that key is present.
 2. Point miners:
    ```bash
    bfgminer -o stratum+tcp://127.0.0.1:3333 -u YOURRECEIVERADDRESS.worker1 -p x --set-device bitcoin:clock=500

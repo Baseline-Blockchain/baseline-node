@@ -131,7 +131,7 @@ class MiningConfig:
     initial_bits: int = 0x207fffff
     subsidy_halving_interval: int = 4_158_884
     pool_fee_percent: float = 1.0
-    pool_private_key: str = "1337133713371337133713371337133713371337133713371337133713371337"
+    pool_private_key: str | None = None
     min_payout: int = 50_000_000
     foundation_address: str = DEFAULT_FOUNDATION_ADDRESS
     allow_consensus_overrides: bool = False
@@ -145,7 +145,8 @@ class MiningConfig:
             raise ConfigError("pool_fee_percent must be between 0 and 100")
         if self.min_payout <= 0:
             raise ConfigError("min_payout must be positive")
-        _ = parse_pool_private_key(self.pool_private_key)
+        if self.pool_private_key:
+            _ = parse_pool_private_key(self.pool_private_key)
         try:
             from .core.address import script_from_address
 

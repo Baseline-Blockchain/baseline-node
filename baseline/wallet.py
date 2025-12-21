@@ -72,6 +72,7 @@ class WalletManager:
         self.block_store = block_store
         self.mempool = mempool
         self.lock = threading.RLock()
+        self._io_lock = threading.Lock()
         self._sync_lock = threading.Lock()
         self._unlocked_seed: bytes | None = None
         self._unlock_until: float | None = None
@@ -133,9 +134,10 @@ class WalletManager:
         }
 
     def _save(self) -> None:
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
-        tmp.replace(self.path)
+        with self._io_lock:
+            tmp = self.path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
+            tmp.replace(self.path)
 
     def _seed_bytes(self) -> bytes:
         seed_hex = self.data.get("seed")

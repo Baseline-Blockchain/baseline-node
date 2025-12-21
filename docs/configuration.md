@@ -47,7 +47,7 @@ Baseline loads `config.json`, fills in deterministic defaults from `NodeConfig`,
     "initial_bits": 546098431,
     "subsidy_halving_interval": 4158884,
     "pool_fee_percent": 1.5,
-    "pool_private_key": "<hex|decimal|WIF>",
+    "pool_private_key": null,
     "min_payout": 100000000,
     "foundation_address": "NMUrmCNAH5VUrjLSvM4ULu7eNtD1i8qcyK",
     "allow_consensus_overrides": false
@@ -107,6 +107,8 @@ Consensus-critical values (`coinbase_maturity`, `block_interval_target`, `retarg
 - `mining.allow_consensus_overrides`: defaults to `false`. Setting it to `true` suppresses the safety check and logs a warning, allowing you to run bespoke devnets or integration tests. Never enable it on public networks; doing so will cause your node to diverge from the canonical chain.
 
 ### Pool Key Handling
+
+Leaving `mining.pool_private_key` set to `null` (or omitting it entirely) disables the built-in Stratum server and payout tracker; the node will still validate blocks and serve RPC but mining endpoints return `"Mining not available"`.
 
 `mining.pool_private_key` accepts:
 

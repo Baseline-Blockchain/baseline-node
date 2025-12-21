@@ -19,7 +19,7 @@
     "max_jobs": 8
   },
   "mining": {
-    "pool_private_key": "CHANGE-ME",
+    "pool_private_key": null,
     "min_payout": 100000000,
     "pool_fee_percent": 1.0
   }
