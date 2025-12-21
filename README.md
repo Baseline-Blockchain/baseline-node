@@ -43,7 +43,7 @@ Baseline targets **Python 3.12 or newer** (3.12/3.13 verified). Make sure your `
    ```bash
    pip install -e .
    ```
-   This exposes the `baseline-node`, `baseline-wallet`, and `baseline-miner` executables in your virtual environment.
+   This exposes the `baseline-node`, `baseline-wallet`, `baseline-wallet-gui`, and `baseline-miner` executables in your virtual environment.
 
 ### 3. Set config values
 
@@ -71,26 +71,22 @@ baseline-node --config config.json --reset-chainstate
 ```
 This wipes blocks/chainstate/peers/logs while preserving wallets and payout data, then restarts the node with a clean slate.
 
-## Wallet CLI (`tools/wallet_cli.py`)
+## Wallet
 
 The node writes `wallet/wallet.json` under the data dir and exposes it over JSON-RPC. For friendlier use, run the helper CLI:
 
 ```bash
 # show commands
 baseline-wallet --config config.json --help
-
-# common flows
-baseline-wallet --config config.json setup --encrypt   # first run, optionally encrypts wallet
-baseline-wallet --config config.json newaddress payout
-baseline-wallet --config config.json listaddresses     # list wallet + watch-only addresses
-baseline-wallet --config config.json balances          # show balance per address
-baseline-wallet --config config.json send NexampleAddr... 1.25 --from-address NabcSource...  # prompts for passphrase if encrypted; omit optional flags for defaults
-baseline-wallet --config config.json dump /secure/backups/baseline-wallet.json
-baseline-wallet --config config.json importaddress NwatchOnly... --label "monitor" --rescan
-baseline-wallet --config config.json importprivkey <WIF> --label "hot key" --rescan  # imports a single private key - useful for pool payout key
 ```
 
-The CLI automatically prompts for passphrases when sending or during the `setup --encrypt` flow, so you rarely need to call `encryptwallet`/`walletpassphrase` manually. All commands ultimately talk to JSON-RPC via Basic Auth, so they work locally or against remote nodes.
+Prefer a point-and-click interface? Launch the Tkinter-based helper:
+
+```bash
+baseline-wallet-gui
+```
+
+It reuses the same RPC settings you keep in `config.json`.
 
 ## Mining
 

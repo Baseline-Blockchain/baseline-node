@@ -14,19 +14,23 @@ dependencies = []
 
 [project.scripts]
 baseline-node = "run_node:main"
-baseline-wallet = "tools.wallet_cli:main"
+baseline-wallet = "wallet.cli:main"
 baseline-miner = "tools.simple_miner:main"
+baseline-wallet-gui = "wallet.gui:main"
 
 [tool.setuptools.packages.find]
-include = ["baseline", "baseline.*", "tools", "tools.*"]
+include = ["baseline", "baseline.*", "tools", "tools.*", "wallet", "wallet.*"]
 
 [tool.setuptools]
 py-modules = ["run_node"]
 
+[tool.setuptools.package-data]
+wallet = ["logo.png", "logo.ico"]
+
 [tool.ruff]
 line-length = 110
 target-version = "py312"
-src = ["baseline", "tests", "tools"]
+src = ["baseline", "tests", "tools", "wallet"]
 
 [tool.ruff.lint]
 select = [

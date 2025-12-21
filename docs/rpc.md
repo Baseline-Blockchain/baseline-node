@@ -68,6 +68,7 @@ Baseline ships with address/tx indexes enabled so block explorers can stay in sy
 | sendtoaddress address amount [comment] [comment_to] [options] | Spend from wallet, optionally recording memo fields and specifying { "fromaddresses": [...], "changeaddress": "...", "fee": 0.0005 }. |
 | gettransaction txid | Wallet-specific metadata (amount, confirmations, memos). |
 | listtransactions [label] [count] [skip] | Recent wallet activity. |
+| rescanwallet | Clear cached wallet state and rescan the blockchain. |
 | ncryptwallet passphrase | Permanently encrypt wallet seed; requires restart to unlock. |
 | walletpassphrase pass timeout | Temporary unlock for 	imeout seconds. |
 | walletlock | Force-lock encrypted wallet. |
@@ -93,7 +94,7 @@ ode.log.
 
 Two helper CLIs wrap RPC:
 
-- baseline-wallet (`tools/wallet_cli.py`) - interactive wallet commands.
+- baseline-wallet (`wallet/cli.py`) - interactive wallet commands.
 - baseline-miner (`tools/simple_miner.py`) - CPU reference miner.
 - rpc-stress (`tools/rpc_stress.py`) - lightweight load tester that opens multiple concurrent RPC clients and reports aggregate throughput/latencies.
 

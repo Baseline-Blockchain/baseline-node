@@ -424,16 +424,21 @@ class MessageValidator:
 class P2PSecurity:
     """Main P2P security coordinator."""
 
-    def __init__(self):
+    def __init__(self, enable_rate_limit: bool = True):
         self.connection_limiter = ConnectionLimiter()
         self.ban_manager = BanManager()
         self.peer_reputations: dict[str, PeerReputation] = {}
         self.rate_limiters: dict[str, RateLimiter] = {}  # per-peer rate limiters
         self.metrics = SecurityMetrics()
+        self.enable_rate_limit = enable_rate_limit
 
         # Global rate limiters
-        self.global_connection_limiter = RateLimiter(max_tokens=10, refill_rate=1.0)  # 10 connections per 10 seconds
-        self.global_message_limiter = RateLimiter(max_tokens=1000, refill_rate=100.0)  # 1000 messages per 10 seconds
+        self.global_connection_limiter = (
+            RateLimiter(max_tokens=10, refill_rate=1.0) if enable_rate_limit else None
+        )
+        self.global_message_limiter = (
+            RateLimiter(max_tokens=1000, refill_rate=100.0) if enable_rate_limit else None
+        )
 
     def can_accept_connection(self, ip: str) -> bool:
         """Check if connection from IP should be accepted."""
@@ -441,9 +446,10 @@ class P2PSecurity:
             self.metrics.connections_rejected += 1
             return False
 
-        if not self.global_connection_limiter.consume():
-            self.metrics.connections_rejected += 1
-            return False
+        if self.enable_rate_limit and self.global_connection_limiter:
+            if not self.global_connection_limiter.consume():
+                self.metrics.connections_rejected += 1
+                return False
 
         if not self.connection_limiter.can_accept(ip):
             self.metrics.connections_rejected += 1
@@ -458,7 +464,8 @@ class P2PSecurity:
 
         # Initialize peer reputation and rate limiter
         self.peer_reputations[peer_id] = PeerReputation()
-        self.rate_limiters[peer_id] = RateLimiter(max_tokens=50, refill_rate=10.0)  # 50 messages per 5 seconds
+        if self.enable_rate_limit:
+            self.rate_limiters[peer_id] = RateLimiter(max_tokens=50, refill_rate=10.0)  # 50 messages per 5 seconds
 
         return True
 
@@ -470,18 +477,26 @@ class P2PSecurity:
         self.peer_reputations.pop(peer_id, None)
         self.rate_limiters.pop(peer_id, None)
 
-    def should_accept_message(self, peer_id: str, message: dict[str, Any]) -> tuple[bool, str]:
+    def should_accept_message(
+        self,
+        peer_id: str,
+        message: dict[str, Any],
+        *,
+        skip_rate_limit: bool = False,
+    ) -> tuple[bool, str]:
         """Check if message from peer should be accepted."""
         # Check global rate limit
-        if not self.global_message_limiter.consume():
-            self.metrics.rate_limit_violations += 1
-            return False, "Global rate limit exceeded"
+        if self.enable_rate_limit and not skip_rate_limit and self.global_message_limiter:
+            if not self.global_message_limiter.consume():
+                self.metrics.rate_limit_violations += 1
+                return False, "Global rate limit exceeded"
 
         # Check peer-specific rate limit
-        rate_limiter = self.rate_limiters.get(peer_id)
-        if rate_limiter and not rate_limiter.consume():
-            self.metrics.rate_limit_violations += 1
-            return False, "Peer rate limit exceeded"
+        if self.enable_rate_limit and not skip_rate_limit:
+            rate_limiter = self.rate_limiters.get(peer_id)
+            if rate_limiter and not rate_limiter.consume():
+                self.metrics.rate_limit_violations += 1
+                return False, "Peer rate limit exceeded"
 
         # Check if peer is banned
         if self.ban_manager.is_peer_banned(peer_id):

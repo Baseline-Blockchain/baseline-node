@@ -84,14 +84,20 @@ class Peer:
         self.last_message = time.time()
 
     async def handle_message(self, message: dict[str, Any]) -> None:
+        msg_type = message.get("type")
+        skip_rate_limit = self.manager.should_skip_rate_limit(self, msg_type)
+
         # Security validation
-        should_accept, error_reason = self.manager.security.should_accept_message(self.peer_id, message)
+        should_accept, error_reason = self.manager.security.should_accept_message(
+            self.peer_id,
+            message,
+            skip_rate_limit=skip_rate_limit,
+        )
         if not should_accept:
             self.log.warning("Message rejected: %s", error_reason)
             self.manager.security.record_violation(self.peer_id)
             return
 
-        msg_type = message.get("type")
         if msg_type == "version":
             await self._handle_version(message)
             return

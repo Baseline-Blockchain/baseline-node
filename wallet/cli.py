@@ -1,14 +1,10 @@
 #!/usr/bin/env python3
-"""
-Thin JSON-RPC wallet helper that wraps common operations in a friendly CLI.
-"""
+"""Wallet CLI entrypoint."""
 
 from __future__ import annotations
 
 import argparse
-import base64
 import getpass
-import http.client
 import json
 import os
 import secrets
@@ -17,50 +13,9 @@ from typing import Any
 
 from baseline.core import crypto
 
-
-def load_config_overrides(path: Path | None) -> dict[str, Any]:
-    if not path:
-        return {}
-    cfg_path = Path(path).expanduser()
-    if not cfg_path.exists():
-        raise SystemExit(f"Config file {cfg_path} not found")
-    data = json.loads(cfg_path.read_text(encoding="utf-8"))
-    return data
-
-
-class RPCClient:
-    def __init__(self, host: str, port: int, username: str, password: str, timeout: float = 15.0):
-        self.host = host
-        self.port = port
-        self.username = username
-        self.password = password
-        self.timeout = timeout
-
-    def call(self, method: str, params: list[Any] | None = None) -> Any:
-        payload = json.dumps(
-            {
-                "jsonrpc": "1.0",
-                "id": "wallet-cli",
-                "method": method,
-                "params": params or [],
-            }
-        )
-        auth_token = base64.b64encode(f"{self.username}:{self.password}".encode("utf-8")).decode("ascii")
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Basic {auth_token}",
-        }
-        conn = http.client.HTTPConnection(self.host, self.port, timeout=self.timeout)
-        conn.request("POST", "/", body=payload, headers=headers)
-        response = conn.getresponse()
-        body = response.read().decode("utf-8")
-        if response.status != 200:
-            raise SystemExit(f"RPC HTTP error {response.status}: {body}")
-        data = json.loads(body)
-        if data.get("error"):
-            err = data["error"]
-            raise SystemExit(f"RPC error {err.get('code')}: {err.get('message')}")
-        return data["result"]
+from .client import RPCClient
+from .config import apply_config_defaults
+from .helpers import fetch_wallet_info
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -120,7 +75,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("lock", help="Lock the wallet")
 
-    sub.add_parser("dump", help="Export wallet backup").add_argument("path")
+    dump = sub.add_parser("dump", help="Export wallet backup")
+    dump.add_argument("path")
+    dump.add_argument("--passphrase", help="Wallet passphrase (omit to prompt if encrypted)")
+    dump.add_argument(
+        "--unlock-time",
+        type=int,
+        default=120,
+        help="Seconds to keep wallet unlocked while exporting",
+    )
+
     import_wallet = sub.add_parser("importwallet", help="Import wallet backup")
     import_wallet.add_argument("path")
     import_wallet.add_argument("--rescan", action="store_true", default=False)
@@ -137,16 +101,9 @@ def build_parser() -> argparse.ArgumentParser:
     ipk.add_argument("--passphrase", help="Wallet passphrase (omit to prompt if encrypted)")
     ipk.add_argument("--unlock-time", type=int, default=300)
 
+    sub.add_parser("rescan", help="Force a full wallet rescan")
+
     return parser
-
-
-def apply_config_defaults(args: argparse.Namespace) -> None:
-    overrides = load_config_overrides(args.config)
-    rpc_cfg = overrides.get("rpc", {})
-    args.rpc_host = rpc_cfg.get("host", args.rpc_host)
-    args.rpc_port = int(rpc_cfg.get("port", args.rpc_port))
-    args.rpc_user = rpc_cfg.get("username", args.rpc_user)
-    args.rpc_password = rpc_cfg.get("password", args.rpc_password)
 
 
 def generate_key() -> None:
@@ -160,10 +117,6 @@ def generate_key() -> None:
     print("Private key (hex):", priv_hex)
     print("Private key (WIF):", wif)
     print("Payout address   :", address)
-
-
-def fetch_wallet_info(client: RPCClient) -> dict[str, Any]:
-    return client.call("walletinfo")
 
 
 def maybe_unlock_for_signing(client: RPCClient, passphrase: str | None, timeout: int) -> bool:
@@ -256,8 +209,13 @@ def main() -> None:
         print("Wallet locked.")
     elif args.command == "dump":
         path = os.path.abspath(args.path)
-        result = client.call("dumpwallet", [path])
-        print(f"Wallet dumped to {result}")
+        unlocked = maybe_unlock_for_signing(client, args.passphrase, args.unlock_time)
+        try:
+            result = client.call("dumpwallet", [path])
+            print(f"Wallet dumped to {result}")
+        finally:
+            if unlocked:
+                client.call("walletlock")
     elif args.command == "importwallet":
         client.call("importwallet", [os.path.abspath(args.path), args.rescan])
         print("Wallet imported.")
@@ -270,6 +228,9 @@ def main() -> None:
         print("Private key imported.")
         if unlocked:
             client.call("walletlock")
+    elif args.command == "rescan":
+        client.call("rescanwallet", [])
+        print("Wallet rescan started.")
     else:
         parser.error(f"Unknown command {args.command}")
 

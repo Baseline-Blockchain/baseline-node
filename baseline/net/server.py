@@ -160,6 +160,16 @@ class P2PServer:
     def record_bytes_received(self, count: int) -> None:
         self.bytes_received += count
 
+    def should_skip_rate_limit(self, peer: Peer, msg_type: str | None) -> bool:
+        """Return True when rate limiting should be skipped for this message."""
+        if msg_type is None:
+            return False
+        if msg_type == "headers":
+            return self.header_sync_active and self.header_peer is peer
+        if msg_type in {"block", "inv"}:
+            return self.sync_active and self.sync_peer is peer
+        return False
+
     async def _dialer_loop(self) -> None:
         try:
             while not self._stop_event.is_set():

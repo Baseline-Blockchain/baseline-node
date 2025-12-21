@@ -491,6 +491,16 @@ class WalletManager:
         )
         return processed_height >= best_height
 
+    def rescan_wallet(self) -> None:
+        """Reset processed height and clear cached outputs/transactions."""
+
+        with self.lock:
+            self.data["outputs"] = {}
+            self.data["transactions"] = {}
+            self.data["processed_height"] = -1
+            self._save()
+        self.request_sync()
+
     def get_transaction(self, txid: str) -> dict[str, object] | None:
         txs: dict[str, dict] = self.data.get("transactions", {})
         entry = txs.get(txid)

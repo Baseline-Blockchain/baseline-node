@@ -29,6 +29,7 @@ class WalletRPCMixin:
             "sendtoaddress": self.sendtoaddress,
             "gettransaction": self.rpc_gettransaction,
             "listtransactions": self.listtransactions,
+            "rescanwallet": self.rescanwallet,
             "encryptwallet": self.encryptwallet,
             "walletpassphrase": self.walletpassphrase,
             "walletlock": self.walletlock,
@@ -123,6 +124,10 @@ class WalletRPCMixin:
 
     def listtransactions(self, label: str = "*", count: int = 10, skip: int = 0, include_watchonly: bool = False) -> list[dict[str, object]]:
         return self._wallet_call(lambda w: w.list_transactions(count=int(count), skip=int(skip)))
+
+    def rescanwallet(self) -> str:
+        self._wallet_call(lambda w: w.rescan_wallet(), sync=False)
+        return "wallet rescan started"
 
     def encryptwallet(self, passphrase: str) -> str:
         self._wallet_call(lambda w: w.encrypt_wallet(passphrase), sync=False)
