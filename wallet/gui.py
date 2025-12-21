@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import contextlib
-import os
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
@@ -66,83 +65,6 @@ def shorten(text: str | None, length: int = 20) -> str:
     return f"{text[:length]}…"
 
 
-def set_windows_app_id(app_id: str) -> None:
-    """Ensure Windows displays a dedicated taskbar icon."""
-
-    if os.name != "nt":
-        return
-    try:
-        import ctypes
-
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
-    except Exception as exc:
-        print(f"[wallet-gui] Unable to set AppUserModelID: {exc}")
-
-
-def set_windows_titlebar_dark(hwnd: int) -> None:
-    """Request a dark titlebar via DWM (Windows 10+)."""
-
-    if os.name != "nt":
-        return
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        dwm_dark_attribute = 20
-        value = ctypes.c_int(1)
-        dwmapi = ctypes.windll.dwmapi
-        result = dwmapi.DwmSetWindowAttribute(
-            wintypes.HWND(hwnd),
-            wintypes.DWORD(dwm_dark_attribute),
-            ctypes.byref(value),
-            ctypes.sizeof(value),
-        )
-        if result != 0:
-            dwm_dark_attribute = 19
-            dwmapi.DwmSetWindowAttribute(
-                wintypes.HWND(hwnd),
-                wintypes.DWORD(dwm_dark_attribute),
-                ctypes.byref(value),
-                ctypes.sizeof(value),
-            )
-    except AttributeError:
-        pass
-    except Exception as exc:
-        print(f"[wallet-gui] Unable to set dark titlebar: {exc}")
-
-
-def set_windows_taskbar_icon(hwnd: int, icon_path: Path | None) -> None:
-    """Explicitly assign a taskbar icon using Win32 APIs."""
-
-    if os.name != "nt" or not icon_path or not icon_path.exists():
-        return
-    try:
-        import ctypes
-
-        user32 = ctypes.windll.user32
-        lr_loadfromfile = 0x0010
-        lr_defaultsize = 0x0040
-        image_icon = 1
-        wm_seticon = 0x0080
-        icon_small = 0
-        icon_big = 1
-        icon_small2 = 2
-        hicon = user32.LoadImageW(
-            None,
-            str(icon_path),
-            image_icon,
-            0,
-            0,
-            lr_loadfromfile | lr_defaultsize,
-        )
-        if not hicon:
-            print("[wallet-gui] LoadImageW returned NULL for icon")
-            return
-        for size in (icon_big, icon_small, icon_small2):
-            user32.SendMessageW(hwnd, wm_seticon, size, hicon)
-    except Exception as exc:
-        print(f"[wallet-gui] Unable to set taskbar icon: {exc}")
-
 ASSET_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG = Path.cwd() / "config.json"
 
@@ -151,7 +73,6 @@ class WalletLauncher(tk.Tk):
     """Desktop UI wrapping the wallet RPC surface."""
 
     def __init__(self) -> None:
-        set_windows_app_id("Baseline.Wallet")
         super().__init__()
         self.title("Baseline Wallet")
         self.geometry("880x660")
@@ -197,6 +118,7 @@ class WalletLauncher(tk.Tk):
         self.tx_row_map: dict[str, dict[str, Any]] = {}
         self.from_combo: ttk.Combobox | None = None
         self.wallet_menu: tk.Menu | None = None
+        self._encrypt_menu_present = False
         self._setup_window: tk.Toplevel | None = None
         self._setup_message_var = tk.StringVar(value="")
         self._setup_info_var = tk.StringVar(value="")
@@ -226,7 +148,6 @@ class WalletLauncher(tk.Tk):
         menubar.add_cascade(label="Actions", menu=actions)
 
         wallet_menu = tk.Menu(menubar, tearoff=False)
-        wallet_menu.add_command(label="Encrypt Wallet...", command=self._handle_encrypt_wallet)
         wallet_menu.add_command(label="Dump Wallet...", command=self._handle_dump_wallet)
         wallet_menu.add_command(label="Import Wallet...", command=self._handle_import_wallet)
         wallet_menu.add_separator()
@@ -247,16 +168,20 @@ class WalletLauncher(tk.Tk):
     def _update_wallet_menu_state(self, info: dict[str, Any]) -> None:
         if not self.wallet_menu:
             return
-        state = tk.NORMAL if not info.get("encrypted") else tk.DISABLED
-        try:
-            self.wallet_menu.entryconfig("Encrypt Wallet...", state=state)
-        except tk.TclError:
-            try:
-                idx = self.wallet_menu.index("Encrypt Wallet...")
-                if idx is not None:
-                    self.wallet_menu.entryconfig(idx, state=state)
-            except tk.TclError:
-                pass
+        should_show = not info.get("encrypted")
+        if should_show and not self._encrypt_menu_present:
+            self.wallet_menu.insert(
+                0,
+                "command",
+                label="Encrypt Wallet...",
+                command=self._handle_encrypt_wallet,
+            )
+            self._encrypt_menu_present = True
+        elif not should_show and self._encrypt_menu_present:
+            idx = self._find_menu_entry(self.wallet_menu, "Encrypt Wallet...")
+            if idx is not None:
+                self.wallet_menu.delete(idx)
+            self._encrypt_menu_present = False
 
     def _lookup_balance(self, address: str) -> float:
         for record in self.address_records:
@@ -508,6 +433,17 @@ class WalletLauncher(tk.Tk):
         if wrap:
             lbl.configure(wraplength=wrap, justify="left")
         lbl.pack(anchor="w")
+
+    def _find_menu_entry(self, menu: tk.Menu, label: str) -> int | None:
+        end_index = menu.index("end")
+        if end_index is None:
+            return None
+        for idx in range(end_index + 1):
+            if menu.type(idx) == "separator":
+                continue
+            if menu.entrycget(idx, "label") == label:
+                return idx
+        return None
 
     def _update_wallet_tip(self, message: str | None) -> None:
         if not self.wallet_tip_label:
