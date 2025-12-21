@@ -41,7 +41,7 @@ Responses follow the standard {"result": ..., "error": null, "id": ...} pattern.
 | `getmininginfo` | Mining status (difficulty, blocks, pooled tx count, network hash estimate). |
 | `getmempoolinfo` | Current mempool occupancy (tx count, bytes, min relay fee). |
 | `getnettotals` | Aggregate bytes sent/received since node startup (needed by explorers' live bandwidth meters). |
-| `estimatesmartfee target [mode]` | Conservative fee floor (matches Bitcoin Core signature so wallets/explorers don't fail feature detection). |
+| `estimatesmartfee target [mode]` | Samples current mempool fee densities and returns a conservative percentile (falls back to the min relay fee when empty) while preserving Bitcoin Core response shape. |
 | `gettimesyncinfo` | Status of the built-in NTP client (enabled flag, offset, drift). |
 | `uptime` | Seconds since the RPC server was instantiated (mirrors `bitcoind` uptime). |
 

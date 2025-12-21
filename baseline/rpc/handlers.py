@@ -480,8 +480,8 @@ class RPCHandlers(WalletRPCMixin):
         return info
 
     def estimatesmartfee(self, target_blocks: int = 1, estimate_mode: str | None = None) -> dict[str, Any]:
-        """Return a static fee estimate compatible with Bitcoin Core."""
-        feerate = max(MIN_RELAY_FEE_RATE, 1) / COIN
+        """Estimate a feerate (BLINE/kB) using current mempool data."""
+        feerate = self._estimate_fee_rate(int(target_blocks))
         return {
             "feerate": feerate,
             "blocks": int(target_blocks),
@@ -710,6 +710,31 @@ class RPCHandlers(WalletRPCMixin):
         else:
             addresses = options
         return self._parse_address_list(addresses), start, end
+
+    def _estimate_fee_rate(self, target_blocks: int) -> float:
+        samples = self._collect_fee_rate_samples()
+        if not samples:
+            return max(MIN_RELAY_FEE_RATE, 1) / COIN
+        target = max(1, target_blocks)
+        quantile = max(0.1, min(0.95, 1.0 - 0.1 * (target - 1)))
+        if len(samples) == 1:
+            selected = samples[0]
+        else:
+            index = int(round((len(samples) - 1) * quantile))
+            index = max(0, min(len(samples) - 1, index))
+            selected = samples[index]
+        return max(selected, MIN_RELAY_FEE_RATE) / COIN
+
+    def _collect_fee_rate_samples(self) -> list[int]:
+        with self.mempool.lock:
+            entries = list(self.mempool.entries.values())
+        samples: list[int] = []
+        for entry in entries:
+            size = max(1, entry.size)
+            liners_per_kb = int(entry.fee * 1000 / size)
+            samples.append(liners_per_kb)
+        samples.sort()
+        return samples
 
     # Helper utilities ----------------------------------------------------------
 

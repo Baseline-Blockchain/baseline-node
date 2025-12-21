@@ -381,6 +381,18 @@ class RPCTestCase(unittest.TestCase):
         self.assertAlmostEqual(verbose["fee"], expected_fee / COIN)
         self.assertTrue(all("value" in vin or "coinbase" in vin for vin in verbose["vin"]))
 
+    def test_estimatesmartfee_defaults_to_minimum(self) -> None:
+        result = self.handlers.dispatch("estimatesmartfee", [6])
+        self.assertAlmostEqual(result["feerate"], MIN_RELAY_FEE_RATE / COIN)
+        self.assertEqual(result["blocks"], 6)
+
+    def test_estimatesmartfee_increases_with_high_fee_mempool(self) -> None:
+        dest = self.handlers.dispatch("getnewaddress", [])
+        tx = self._build_payment_tx(dest, 40 * COIN)
+        self.handlers.dispatch("sendrawtransaction", [tx.serialize().hex()])
+        result = self.handlers.dispatch("estimatesmartfee", [1])
+        self.assertGreater(result["feerate"], MIN_RELAY_FEE_RATE / COIN)
+
     def test_getindexinfo_reports_index_status(self) -> None:
         info = self.handlers.dispatch("getindexinfo", [])
         self.assertIn("txindex", info)
