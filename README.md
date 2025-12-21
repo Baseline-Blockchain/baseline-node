@@ -1,5 +1,7 @@
 # Baseline ![Tests](https://github.com/Baseline-Blockchain/baseline-node/actions/workflows/tests.yml/badge.svg)
 
+![Baseline Wallet GUI preview showing baseline-wallet-gui](preview.png)
+
 Baseline is a minimalist, Bitcoin-style payments chain—built for simple transfers, predictable rules, and clean integration. No smart-contract complexity. Just money.
 
 - **Simple payments**: standard transactions only, smaller attack surface
