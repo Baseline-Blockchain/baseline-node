@@ -6,18 +6,20 @@ Baseline ships with a Stratum v1 server plus a payout tracker so you can operate
 
 - Enabled automatically when `mining.pool_private_key` is configured; leave it `null` to run a validation-only node.
 - Listens on `stratum.host:stratum.port` (defaults to `0.0.0.0:3333`).
-- Accepts any `username:password`; usernames identify workers for accounting.
+- Requires each worker to provide a valid Baseline address (payout target) either as the username, the prefix of `username.worker`, or in the password field. Authorization fails if no address can be parsed. The remaining portion of the username (after `.` or `:`) is used purely for accounting.
 - Implements vardiff: `stratum.min_difficulty`, `vardiff_window`, and `session_timeout` control share targets and session expiry.
 
 ### Connecting Miners
 
 ```
-# ASIC/FPGA example
-bfgminer -o stratum+tcp://pool.example.org:3333 -u worker01 -p x
+# ASIC/FPGA example (address + worker name)
+bfgminer -o stratum+tcp://pool.example.org:3333 -u NExampleAddr.worker01 -p x
 
 # Reference CPU miner (bundled)
 baseline-miner --config config.json --attempts-per-template 500000
 ```
+
+If your hardware or proxy cannot include the address in the username, set the username to a worker label (for example `worker01`) and pass the payout address via the Stratum password (`-p NExampleAddr`). The server tests both fields and authorizes only when it finds a valid Baseline address.
 
 When a worker submits a share above the network difficulty, the Stratum server calls `TemplateBuilder` to assemble the solved block and hands it to the chain.
 
