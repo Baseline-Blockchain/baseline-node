@@ -58,13 +58,7 @@ Baseline targets **Python 3.12 or newer** (3.12/3.13 verified). Make sure your `
    ```
    The runner initializes the append-only block store + SQLite chainstate, and starts P2P sync, wallet, and the authenticated JSON-RPC server. If a pool private key is configured it also spins up the payout tracker and Stratum listener. Use Ctrl+C (or SIGTERM) for graceful shutdown.
    Point a browser or `curl` at `http://127.0.0.1:8832/` (with your RPC username/password) to view the built-in status panel—it summarizes height, peers, mempool size, and uptime at a glance.
-
-### 5. Initialize the wallet once the node is running
-   ```bash
-   baseline-wallet --config config.json setup --encrypt
-   ```
-   The CLI guides you through creating (and optionally encrypting) the deterministic wallet so you can request payout/operational addresses via `baseline-wallet newaddress`. The wallet auto-creates an initial receiving address; view it (and any later ones) with `baseline-wallet --config config.json listaddresses`, and see per-address balances with `baseline-wallet --config config.json balances`.
-
+   
 **TIP: Need to resync from scratch?** Stop the node and run:
 ```bash
 baseline-node --config config.json --reset-chainstate
