@@ -89,7 +89,9 @@ baseline-wallet --config config.json --help
   ```bash
   baseline-wallet generate-key
   ```
-  It prints the 32-byte hex key *and* a WIF string. Replace `mining.pool_private_key` (which defaults to `null`) in `config.json` with the hex value. Keep both hex + WIF offline-import the WIF into any wallet (Baseline or external) whenever you need to manually spend pool-held funds.
+  It prints the 32-byte hex key *and* a WIF string. Replace `mining.pool_private_key` (which defaults to `null`) in `config.json` with the hex value. Keep both hex + WIF offline.
+  
+  Import the WIF into any wallet (Baseline or external) whenever you need to manually spend pool-held funds.
 
 ### 2. Start mining with Stratum
 1. Launch the node with your configured payout key. The Stratum listener will come up automatically whenever that key is present.
@@ -98,6 +100,8 @@ baseline-wallet --config config.json --help
    bfgminer -o stratum+tcp://127.0.0.1:3333 -u YOURRECEIVERADDRESS.worker1 -p x --set-device bitcoin:clock=500
    ```
    Workers are tracked by username for payouts; shares accrue until coinbase rewards mature (20 blocks), then the payout tracker crafts and broadcasts the payment transaction..
+
+- Yes, you can already have community mining pools! Just point miners with proper addresses at a Baseline node with Stratum enabled and the payouts will flow automatically.
 
 ### Reference miner (`tools/simple_miner.py`)
 
