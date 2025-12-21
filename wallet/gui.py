@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import tkinter as tk
 from datetime import datetime
@@ -15,9 +16,11 @@ from .config import load_config_overrides
 from .helpers import fetch_wallet_info
 
 PALETTE = {
-    "bg": "#f4f6fb",
-    "panel": "#ffffff",
-    "accent": "#e0e7ff",
+    "bg": "#f5f7ff",
+    "panel": "#e5edff",
+    "accent": "#d0ddff",
+    "tab_active": "#c2d3ff",
+    "status": "#d8e2ff",
     "highlight": "#2563eb",
     "text": "#111827",
     "muted": "#6b7280",
@@ -36,6 +39,31 @@ def lighten(hex_color: str, factor: float = 0.2) -> str:
     g = min(255, int(g + (255 - g) * factor))
     b = min(255, int(b + (255 - b) * factor))
     return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def human_bytes(value: float) -> str:
+    """Return a human friendly byte string."""
+
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return "n/a"
+    units = ["B", "KB", "MB", "GB", "TB"]
+    for unit in units:
+        if abs(num) < 1024.0 or unit == units[-1]:
+            return f"{num:.1f} {unit}"
+        num /= 1024.0
+    return f"{num:.1f} TB"
+
+
+def shorten(text: str | None, length: int = 20) -> str:
+    """Return a shortened hash-style string."""
+
+    if not text:
+        return "n/a"
+    if len(text) <= length:
+        return text
+    return f"{text[:length]}…"
 
 
 def set_windows_app_id(app_id: str) -> None:
@@ -148,8 +176,18 @@ class WalletLauncher(tk.Tk):
         self.status_var = tk.StringVar(value="RPC status: unknown")
         self.balance_var = tk.StringVar(value="0.0")
         self.height_var = tk.StringVar(value="0")
-        self.sync_var = tk.StringVar(value="n/a")
         self.mempool_var = tk.StringVar(value="0 transactions")
+        self.wallet_tip_var = tk.StringVar(value="")
+        self.wallet_tip_label: ttk.Label | None = None
+        self.chain_progress_var = tk.StringVar(value="n/a")
+        self.chain_difficulty_var = tk.StringVar(value="n/a")
+        self.chain_hash_var = tk.StringVar(value="n/a")
+        self.chain_time_var = tk.StringVar(value="n/a")
+        self.peer_count_var = tk.StringVar(value="0 peers")
+        self.network_version_var = tk.StringVar(value="n/a")
+        self.network_fee_var = tk.StringVar(value="n/a")
+        self.mempool_usage_var = tk.StringVar(value="0 / 0 B")
+        self.mempool_minfee_var = tk.StringVar(value="n/a")
 
         self.address_tree: ttk.Treeview | None = None
         self.tx_tree: ttk.Treeview | None = None
@@ -188,8 +226,7 @@ class WalletLauncher(tk.Tk):
         menubar.add_cascade(label="Actions", menu=actions)
 
         wallet_menu = tk.Menu(menubar, tearoff=False)
-        wallet_menu.add_command(label="Setup Wallet", command=self._handle_wallet_setup, state=tk.DISABLED)
-        wallet_menu.add_command(label="Encrypt Wallet...", command=self._handle_encrypt_wallet, state=tk.DISABLED)
+        wallet_menu.add_command(label="Encrypt Wallet...", command=self._handle_encrypt_wallet)
         wallet_menu.add_command(label="Dump Wallet...", command=self._handle_dump_wallet)
         wallet_menu.add_command(label="Import Wallet...", command=self._handle_import_wallet)
         wallet_menu.add_separator()
@@ -210,17 +247,16 @@ class WalletLauncher(tk.Tk):
     def _update_wallet_menu_state(self, info: dict[str, Any]) -> None:
         if not self.wallet_menu:
             return
-        has_addresses = info.get("address_count", 0) > 0
-        state = tk.DISABLED if has_addresses else tk.NORMAL
+        state = tk.NORMAL if not info.get("encrypted") else tk.DISABLED
         try:
-            self.wallet_menu.entryconfig("Setup Wallet", state=state)
+            self.wallet_menu.entryconfig("Encrypt Wallet...", state=state)
         except tk.TclError:
-            pass
-        encrypt_state = tk.NORMAL if self.rpc_online and not info.get("encrypted") else tk.DISABLED
-        try:
-            self.wallet_menu.entryconfig("Encrypt Wallet...", state=encrypt_state)
-        except tk.TclError:
-            pass
+            try:
+                idx = self.wallet_menu.index("Encrypt Wallet...")
+                if idx is not None:
+                    self.wallet_menu.entryconfig(idx, state=state)
+            except tk.TclError:
+                pass
 
     def _lookup_balance(self, address: str) -> float:
         for record in self.address_records:
@@ -279,14 +315,32 @@ class WalletLauncher(tk.Tk):
         style.configure("TFrame", background=PALETTE["bg"])
         style.configure("Card.TFrame", background=PALETTE["panel"])
         style.configure("TLabel", background=PALETTE["bg"], foreground=PALETTE["text"])
-        style.configure("Status.TLabel", background=PALETTE["accent"], foreground=PALETTE["muted"])
-        style.configure("StatusBar.TFrame", background=PALETTE["accent"])
+        style.configure("Status.TLabel", background=PALETTE["status"], foreground=PALETTE["muted"])
+        style.configure("StatusBar.TFrame", background=PALETTE["status"])
         style.configure("CardLabel.TLabel", background=PALETTE["panel"], foreground=PALETTE["muted"])
         style.configure(
             "MetricLabel.TLabel",
             background=PALETTE["panel"],
             foreground=PALETTE["text"],
-            font=("Segoe UI", 12, "bold"),
+            font=("Segoe UI", 12),
+        )
+        style.configure(
+            "MetricLarge.TLabel",
+            background=PALETTE["panel"],
+            foreground=PALETTE["text"],
+            font=("Segoe UI", 15),
+        )
+        style.configure(
+            "MonoLabel.TLabel",
+            background=PALETTE["panel"],
+            foreground=PALETTE["text"],
+            font=("Consolas", 10),
+        )
+        style.configure(
+            "SectionHeading.TLabel",
+            background=PALETTE["panel"],
+            foreground=PALETTE["muted"],
+            font=("Segoe UI", 9),
         )
         style.configure(
             "Primary.TButton",
@@ -326,7 +380,7 @@ class WalletLauncher(tk.Tk):
         )
         style.map(
             "TNotebook.Tab",
-            background=[("selected", PALETTE["accent"])],
+            background=[("selected", PALETTE["tab_active"])],
             foreground=[("selected", PALETTE["text"])],
         )
         style.configure(
@@ -392,18 +446,80 @@ class WalletLauncher(tk.Tk):
         ttk.Label(status_bar, textvariable=self.status_var, style="Status.TLabel").pack(anchor="w")
 
     def _build_overview_tab(self, frame: ttk.Frame) -> None:
-        info = ttk.Frame(frame, style="Card.TFrame", padding=16)
-        info.pack(fill="x")
-        for idx, (label, var) in enumerate(
-            (
-                ("Balance (BLINE)", self.balance_var),
-                ("Best Height", self.height_var),
-                ("Wallet Status", self.sync_var),
-                ("Mempool", self.mempool_var),
-            )
-        ):
-            ttk.Label(info, text=label, style="CardLabel.TLabel").grid(row=idx, column=0, sticky="w", pady=6)
-            ttk.Label(info, textvariable=var, style="MetricLabel.TLabel").grid(row=idx, column=1, sticky="w", padx=16)
+        stats = ttk.Frame(frame)
+        stats.pack(fill="x")
+        stat_cards = (
+            ("BALANCE (BLINE)", self.balance_var),
+            ("CHAIN HEIGHT", self.height_var),
+            ("PEERS", self.peer_count_var),
+            ("MEMPOOL", self.mempool_var),
+        )
+        for idx, (title, var) in enumerate(stat_cards):
+            card = ttk.Frame(stats, style="Card.TFrame", padding=16)
+            card.grid(row=0, column=idx, padx=(0 if idx == 0 else 10, 0), sticky="nsew")
+            ttk.Label(card, text=title, style="SectionHeading.TLabel").pack(anchor="w")
+            ttk.Label(card, textvariable=var, style="MetricLarge.TLabel").pack(anchor="w", pady=(4, 0))
+            stats.columnconfigure(idx, weight=1)
+
+        self.wallet_tip_label = ttk.Label(frame, textvariable=self.wallet_tip_var, style="CardLabel.TLabel", padding=(12, 4))
+        self._update_wallet_tip(None)
+
+        detail = ttk.Frame(frame, padding=(0, 12, 0, 0))
+        detail.pack(fill="both", expand=True)
+        detail.columnconfigure(0, weight=1)
+        detail.columnconfigure(1, weight=1)
+        detail.columnconfigure(2, weight=1)
+
+        chain_card = ttk.Frame(detail, style="Card.TFrame", padding=16)
+        chain_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        ttk.Label(chain_card, text="CHAIN STATUS", style="SectionHeading.TLabel").pack(anchor="w")
+        self._add_overview_row(chain_card, "Sync Progress", self.chain_progress_var)
+        self._add_overview_row(chain_card, "Difficulty", self.chain_difficulty_var)
+        self._add_overview_row(chain_card, "Last Block Time", self.chain_time_var)
+        self._add_overview_row(chain_card, "Best Block", self.chain_hash_var, style="MonoLabel.TLabel", wrap=280)
+
+        network_card = ttk.Frame(detail, style="Card.TFrame", padding=16)
+        network_card.grid(row=0, column=1, sticky="nsew", padx=8)
+        ttk.Label(network_card, text="NETWORK", style="SectionHeading.TLabel").pack(anchor="w")
+        self._add_overview_row(network_card, "Connections", self.peer_count_var)
+        self._add_overview_row(network_card, "Client Version", self.network_version_var)
+        self._add_overview_row(network_card, "Relay Fee", self.network_fee_var)
+
+        mempool_card = ttk.Frame(detail, style="Card.TFrame", padding=16)
+        mempool_card.grid(row=0, column=2, sticky="nsew", padx=(8, 0))
+        ttk.Label(mempool_card, text="MEMPOOL", style="SectionHeading.TLabel").pack(anchor="w")
+        self._add_overview_row(mempool_card, "Transactions", self.mempool_var)
+        self._add_overview_row(mempool_card, "Usage", self.mempool_usage_var)
+        self._add_overview_row(mempool_card, "Min Fee", self.mempool_minfee_var)
+
+    def _add_overview_row(
+        self,
+        container: ttk.Frame,
+        label: str,
+        var: tk.StringVar,
+        *,
+        style: str = "MetricLabel.TLabel",
+        wrap: int | None = None,
+    ) -> None:
+        wrapper = ttk.Frame(container, style="Card.TFrame")
+        wrapper.pack(fill="x", pady=(8, 0))
+        ttk.Label(wrapper, text=label, style="SectionHeading.TLabel").pack(anchor="w")
+        lbl = ttk.Label(wrapper, textvariable=var, style=style)
+        if wrap:
+            lbl.configure(wraplength=wrap, justify="left")
+        lbl.pack(anchor="w")
+
+    def _update_wallet_tip(self, message: str | None) -> None:
+        if not self.wallet_tip_label:
+            return
+        if message:
+            self.wallet_tip_var.set(message)
+            if not self.wallet_tip_label.winfo_ismapped():
+                self.wallet_tip_label.pack(fill="x", pady=(12, 0))
+        else:
+            self.wallet_tip_var.set("")
+            if self.wallet_tip_label.winfo_ismapped():
+                self.wallet_tip_label.pack_forget()
 
     def _build_addresses_tab(self, frame: ttk.Frame) -> None:
         columns = ("address", "label", "spendable", "balance")
@@ -535,6 +651,14 @@ class WalletLauncher(tk.Tk):
             client = self._build_client()
             info = fetch_wallet_info(client)
             wallet_balance = client.call("getbalance", [])
+            try:
+                chain_info = client.call("getblockchaininfo", [])
+            except Exception:
+                chain_info = None
+            try:
+                network_info = client.call("getnetworkinfo", [])
+            except Exception:
+                network_info = None
         except Exception as exc:
             print(f"[wallet-gui] RPC status refresh failed: {exc}")
             self.rpc_online = False
@@ -542,23 +666,93 @@ class WalletLauncher(tk.Tk):
             self.status_var.set("RPC status: offline - unable to connect")
             self.balance_var.set("0.0")
             self.height_var.set("0")
-            self.sync_var.set("n/a")
             self.mempool_var.set("unavailable")
+            self._update_wallet_tip("RPC offline. Ensure the node is running and reachable.")
+            self.chain_progress_var.set("n/a")
+            self.chain_difficulty_var.set("n/a")
+            self.chain_hash_var.set("n/a")
+            self.chain_time_var.set("n/a")
+            self.peer_count_var.set("0 peers")
+            self.network_version_var.set("n/a")
+            self.network_fee_var.set("n/a")
+            self.mempool_usage_var.set("0 / 0 B")
+            self.mempool_minfee_var.set("n/a")
             return
 
         self.rpc_online = True
         self.wallet_info = info
         self.status_var.set("RPC status: connected")
         self.balance_var.set(f"{wallet_balance:,.8f}")
-        self.height_var.set(str(info.get("processed_height", info.get("height", "0"))))
-        phase = info.get("syncing") or info.get("phase") or ("locked" if info.get("locked") else "ready")
-        self.sync_var.set(f"{phase}")
+        processed_height = info.get("processed_height", info.get("height", "0"))
+        if isinstance(processed_height, int):
+            self.height_var.set(f"{processed_height:,}")
+        else:
+            self.height_var.set(str(processed_height))
+
+        if not info.get("encrypted"):
+            self._update_wallet_tip("Wallet is not encrypted. Use Wallet → Encrypt Wallet to protect it.")
+        else:
+            self._update_wallet_tip(None)
+
         mempool_info = self._get_mempool_info(client)
         if mempool_info:
             size = mempool_info.get("size") or mempool_info.get("tx", 0)
             self.mempool_var.set(f"{size} transactions")
+            usage = mempool_info.get("bytes", 0)
+            max_pool = mempool_info.get("maxmempool", 0)
+            self.mempool_usage_var.set(f"{human_bytes(usage)} / {human_bytes(max_pool)}")
+            min_fee = mempool_info.get("mempoolminfee", mempool_info.get("minrelaytxfee"))
+            if isinstance(min_fee, (int, float)):
+                self.mempool_minfee_var.set(f"{min_fee:.8f} BLINE/KB")
+            else:
+                self.mempool_minfee_var.set("n/a")
         else:
             self.mempool_var.set("n/a")
+            self.mempool_usage_var.set("n/a")
+            self.mempool_minfee_var.set("n/a")
+
+        if chain_info:
+            blocks = chain_info.get("blocks")
+            if isinstance(blocks, int):
+                self.height_var.set(f"{blocks:,}")
+            progress = chain_info.get("verificationprogress")
+            if isinstance(progress, (int, float)):
+                self.chain_progress_var.set(f"{progress * 100:.2f}% synced")
+            else:
+                self.chain_progress_var.set("n/a")
+            difficulty = chain_info.get("difficulty")
+            if isinstance(difficulty, (int, float)):
+                self.chain_difficulty_var.set(f"{difficulty:,.3f}")
+            else:
+                self.chain_difficulty_var.set("n/a")
+            timestamp = chain_info.get("time")
+            if isinstance(timestamp, (int, float)):
+                self.chain_time_var.set(datetime.fromtimestamp(int(timestamp)).strftime("%Y-%m-%d %H:%M:%S"))
+            else:
+                self.chain_time_var.set("n/a")
+            self.chain_hash_var.set(shorten(chain_info.get("bestblockhash")))
+        else:
+            self.chain_progress_var.set("n/a")
+            self.chain_difficulty_var.set("n/a")
+            self.chain_time_var.set("n/a")
+            self.chain_hash_var.set("n/a")
+
+        if network_info:
+            peers = network_info.get("connections", 0)
+            inbound = network_info.get("connections_in", network_info.get("connectionsin", 0))
+            outbound = network_info.get("connections_out", network_info.get("connectionsout", 0))
+            self.peer_count_var.set(f"{peers} peers ({inbound} in / {outbound} out)")
+            version = network_info.get("subversion") or f"v{network_info.get('version', 'n/a')}"
+            self.network_version_var.set(version)
+            relay_fee = network_info.get("relayfee")
+            if isinstance(relay_fee, (int, float)):
+                self.network_fee_var.set(f"{relay_fee:.8f} BLINE/KB")
+            else:
+                self.network_fee_var.set("n/a")
+        else:
+            self.peer_count_var.set("0 peers")
+            self.network_version_var.set("n/a")
+            self.network_fee_var.set("n/a")
 
         self._update_wallet_menu_state(info)
         if info.get("address_count", 0) == 0:
@@ -846,7 +1040,15 @@ class WalletLauncher(tk.Tk):
             return
         try:
             client = self._build_client()
-            client.call("dumpwallet", [path])
+            unlocked = self._ensure_unlocked(client)
+            if unlocked is None:
+                return
+            try:
+                client.call("dumpwallet", [path])
+            finally:
+                if unlocked:
+                    with contextlib.suppress(Exception):
+                        client.call("walletlock", [])
         except Exception as exc:
             messagebox.showerror("Dump Wallet", f"Failed to dump wallet: {exc}")
             return
@@ -862,7 +1064,15 @@ class WalletLauncher(tk.Tk):
         rescan = messagebox.askyesno("Import Wallet", "Rescan the blockchain after import?")
         try:
             client = self._build_client()
-            client.call("importwallet", [path, rescan])
+            unlocked = self._ensure_unlocked(client)
+            if unlocked is None:
+                return
+            try:
+                client.call("importwallet", [path, rescan])
+            finally:
+                if unlocked:
+                    with contextlib.suppress(Exception):
+                        client.call("walletlock", [])
         except Exception as exc:
             messagebox.showerror("Import Wallet", f"Failed to import wallet: {exc}")
             return
@@ -877,7 +1087,15 @@ class WalletLauncher(tk.Tk):
         rescan = messagebox.askyesno("Import Private Key", "Rescan the blockchain for this key?")
         try:
             client = self._build_client()
-            client.call("importprivkey", [key, label, rescan])
+            unlocked = self._ensure_unlocked(client)
+            if unlocked is None:
+                return
+            try:
+                client.call("importprivkey", [key, label, rescan])
+            finally:
+                if unlocked:
+                    with contextlib.suppress(Exception):
+                        client.call("walletlock", [])
         except Exception as exc:
             messagebox.showerror("Import Private Key", f"Failed to import key: {exc}")
             return

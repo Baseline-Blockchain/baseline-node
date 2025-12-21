@@ -88,6 +88,8 @@ def build_parser() -> argparse.ArgumentParser:
     import_wallet = sub.add_parser("importwallet", help="Import wallet backup")
     import_wallet.add_argument("path")
     import_wallet.add_argument("--rescan", action="store_true", default=False)
+    import_wallet.add_argument("--passphrase", help="Wallet passphrase (omit to prompt if encrypted)")
+    import_wallet.add_argument("--unlock-time", type=int, default=180, help="Seconds to keep wallet unlocked during import")
 
     ia = sub.add_parser("importaddress", help="Import watch-only address")
     ia.add_argument("address")
@@ -223,7 +225,12 @@ def main() -> None:
             if unlocked:
                 client.call("walletlock")
     elif args.command == "importwallet":
-        client.call("importwallet", [os.path.abspath(args.path), args.rescan])
+        unlocked = maybe_unlock_for_signing(client, args.passphrase, args.unlock_time)
+        try:
+            client.call("importwallet", [os.path.abspath(args.path), args.rescan])
+        finally:
+            if unlocked:
+                client.call("walletlock")
         print("Wallet imported.")
     elif args.command == "importaddress":
         client.call("importaddress", [args.address, args.label, args.rescan])
