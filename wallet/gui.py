@@ -130,6 +130,8 @@ class WalletLauncher(tk.Tk):
         self.send_address_var = tk.StringVar()
         self.send_amount_var = tk.StringVar()
         self.send_fee_var = tk.StringVar()
+        self.send_memo_var = tk.StringVar()
+        self.send_memo_to_var = tk.StringVar()
         self._auto_fee_value: str | None = None
         self.send_from_var = tk.StringVar()
         self.send_from_balance_var = tk.StringVar(value="Balance: 0.0 BLINE")
@@ -148,6 +150,8 @@ class WalletLauncher(tk.Tk):
         menubar.add_cascade(label="Actions", menu=actions)
 
         wallet_menu = tk.Menu(menubar, tearoff=False)
+        wallet_menu.add_command(label="New Address...", command=self._handle_new_address)
+        wallet_menu.add_separator()
         wallet_menu.add_command(label="Dump Wallet...", command=self._handle_dump_wallet)
         wallet_menu.add_command(label="Import Wallet...", command=self._handle_import_wallet)
         wallet_menu.add_separator()
@@ -280,6 +284,38 @@ class WalletLauncher(tk.Tk):
             bordercolor=PALETTE["accent"],
             insertcolor=PALETTE["text"],
             padding=4,
+        )
+        style.configure(
+            "Form.TEntry",
+            fieldbackground="#ffffff",
+            background="#ffffff",
+            foreground=PALETTE["text"],
+            bordercolor=PALETTE["accent"],
+            lightcolor=PALETTE["accent"],
+            darkcolor=PALETTE["accent"],
+            borderwidth=1,
+            padding=4,
+        )
+        style.map(
+            "Form.TEntry",
+            fieldbackground=[("disabled", PALETTE["panel"]), ("readonly", "#ffffff"), ("focus", "#ffffff")],
+        )
+        style.configure(
+            "Form.TCombobox",
+            fieldbackground="#ffffff",
+            background="#ffffff",
+            foreground=PALETTE["text"],
+            bordercolor=PALETTE["accent"],
+            lightcolor=PALETTE["accent"],
+            darkcolor=PALETTE["accent"],
+            borderwidth=1,
+            padding=4,
+            arrowsize=16,
+        )
+        style.map(
+            "Form.TCombobox",
+            fieldbackground=[("readonly", "#ffffff")],
+            foreground=[("disabled", PALETTE["muted"])],
         )
         style.configure(
             "TNotebook",
@@ -480,32 +516,55 @@ class WalletLauncher(tk.Tk):
         tree.column("category", width=120, anchor="center")
         tree.column("amount", width=150, anchor="e")
         tree.column("confirmations", width=90, anchor="center")
+        tree.tag_configure("offline", background=PALETTE["panel"], foreground=PALETTE["muted"])
         tree.bind("<Double-1>", self._show_transaction_details)
         tree.pack(fill="both", expand=True)
 
     def _build_send_tab(self, frame: ttk.Frame) -> None:
-        ttk.Label(frame, text="From Address").grid(row=0, column=0, sticky="w")
-        self.from_combo = ttk.Combobox(frame, textvariable=self.send_from_var, state="readonly", width=60)
-        self.from_combo.grid(row=1, column=0, columnspan=2, sticky="ew", pady=4)
+        card = ttk.Frame(frame, style="Card.TFrame", padding=16)
+        card.pack(fill="both", expand=True)
+        card.columnconfigure(0, weight=3)
+        card.columnconfigure(1, weight=2)
+
+        ttk.Label(card, text="From Address", style="SectionHeading.TLabel").grid(
+            row=0, column=0, columnspan=2, sticky="w"
+        )
+        self.from_combo = ttk.Combobox(card, textvariable=self.send_from_var, state="readonly", style="Form.TCombobox")
+        self.from_combo.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 2))
         self.from_combo.bind("<<ComboboxSelected>>", self._update_from_balance)
-        ttk.Label(frame, textvariable=self.send_from_balance_var, style="CardLabel.TLabel").grid(
-            row=2, column=0, columnspan=2, sticky="w", pady=(0, 10)
+        ttk.Label(card, textvariable=self.send_from_balance_var, style="MonoLabel.TLabel").grid(
+            row=2, column=0, columnspan=2, sticky="w"
         )
 
-        ttk.Label(frame, text="Destination Address").grid(row=3, column=0, sticky="w")
-        ttk.Entry(frame, textvariable=self.send_address_var, width=60).grid(row=4, column=0, columnspan=2, sticky="ew", pady=4)
+        ttk.Separator(card).grid(row=3, column=0, columnspan=2, sticky="ew", pady=(8, 12))
 
-        ttk.Label(frame, text="Amount (BLINE)").grid(row=5, column=0, sticky="w")
-        ttk.Entry(frame, textvariable=self.send_amount_var, width=20).grid(row=6, column=0, sticky="w", pady=4)
-
-        ttk.Label(frame, text="Fee (BLINE)").grid(row=5, column=1, sticky="w")
-        ttk.Entry(frame, textvariable=self.send_fee_var, width=20).grid(row=6, column=1, sticky="w", pady=4)
-
-        ttk.Button(frame, text="Send Payment", command=self._send_payment, style="Primary.TButton").grid(
-            row=7, column=0, pady=15, sticky="w"
+        ttk.Label(card, text="Destination Address", style="SectionHeading.TLabel").grid(row=4, column=0, sticky="w")
+        ttk.Entry(card, textvariable=self.send_address_var, style="Form.TEntry").grid(
+            row=5, column=0, columnspan=2, sticky="ew", pady=(2, 6)
         )
 
-        frame.columnconfigure(0, weight=1)
+        ttk.Label(card, text="Amount (BLINE)", style="SectionHeading.TLabel").grid(row=6, column=0, sticky="w")
+        ttk.Label(card, text="Fee (BLINE)", style="SectionHeading.TLabel").grid(row=6, column=1, sticky="w")
+        ttk.Entry(card, textvariable=self.send_amount_var, style="Form.TEntry").grid(row=7, column=0, sticky="ew", pady=(2, 6))
+        ttk.Entry(card, textvariable=self.send_fee_var, style="Form.TEntry").grid(row=7, column=1, sticky="ew", pady=(2, 6), padx=(12, 0))
+
+        ttk.Label(card, text="Memo for yourself (optional)", style="SectionHeading.TLabel").grid(
+            row=8, column=0, columnspan=2, sticky="w", pady=(6, 0)
+        )
+        ttk.Entry(card, textvariable=self.send_memo_var, style="Form.TEntry").grid(
+            row=9, column=0, columnspan=2, sticky="ew", pady=(2, 6)
+        )
+
+        ttk.Label(card, text="Memo shown to recipient (optional)", style="SectionHeading.TLabel").grid(
+            row=10, column=0, columnspan=2, sticky="w"
+        )
+        ttk.Entry(card, textvariable=self.send_memo_to_var, style="Form.TEntry").grid(
+            row=11, column=0, columnspan=2, sticky="ew", pady=(2, 10)
+        )
+
+        ttk.Button(card, text="Send Payment", command=self._send_payment, style="Primary.TButton").grid(
+            row=12, column=0, pady=(8, 0), sticky="w"
+        )
 
     def _build_mempool_tab(self, frame: ttk.Frame) -> None:
         self.mempool_box = tk.Text(
@@ -754,7 +813,7 @@ class WalletLauncher(tk.Tk):
         self.tx_records = []
         self.tx_row_map.clear()
         if not self.rpc_online:
-            self.tx_tree.insert("", "end", values=("RPC offline", "", "", "", "", ""))
+            self.tx_tree.insert("", "end", values=("RPC offline", "", "", "", "", ""), tags=("offline",))
             return
         try:
             client = self._build_client()
@@ -928,7 +987,15 @@ class WalletLauncher(tk.Tk):
     def _setup_create_initial_address(self) -> None:
         try:
             client = self._build_client()
-            new_addr = client.call("getnewaddress", [])
+            unlocked = self._ensure_unlocked(client)
+            if unlocked is None:
+                return
+            try:
+                new_addr = client.call("getnewaddress", [])
+            finally:
+                if unlocked:
+                    with contextlib.suppress(Exception):
+                        client.call("walletlock", [])
         except Exception as exc:
             messagebox.showerror("Create Address", f"Failed to create address: {exc}")
             return
@@ -939,6 +1006,28 @@ class WalletLauncher(tk.Tk):
     def _setup_encrypt_wallet(self) -> None:
         if self._encrypt_wallet_flow():
             self.refresh_all()
+
+    def _handle_new_address(self) -> None:
+        label = simpledialog.askstring("New Address", "Label for the new address (optional):") or ""
+        try:
+            client = self._build_client()
+            unlocked = self._ensure_unlocked(client)
+            if unlocked is None:
+                return
+            params: list[Any] = []
+            if label:
+                params.append(label)
+            try:
+                new_addr = client.call("getnewaddress", params)
+            finally:
+                if unlocked:
+                    with contextlib.suppress(Exception):
+                        client.call("walletlock", [])
+        except Exception as exc:
+            messagebox.showerror("New Address", f"Failed to create address: {exc}")
+            return
+        messagebox.showinfo("New Address", f"Created receiving address:\n{new_addr}")
+        self.refresh_all()
 
     def _encrypt_wallet_flow(self) -> bool:
         pass1 = simpledialog.askstring("Encrypt Wallet", "Enter passphrase:", show="*")
@@ -1076,6 +1165,8 @@ class WalletLauncher(tk.Tk):
         amount_raw = self.send_amount_var.get().strip()
         fee_raw = self.send_fee_var.get().strip()
         from_addr = self.send_from_var.get().strip()
+        memo = self.send_memo_var.get().strip()
+        memo_to = self.send_memo_to_var.get().strip()
         if not address or not amount_raw:
             messagebox.showwarning("Missing Fields", "Destination address and amount are required.")
             return
@@ -1109,8 +1200,11 @@ class WalletLauncher(tk.Tk):
             options["fee"] = fee
         if from_addr:
             options["fromaddresses"] = [from_addr]
-        if options:
-            params.extend(["", "", options])
+        if memo or memo_to or options:
+            params.append(memo)
+            params.append(memo_to)
+            if options:
+                params.append(options)
 
         try:
             txid = client.call("sendtoaddress", params)
@@ -1130,6 +1224,8 @@ class WalletLauncher(tk.Tk):
         self.refresh_all()
         self.send_address_var.set("")
         self.send_amount_var.set("")
+        self.send_memo_var.set("")
+        self.send_memo_to_var.set("")
 
     def _ensure_unlocked(self, client: RPCClient) -> bool | None:
         try:
