@@ -17,8 +17,8 @@ Baseline is a minimalist, Bitcoin-style payments chain—built for simple transf
 - **Difficulty** is the target hash threshold miners must beat; lower targets = harder work. Baseline encodes this exactly like Bitcoin in the header `bits` field.
 Every **20 blocks** (~6.7 minutes) the node compares the actual elapsed time with the expected `20 * 20s = 400s`. If blocks arrive too fast, the target tightens; too slow and it loosens.
 Adjustments are clamped to 2× faster/slower for the first 10,000 blocks, then 4× after the warm-up so that hash-rate spikes do not cause whiplash while the 20-second cadence stays smooth.
-- **Premine**: No premine. 1% block subsidy dev fund (on-chain).
-- **Rewards**: 50 BLINE base subsidy decays smoothly every block using an exponential curve with a 4,158,884-block half-life (~2.64 years). The remaining 99% of each subsidy (plus all transaction fees) flows to miners, while a mandatory 1% is automatically sent to the Baseline Foundation address (consensus-locked) to fund protocol stewardship.
+- **Premine**: No premine. **1%** block subsidy dev fund (on-chain).
+- **Rewards**: 50 BLINE base subsidy decays smoothly every block using an exponential curve with a 4,158,884-block half-life (~2.64 years). Transaction fees are added to the subsidy.
 - **Coinbase maturity**: 20 blocks before mined funds can be spent.
 - **Fees**: Minimum relay fee is 5,000 liners per kB; non-standard scripts are rejected, so typical P2PKH transactions should pay at least ~0.0000125 BLINE for a 250-byte tx.
 - **Ports**: P2P `9333`, RPC `8832`, Stratum `3333`.
