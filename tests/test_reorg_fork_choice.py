@@ -6,7 +6,7 @@ from baseline.config import NodeConfig
 from baseline.core import crypto, difficulty
 from baseline.core.block import Block, BlockHeader, merkle_root_hash
 from baseline.core.chain import GENESIS_PRIVKEY, GENESIS_PUBKEY, Chain, ChainError
-from baseline.core.tx import COIN, Transaction, TxInput, TxOutput
+from baseline.core.tx import Transaction, TxInput, TxOutput
 from baseline.mempool import Mempool
 from baseline.policy import MIN_RELAY_FEE_RATE
 from baseline.storage import BlockStore, StateDB

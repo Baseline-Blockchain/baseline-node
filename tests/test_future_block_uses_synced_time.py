@@ -1,5 +1,4 @@
 import tempfile
-import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -9,9 +8,9 @@ from baseline.core import crypto, difficulty
 from baseline.core.block import Block, BlockHeader, merkle_root_hash
 from baseline.core.chain import (
     GENESIS_PUBKEY,
+    MAX_FUTURE_BLOCK_TIME,
     Chain,
     ChainError,
-    MAX_FUTURE_BLOCK_TIME,
 )
 from baseline.core.tx import Transaction, TxInput, TxOutput
 from baseline.storage import BlockStore, StateDB

@@ -23,7 +23,7 @@ class ProtocolFuzzishDecodeTests(unittest.IsolatedAsyncioTestCase):
         - it does not crash with unexpected exceptions
         - it always rejects via ProtocolError
         """
-        rng = random.Random(1337)
+        rng = random.SystemRandom()
 
         # 1) Invalid lengths should reject immediately
         for bad_len in (0, protocol.MAX_PAYLOAD + 1, protocol.MAX_PAYLOAD + 999999):

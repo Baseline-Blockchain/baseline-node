@@ -9,7 +9,13 @@ from unittest.mock import patch
 
 from baseline.config import NodeConfig
 from baseline.node import BaselineNode
-from baseline.time_sync import NTPResponse, TimeManager, get_time_manager, set_time_manager, synchronized_time_int
+from baseline.time_sync import (
+    NTPResponse,
+    TimeManager,
+    get_time_manager,
+    set_time_manager,
+    synchronized_time_int,
+)
 
 
 class TestNodeSetsGlobalTimeManager(unittest.TestCase):
