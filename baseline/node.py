@@ -16,7 +16,7 @@ from .mining import PayoutTracker, StratumServer, TemplateBuilder
 from .net import P2PServer
 from .rpc import RPCHandlers, RPCServer
 from .storage import BlockStore, BlockStoreError, StateDB, StateDBError
-from .time_sync import NTPClient, TimeManager
+from .time_sync import NTPClient, TimeManager, set_time_manager
 from .wallet import WalletManager
 
 
@@ -103,7 +103,9 @@ class BaselineNode:
             await self.stratum.stop()
             self.stratum = None
         if self.time_manager:
-            self.time_manager.stop()
+            with contextlib.suppress(Exception):
+                self.time_manager.stop()
+            set_time_manager(None)
             self.time_manager = None
         if self.wallet:
             self.wallet.stop_background_sync()
@@ -171,19 +173,21 @@ class BaselineNode:
 
     def _initialize_time_sync(self) -> None:
         """Initialize NTP time synchronization."""
-        if not self.config.ntp.enabled:
-            self.log.info("NTP synchronization disabled")
-            return
-
         ntp_client = NTPClient(
             servers=list(self.config.ntp.servers),
             timeout=self.config.ntp.timeout
         )
-        self.time_manager = TimeManager(
+        manager = TimeManager(
             ntp_client=ntp_client,
             sync_interval=self.config.ntp.sync_interval
         )
-        self.time_manager.start()
+        self.time_manager = manager
+        set_time_manager(manager)
+        if not self.config.ntp.enabled:
+            manager.disable()
+            self.log.info("NTP synchronization disabled")
+            return
+        manager.start()
         self.log.info("NTP synchronization enabled with servers: %s", self.config.ntp.servers)
 
     def _initialize_mining_components(self) -> None:

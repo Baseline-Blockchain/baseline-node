@@ -1,10 +1,4 @@
-"""
-NTP time synchronization for Baseline blockchain nodes.
-
-This module provides NTP client functionality to synchronize node clocks
-with network time servers, reducing clock drift issues in distributed
-blockchain networks.
-"""
+"""NTP helpers for coordinating node clocks."""
 
 from __future__ import annotations
 
@@ -14,7 +8,6 @@ import socket
 import struct
 import time
 from dataclasses import dataclass
-from functools import lru_cache
 
 
 class NTPError(Exception):
@@ -337,10 +330,21 @@ class TimeManager:
                 await asyncio.sleep(min(self.sync_interval, 60.0))  # Retry sooner on error
 
 
-@lru_cache(maxsize=1)
+_GLOBAL_TIME_MANAGER: dict[str, TimeManager | None] = {"manager": None}
+
+
 def get_time_manager() -> TimeManager:
     """Get the global time manager instance."""
-    return TimeManager()
+    manager = _GLOBAL_TIME_MANAGER["manager"]
+    if manager is None:
+        manager = TimeManager()
+        _GLOBAL_TIME_MANAGER["manager"] = manager
+    return manager
+
+
+def set_time_manager(manager: TimeManager | None) -> None:
+    """Override the global time manager instance."""
+    _GLOBAL_TIME_MANAGER["manager"] = manager
 
 
 def synchronized_time() -> float:
