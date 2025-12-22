@@ -516,6 +516,11 @@ class StratumServer:
         result = await asyncio.to_thread(_add_block)
         status = result.get("status")
         if status in {"connected", "reorganized"}:
+            if self.mempool:
+                try:
+                    self.mempool.remove_confirmed(block.transactions)
+                except Exception as exc:
+                    self.log.debug("Failed to prune mempool after block submission: %s", exc)
             coinbase_tx = block.transactions[0]
             coinbase_txid = coinbase_tx.txid()
             self.payouts.record_block(

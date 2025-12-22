@@ -403,6 +403,11 @@ class P2PServer:
         block_hash = block.block_hash()
         peer.known_inventory.add(block_hash)
         if status in {"connected", "reorganized"}:
+            if self.mempool:
+                try:
+                    self.mempool.remove_confirmed(block.transactions)
+                except Exception as exc:
+                    self.log.debug("Failed to prune mempool for block %s: %s", block_hash, exc)
             height = result.get("height")
             if isinstance(height, int):
                 self._on_block_connected(height)

@@ -138,10 +138,14 @@ class WalletLauncher(tk.Tk):
         self._address_notice_var = tk.StringVar(value="")
         self._address_notice_label: ttk.Label | None = None
         self._address_notice_after: str | None = None
+        self._auto_refresh_interval_ms = 5000
+        self._auto_refresh_job: str | None = None
 
+        self.protocol("WM_DELETE_WINDOW", self._handle_close)
         self._build_layout()
         self._load_startup_config()
         self.refresh_all()
+        self._schedule_auto_refresh()
 
     def _build_menu(self) -> None:
         """Create the top-level menu bar with common actions."""
@@ -687,6 +691,25 @@ class WalletLauncher(tk.Tk):
         self._refresh_transactions()
         self._refresh_mempool()
         self._update_fee_estimate()
+
+    def _schedule_auto_refresh(self) -> None:
+        if self._auto_refresh_job is not None:
+            with contextlib.suppress(Exception):
+                self.after_cancel(self._auto_refresh_job)
+        self._auto_refresh_job = self.after(self._auto_refresh_interval_ms, self._auto_refresh_tick)
+
+    def _auto_refresh_tick(self) -> None:
+        if not self.winfo_exists():
+            return
+        self.refresh_all()
+        self._schedule_auto_refresh()
+
+    def _handle_close(self) -> None:
+        if self._auto_refresh_job is not None:
+            with contextlib.suppress(Exception):
+                self.after_cancel(self._auto_refresh_job)
+            self._auto_refresh_job = None
+        self.destroy()
 
     def _refresh_status(self) -> None:
         try:
