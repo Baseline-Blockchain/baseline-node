@@ -135,6 +135,9 @@ class WalletLauncher(tk.Tk):
         self._auto_fee_value: str | None = None
         self.send_from_var = tk.StringVar()
         self.send_from_balance_var = tk.StringVar(value="Balance: 0.0 BLINE")
+        self._address_notice_var = tk.StringVar(value="")
+        self._address_notice_label: ttk.Label | None = None
+        self._address_notice_after: str | None = None
 
         self._build_layout()
         self._load_startup_config()
@@ -500,7 +503,13 @@ class WalletLauncher(tk.Tk):
         tree.tag_configure("even", background=PALETTE["panel"], foreground=PALETTE["text"])
         tree.tag_configure("odd", background=odd_color, foreground=PALETTE["text"])
         tree.tag_configure("offline", background=PALETTE["panel"], foreground=PALETTE["muted"])
+        tree.bind("<Double-1>", self._copy_selected_address)
+        tree.bind("<Control-c>", self._copy_selected_address)
         tree.pack(fill="both", expand=True)
+        notice = ttk.Label(frame, textvariable=self._address_notice_var, style="CardLabel.TLabel")
+        notice.pack(anchor="w", pady=(6, 0))
+        notice.pack_forget()
+        self._address_notice_label = notice
 
     def _build_history_tab(self, frame: ttk.Frame) -> None:
         columns = ("time", "txid", "category", "amount", "confirmations")
@@ -519,6 +528,53 @@ class WalletLauncher(tk.Tk):
         tree.tag_configure("offline", background=PALETTE["panel"], foreground=PALETTE["muted"])
         tree.bind("<Double-1>", self._show_transaction_details)
         tree.pack(fill="both", expand=True)
+
+    def _show_address_notice(self, message: str, duration: int = 2000) -> None:
+        if self._address_notice_after:
+            with contextlib.suppress(Exception):
+                self.after_cancel(self._address_notice_after)
+            self._address_notice_after = None
+        if not self._address_notice_label:
+            return
+        if message:
+            self._address_notice_var.set(message)
+            if not self._address_notice_label.winfo_ismapped():
+                self._address_notice_label.pack(anchor="w", pady=(6, 0))
+            self._address_notice_after = self.after(duration, self._clear_address_notice)
+        else:
+            self._clear_address_notice()
+
+    def _clear_address_notice(self) -> None:
+        self._address_notice_after = None
+        self._address_notice_var.set("")
+        if self._address_notice_label and self._address_notice_label.winfo_ismapped():
+            self._address_notice_label.pack_forget()
+
+    def _copy_selected_address(self, event: tk.Event[tk.Misc] | None) -> None:
+        tree = self.address_tree
+        if not tree:
+            return
+        target = None
+        if event is not None and getattr(event, "num", None) == 1:
+            with contextlib.suppress(Exception):
+                target = tree.identify_row(event.y)
+        if target:
+            tree.selection_set(target)
+        selection = tree.selection()
+        if not selection:
+            return
+        values = tree.item(selection[0], "values")
+        if not values:
+            return
+        address = values[0]
+        if not address or address == "RPC offline":
+            return
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(address)
+            self._show_address_notice("Address copied to clipboard.")
+        except Exception as exc:
+            print(f"[wallet-gui] Unable to copy address: {exc}")
 
     def _build_send_tab(self, frame: ttk.Frame) -> None:
         card = ttk.Frame(frame, style="Card.TFrame", padding=16)
