@@ -917,20 +917,27 @@ class RPCHandlers(WalletRPCMixin):
                 "enabled": False,
                 "synchronized": False,
                 "offset": 0.0,
-                "message": "NTP synchronization is disabled"
+                "last_sync": None,
+                "time_since_sync": None,
+                "drift_rate": None,
+                "servers": [],
+                "system_time": time.time(),
+                "synchronized_time": time.time(),
+                "message": "NTP synchronization is disabled",
             }
 
         status = self.time_manager.get_sync_status()
+        servers = getattr(getattr(self.time_manager, "ntp_client", None), "servers", [])
         return {
-            "enabled": True,
-            "synchronized": status["synchronized"],
-            "offset": status["offset"],
+            "enabled": status.get("enabled", True),
+            "synchronized": status.get("synchronized", False),
+            "offset": status.get("offset", 0.0),
             "last_sync": status.get("last_sync"),
             "time_since_sync": status.get("time_since_sync"),
             "drift_rate": status.get("drift_rate"),
-            "servers": status.get("servers", []),
-            "system_time": time.time(),
-            "synchronized_time": status.get("synchronized_time", time.time())
+            "servers": servers,
+            "system_time": status.get("system_time", time.time()),
+            "synchronized_time": status.get("sync_time", time.time()),
         }
 
     def _current_difficulty(self) -> float:
