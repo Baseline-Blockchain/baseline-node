@@ -164,19 +164,18 @@ class Mempool:
         # reconsider them under the new chain.  Do this outside the lock to
         # prevent holding the lock longer than necessary.
         with self.lock:
+            saved = list(self._listeners)
+            self._listeners.clear()
             existing_entries = list(self.entries.values())
-            # Clear current mempool state: remove all entries, dependency
-            # indices, spent outpoints, and orphans.  We'll rebuild the
-            # mempool from scratch by re-adding transactions below.
             for txid in list(self.entries.keys()):
                 self._drop_entry(txid)
             self.entries.clear()
             self.dep_index.clear()
             self.spent_outpoints.clear()
             self.total_weight = 0
-            # Clear orphans as they may no longer be relevant after the reorg.
             self.orphans.clear()
             self.orphan_index.clear()
+
 
         # Compose a single list of transactions to re-add: first those from
         # detached blocks, then the ones that were already in the mempool.  We
@@ -193,21 +192,15 @@ class Mempool:
             if txid not in new_branch_txids:
                 combined_txs.append(entry.tx)
 
-        # Re-add transactions one by one.  We avoid propagation during this
-        # phase because these are not new user-submitted transactions but
-        # internal resubmissions triggered by a reorg.  A failure to accept
-        # a transaction (due to missing UTXOs, coinbase maturity, or other
-        # policy) simply means the transaction is not valid anymore and
-        # should be dropped or moved to the orphan pool.
-        for tx in combined_txs:
-            try:
-                self.accept_transaction(tx, propagate=False)
-            except MempoolError:
-                # Drop transactions that are no longer valid.  If a
-                # transaction is missing inputs, accept_transaction will
-                # automatically add it to the orphan pool, so we do not need
-                # to handle that separately here.
-                continue
+        try:
+            for tx in combined_txs:
+                try:
+                    self.accept_transaction(tx, propagate=False)
+                except MempoolError:
+                    continue
+        finally:
+            with self.lock:
+                self._listeners[:] = saved
 
     def register_listener(self, callback: Callable[[Transaction], None]) -> None:
         self._listeners.append(callback)
