@@ -352,7 +352,7 @@ class WalletLauncher(tk.Tk):
         style.map(
             "Card.Treeview",
             background=[("selected", PALETTE["highlight"])],
-            foreground=[("selected", PALETTE["text"])],
+            foreground=[("selected", "#ffffff")],
         )
         style.map(
             "Treeview",
