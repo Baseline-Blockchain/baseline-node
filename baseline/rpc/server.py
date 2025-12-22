@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import hmac
 import json
 import os
 import time
@@ -296,7 +297,7 @@ class RPCServer:
         except Exception:
             return False
         username, _, password = decoded.partition(":")
-        return username == self.username and password == self.password
+        return hmac.compare_digest(username, self.username) and hmac.compare_digest(password, self.password)
 
     def _error_response(self, msg_id: Any, code: int, message: str) -> dict[str, Any]:
         return {"jsonrpc": "2.0", "result": None, "error": {"code": code, "message": message}, "id": msg_id}
