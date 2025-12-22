@@ -38,7 +38,7 @@ This document captures the normative behavior implemented by the current Baselin
 - Block weight limit: `4_000_000` (no witness, so weight ≈ serialized size * 4 ⇒ 1 MB max).
 - Timestamp constraints:
   - Must be strictly greater than the median of the previous 11 blocks (`median_time_past`).
-- Must not exceed `synchronized_time + 15 minutes`.
+- Must not exceed `synchronized_time + 3 minutes`.
 - Proof-of-work: header hash interpreted as uint256 must be ≤ target encoded by `bits`.
 - Difficulty adjusts every `retarget_interval` (=20) blocks relative to the most recent ancestor 19 blocks prior:
 
@@ -58,7 +58,7 @@ new_target ≤ max_target (set by genesis bits 0x207fffff)
 - Algorithm: SHA256d, same as Bitcoin.
 - Initial target: 0x207fffff (regtest-like).
 - Block interval target: 20 seconds (configurable but default consensus).
-- Maximum future drift accepted: +15 minutes relative to synchronized node time.
+- Maximum future drift accepted: +3 minutes relative to synchronized node time.
 
 ## 6. Network & Messaging
 
