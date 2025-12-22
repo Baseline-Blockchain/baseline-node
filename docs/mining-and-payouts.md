@@ -7,7 +7,7 @@ Baseline ships with a Stratum v1 server plus a payout tracker so you can operate
 - Enabled automatically when `mining.pool_private_key` is configured; leave it `null` to run a validation-only node.
 - Listens on `stratum.host:stratum.port` (defaults to `0.0.0.0:3333`).
 - Requires each worker to provide a valid Baseline address (payout target) either as the username, the prefix of `username.worker`, or in the password field. Authorization fails if no address can be parsed. The remaining portion of the username (after `.` or `:`) is used purely for accounting.
-- Implements vardiff: `stratum.min_difficulty`, `vardiff_window`, and `session_timeout` control share targets and session expiry.
+- Implements vardiff: `stratum.min_difficulty`, `vardiff_window`, and `session_timeout` control share targets and session expiry. The node samples accepted shares over the last `vardiff_window` seconds and retunes per-worker difficulty toward a ~15 second share interval (with bounded step sizes) so low-hashrate workers stay connected without spamming the server.
 
 ### Connecting Miners
 
@@ -78,4 +78,4 @@ Monitor this file (or expose it via tooling) to audit payouts.
 - **Validation-only mode**: set `mining.pool_private_key` to `null` (or remove it) when you need RPC + networking without the built-in pool; `getblocktemplate` will return `"Mining not available"` in this mode.
 - **Worker registration**: Stratum auto-registers workers when the first share arrives, using the address they provide in the mining protocol.
 - **Fee accounting**: `pool_balance` grows with fees and leftover liners. Periodically sweep it to the operator wallet by crafting a manual transaction.
-- **Tx fees**: payout transactions include a flat 5,000 liner fee (matching the network relay floor). Bump it manually (editing `PayoutTracker.tx_fee`) if mempools get congested.
+- **Tx fees**: payout transactions measure their serialized size and include the policy-required fee (currently 5,000 liners/kB minimum). As mempool pressure rises and a larger transaction is crafted, the fee scales automatically instead of relying on a hardcoded constant.

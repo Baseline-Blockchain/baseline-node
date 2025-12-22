@@ -11,7 +11,7 @@ import json
 import logging
 import os
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -31,6 +31,11 @@ MAX_SHARE_ERRORS = 8
 JOB_EXPIRY = 15 * 60
 EXPECTED_SOCKET_ERRNOS = {errno.ECONNRESET, errno.EPIPE, errno.ECONNABORTED}
 EXPECTED_WINERRORS = {64, 995}
+TARGET_SHARE_INTERVAL = 15.0  # seconds per accepted share
+VARDIFF_TOLERANCE = 0.25  # +/-25% before retuning
+MIN_VARDIFF_INTERVAL = 30.0  # seconds between difficulty changes
+MAX_VARDIFF_STEP = 2.0
+MIN_VARDIFF_STEP = 0.5
 
 
 @dataclass(slots=True)
@@ -61,6 +66,9 @@ class StratumSession:
         self.stale_shares = 0
         self.closed = False
         self.sent_jobs: dict[str, set[str]] = {}
+        self.vardiff_window = max(10.0, float(server.config.stratum.vardiff_window))
+        self.share_times: deque[float] = deque()
+        self.last_diff_update = time.time()
 
     async def run(self) -> None:
         try:
@@ -372,8 +380,45 @@ class StratumServer:
             return
         await session.send_response(msg_id, True)
         self.payouts.record_share(session.worker_id or worker_name, session.worker_address or "", session.difficulty)
+        await self._record_share_success(session)
         if hash_int <= job.template.target:
             await self._submit_block(block, job)
+
+    async def _record_share_success(self, session: StratumSession) -> None:
+        session.share_times.append(time.time())
+        await self._maybe_adjust_difficulty(session)
+
+    async def _maybe_adjust_difficulty(self, session: StratumSession) -> None:
+        now = time.time()
+        cutoff = now - session.vardiff_window
+        while session.share_times and session.share_times[0] < cutoff:
+            session.share_times.popleft()
+        if len(session.share_times) < 4:
+            return
+        if now - session.last_diff_update < MIN_VARDIFF_INTERVAL:
+            return
+        elapsed = session.share_times[-1] - session.share_times[0]
+        if elapsed <= 0:
+            return
+        avg_interval = elapsed / (len(session.share_times) - 1)
+        target = TARGET_SHARE_INTERVAL
+        if abs(avg_interval - target) <= target * VARDIFF_TOLERANCE:
+            return
+        ratio = target / avg_interval
+        ratio = max(MIN_VARDIFF_STEP, min(MAX_VARDIFF_STEP, ratio))
+        current_diff = session.difficulty or self.config.stratum.min_difficulty
+        new_diff = max(self.config.stratum.min_difficulty, current_diff * ratio)
+        if abs(new_diff - current_diff) / current_diff < 0.05:
+            return
+        session.set_difficulty(new_diff)
+        session.last_diff_update = now
+        session.share_times.clear()
+        try:
+            await session.send_notification("mining.set_difficulty", [session.difficulty])
+            if self._latest_job:
+                await session.send_job(self._latest_job, clean=False)
+        except Exception:
+            self.log.debug("Failed to send vardiff update to session %s", session.session_id, exc_info=True)
 
     async def _template_loop(self) -> None:
         try:

@@ -91,6 +91,8 @@ class StratumConfig:
             raise ConfigError(f"Invalid stratum port {self.port}")
         if self.min_difficulty <= 0:
             raise ConfigError("min_difficulty must be > 0")
+        if self.vardiff_window <= 0:
+            raise ConfigError("vardiff_window must be > 0")
         if self.max_jobs <= 0:
             raise ConfigError("max_jobs must be positive")
 

@@ -13,7 +13,7 @@ from pathlib import Path
 from ..core import crypto
 from ..core.address import script_from_address
 from ..core.tx import Transaction, TxInput, TxOutput
-from ..policy import MIN_RELAY_FEE_RATE
+from ..policy import MIN_RELAY_FEE_RATE, required_fee
 from ..storage import StateDB, UTXORecord
 
 
@@ -48,7 +48,9 @@ class PayoutTracker:
         self.pending_blocks: list[dict[str, object]] = []
         self.matured_utxos: list[dict[str, object]] = []
         self.pool_balance = 0
-        self.tx_fee = MIN_RELAY_FEE_RATE
+        self.min_fee_rate = MIN_RELAY_FEE_RATE
+        # 1 byte len + sig (<=73) + 1 byte len + pubkey length
+        self._script_sig_estimate = len(self.pool_pubkey) + 75
         self.lock = threading.RLock()
         self._load()
 
@@ -172,36 +174,53 @@ class PayoutTracker:
             inputs: list[UTXORecord] = []
             consumed: list[dict[str, object]] = []
             input_sum = 0
-            for utxo_info in list(self.matured_utxos):
-                vout = int(utxo_info.get("vout", 0))
-                record = state_db.get_utxo(utxo_info["txid"], vout)
-                if record is None:
-                    self.matured_utxos.remove(utxo_info)
-                    continue
-                inputs.append(record)
-                consumed.append(utxo_info)
-                input_sum += record.amount
-                if input_sum >= total_out + self.tx_fee:
+            cursor = 0
+            fee = 0
+            tx: Transaction | None = None
+            change = 0
+            while True:
+                while input_sum < total_out + fee:
+                    if cursor >= len(self.matured_utxos):
+                        return None
+                    utxo_info = self.matured_utxos[cursor]
+                    vout = int(utxo_info.get("vout", 0))
+                    record = state_db.get_utxo(utxo_info["txid"], vout)
+                    if record is None:
+                        self.matured_utxos.pop(cursor)
+                        continue
+                    inputs.append(record)
+                    consumed.append(utxo_info)
+                    input_sum += record.amount
+                    cursor += 1
+                tx_inputs = [
+                    TxInput(prev_txid=rec.txid, prev_vout=rec.vout, script_sig=b"", sequence=0xFFFFFFFF)
+                    for rec in inputs
+                ]
+                tx_outputs = [TxOutput(value=amount, script_pubkey=state.script) for _, state, amount in payees]
+                change = input_sum - total_out - fee
+                if change > 0:
+                    tx_outputs.append(TxOutput(value=change, script_pubkey=self.pool_script))
+                tx_candidate = Transaction(version=1, inputs=tx_inputs, outputs=tx_outputs, lock_time=0)
+                estimated_size = len(tx_candidate.serialize()) + len(tx_inputs) * self._script_sig_estimate
+                new_fee = required_fee(estimated_size, self.min_fee_rate)
+                if new_fee == fee:
+                    tx = tx_candidate
                     break
-            if input_sum < total_out + self.tx_fee:
+                fee = new_fee
+                fee = max(fee, 0)
+            if tx is None:
                 return None
-            tx_inputs = [
-                TxInput(prev_txid=rec.txid, prev_vout=rec.vout, script_sig=b"", sequence=0xFFFFFFFF)
-                for rec in inputs
-            ]
-            tx_outputs = [TxOutput(value=amount, script_pubkey=state.script) for _, state, amount in payees]
-            change = input_sum - total_out - self.tx_fee
-            if change > 0:
-                tx_outputs.append(TxOutput(value=change, script_pubkey=self.pool_script))
-            tx = Transaction(version=1, inputs=tx_inputs, outputs=tx_outputs, lock_time=0)
-            for idx, _ in enumerate(tx.inputs):
-                sighash = tx.signature_hash(idx, self.pool_script, 0x01)
-                signature = crypto.sign(sighash, self.pool_privkey) + b"\x01"
-                script_sig = bytes([len(signature)]) + signature + bytes([len(self.pool_pubkey)]) + self.pool_pubkey
-                tx.inputs[idx].script_sig = script_sig
+            self._sign_transaction(tx)
             for _worker_id, state, amount in payees:
                 state.balance -= amount
             for info in consumed:
                 self.matured_utxos.remove(info)
             self._save()
             return tx
+
+    def _sign_transaction(self, tx: Transaction) -> None:
+        for idx, _ in enumerate(tx.inputs):
+            sighash = tx.signature_hash(idx, self.pool_script, 0x01)
+            signature = crypto.sign(sighash, self.pool_privkey) + b"\x01"
+            script_sig = bytes([len(signature)]) + signature + bytes([len(self.pool_pubkey)]) + self.pool_pubkey
+            tx.inputs[idx].script_sig = script_sig
