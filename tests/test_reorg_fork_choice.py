@@ -254,13 +254,25 @@ class ReorgForkChoiceTests(unittest.TestCase):
         self.assertIsNone(self.state_db.get_transaction_location(tx1.txid()))
         self.assertIsNone(self.state_db.get_transaction_location(tx2.txid()))
 
-        # --- Mempool re-add after reorg (manual re-accept): tx1 becomes valid again ---
-        # tx1 spent A1 coinbase which is still on the new main chain, and its spend was undone.
-        mp_res = self.mempool.accept_transaction(tx1)
-        self.assertEqual(mp_res["status"], "accepted")
-        self.assertTrue(self.mempool.contains(tx1.txid()))
+        # --- Mempool re-add after reorg (automatic): tx1 should be re-added ---
+        # The mempool should automatically re-add valid transactions from the
+        # disconnected chain.  tx1 spent the A1 coinbase, which is still on
+        # the new main chain after the reorg, and its spend was undone; thus
+        # it becomes valid again and should appear in the mempool without
+        # manual re-submission.
+        self.assertTrue(
+            self.mempool.contains(tx1.txid()),
+            "tx1 should be present in the mempool after reorg"
+        )
 
-        # tx2 spent A2 coinbase; A2 is no longer on main chain after reorg => missing UTXO -> orphan
+        # tx2 spent the A2 coinbase.  After the reorg, A2 is no longer on the
+        # main chain and its UTXO is missing; therefore tx2 should not be in
+        # the mempool.  Attempting to submit it again results in an orphan.
+        self.assertFalse(
+            self.mempool.contains(tx2.txid()),
+            "tx2 should not be present in the mempool after reorg"
+        )
+        # Confirm that resubmitting tx2 explicitly results in an orphan status.
         mp_res2 = self.mempool.accept_transaction(tx2)
         self.assertEqual(mp_res2["status"], "orphan")
 

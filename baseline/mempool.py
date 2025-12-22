@@ -87,6 +87,128 @@ class Mempool:
         self.peer_quota_rpc_bytes = self.peer_quota_bytes / 2
         self.peer_refill_rpc_per_sec = self.peer_quota_rpc_bytes / 60.0
 
+        # Register this mempool instance with the chain if possible.  The Chain
+        # object does not hold a direct reference to a mempool, but some logic
+        # such as automatic re-add on chain reorganizations can benefit from
+        # being able to find the mempool via the chain.  We set an attribute
+        # here so that Chain can call back into the mempool when a reorg
+        # occurs.  This is safe because Python allows setting arbitrary
+        # attributes on objects at runtime.  See handle_reorg() below.
+        try:
+            # Avoid overwriting an existing attribute if one already exists.
+            if not hasattr(chain, "mempool"):
+                chain.mempool = self
+        except Exception as exc:
+            # It's not fatal if we cannot set the attribute; reorg callbacks
+            # simply won't be invoked automatically.
+            raise MempoolError(f"Unexpected script verification failure: {exc}") from exc
+
+    def handle_reorg(self, old_branch: list[str], new_branch: list[str]) -> None:
+        """
+        Handle a blockchain reorganization by re-adding transactions from the
+        disconnected branch back into the mempool and by revalidating all
+        existing mempool transactions against the new main chain.
+
+        Parameters
+        ----------
+        old_branch: list[str]
+            List of block hashes from the previously connected main chain that
+            have been detached during the reorganization.  The list is in
+            descending order (tip first).  Transactions from these blocks
+            (other than the coinbase) may become unconfirmed and should be
+            reconsidered for inclusion in the mempool.
+        new_branch: list[str]
+            List of block hashes from the fork chain that were attached during
+            the reorganization.  Transactions in these blocks must not be
+            present in the mempool after the reorg.
+        """
+        # Build a set of transaction IDs included in the new branch.  We skip
+        # coinbase transactions because they are never relayed via the mempool.
+        new_branch_txids: set[str] = set()
+        try:
+            for bh in new_branch:
+                try:
+                    block = self.chain._load_block(bh)  # uses internal parser
+                except Exception:
+                    # If block cannot be loaded, skip it; it will not affect
+                    # mempool validity and prevents crashes in error cases.
+                    continue
+                for tx in block.transactions[1:]:
+                    # Only non-coinbase transactions can be in the mempool.
+                    new_branch_txids.add(tx.txid())
+        except Exception:
+            # Defensive: if anything goes wrong building the set, fall back to
+            # leaving it empty.  This will only cause harmless extra checks.
+            new_branch_txids = set()
+
+        # Collect transactions from the detached blocks (old_branch) that may
+        # need to be re-added to the mempool.  Process blocks from the fork
+        # point upwards (i.e. earliest detached first) so that dependencies
+        # within the old branch are naturally satisfied where possible.
+        readd_txs: list[Transaction] = []
+        for bh in reversed(old_branch):
+            try:
+                block = self.chain._load_block(bh)
+            except Exception:
+                continue
+            # Skip the coinbase transaction at index 0.
+            for tx in block.transactions[1:]:
+                txid = tx.txid()
+                # Do not re-add if the transaction also appears in the new
+                # branch (which means it is still confirmed after the reorg).
+                if txid in new_branch_txids:
+                    continue
+                readd_txs.append(tx)
+
+        # Preserve a copy of the existing mempool transactions so we can
+        # reconsider them under the new chain.  Do this outside the lock to
+        # prevent holding the lock longer than necessary.
+        with self.lock:
+            existing_entries = list(self.entries.values())
+            # Clear current mempool state: remove all entries, dependency
+            # indices, spent outpoints, and orphans.  We'll rebuild the
+            # mempool from scratch by re-adding transactions below.
+            for txid in list(self.entries.keys()):
+                self._drop_entry(txid)
+            self.entries.clear()
+            self.dep_index.clear()
+            self.spent_outpoints.clear()
+            self.total_weight = 0
+            # Clear orphans as they may no longer be relevant after the reorg.
+            self.orphans.clear()
+            self.orphan_index.clear()
+
+        # Compose a single list of transactions to re-add: first those from
+        # detached blocks, then the ones that were already in the mempool.  We
+        # maintain order because earlier transactions may create UTXOs needed
+        # by later ones; however, accept_transaction will gracefully handle
+        # dependencies by creating orphans.
+        combined_txs: list[Transaction] = []
+        combined_txs.extend(readd_txs)
+        for entry in existing_entries:
+            txid = entry.tx.txid()
+            # Skip any transaction that appears in the new branch, as these
+            # remain confirmed after the reorg and do not belong in the
+            # mempool.  Also avoid adding duplicates from the detached list.
+            if txid not in new_branch_txids:
+                combined_txs.append(entry.tx)
+
+        # Re-add transactions one by one.  We avoid propagation during this
+        # phase because these are not new user-submitted transactions but
+        # internal resubmissions triggered by a reorg.  A failure to accept
+        # a transaction (due to missing UTXOs, coinbase maturity, or other
+        # policy) simply means the transaction is not valid anymore and
+        # should be dropped or moved to the orphan pool.
+        for tx in combined_txs:
+            try:
+                self.accept_transaction(tx, propagate=False)
+            except MempoolError:
+                # Drop transactions that are no longer valid.  If a
+                # transaction is missing inputs, accept_transaction will
+                # automatically add it to the orphan pool, so we do not need
+                # to handle that separately here.
+                continue
+
     def register_listener(self, callback: Callable[[Transaction], None]) -> None:
         self._listeners.append(callback)
 

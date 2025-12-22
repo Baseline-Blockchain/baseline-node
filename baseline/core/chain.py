@@ -573,6 +573,28 @@ class Chain:
             chainwork = int(parent_header.chainwork) + difficulty.block_work(block.header.bits)
             self._connect_main(block, block_hash, height, chainwork, validation)
 
+        # After successfully rewinding and reconnecting the chain, notify the
+        # mempool (if any) of the reorganization.  This allows the mempool
+        # to re-add transactions from the disconnected branch and to
+        # revalidate existing transactions against the new main chain.  The
+        # mempool may be attached to the chain dynamically via the Mempool
+        # constructor.  We wrap the call in a try/except to avoid
+        # propagating any mempool errors back to the chain logic.
+        try:
+            mempool = getattr(self, "mempool", None)
+            if mempool is not None:
+                # Provide the lists of detached and attached block hashes to
+                # the mempool.  We use the local variables old_branch and
+                # new_branch captured from the outer scope (defined at the
+                # beginning of this method).
+                mempool.handle_reorg(old_branch, new_branch)
+        except Exception:
+            # Log the error at debug level; mempool exceptions should not
+            # interfere with chain operation.  Use broad exception catching
+            # here to ensure robustness.
+            import logging
+            logging.getLogger("baseline.chain").debug("Mempool reorg handling failed", exc_info=True)
+
     def _disconnect_main_block(self, block_hash: str) -> None:
         header = self.state_db.get_header(block_hash)
         if header is None:
