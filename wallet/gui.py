@@ -217,15 +217,6 @@ class WalletLauncher(tk.Tk):
         else:
             print("[wallet-gui] logo.png not found; using default Tk icon")
 
-        ico_path = ASSET_DIR / "logo.ico"
-        if ico_path.exists():
-            try:
-                self.iconbitmap(default=str(ico_path))
-            except Exception as exc:
-                print(f"[wallet-gui] Unable to set iconbitmap: {exc}")
-        else:
-            print("[wallet-gui] logo.ico not found; falling back to Tk default icon")
-
     def _apply_theme(self) -> None:
         """Configure ttk styles for the light palette."""
 
