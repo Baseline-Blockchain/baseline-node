@@ -84,8 +84,11 @@ new_target ≤ max_target (set by genesis bits 0x207fffff)
 
 ## 9. Time Synchronization
 
-- Optional NTP client queries up to 3 servers every 300 seconds with 5-second socket timeout.
-- Offsets >60 seconds trigger warnings; time manager adjusts `synchronized_time_int()` used for block validation.
+- Optional NTP client queries up to 3 servers on each sync (from the configured server list) every 300 seconds with a 5-second UDP timeout.
+- The node maintains an in-process time offset (it does not adjust the system clock).
+- Offsets greater than 60 seconds trigger warnings.
+- `synchronized_time_int()` uses the node’s NTP-derived offset and is used for mining template timestamps and the “future block” validation check.
+- RPC `gettimesyncinfo` reports time-sync status including offset, last_sync, time_since_sync, drift_rate, servers, system_time, and synchronized_time.
 
 ## 10. Deviations from Bitcoin
 

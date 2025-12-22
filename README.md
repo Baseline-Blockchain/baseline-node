@@ -2,13 +2,13 @@
 
 ![Baseline Wallet GUI preview showing baseline-wallet-gui](preview.png)
 
-Baseline is a minimalist, Bitcoin-style payments chain—built for simple transfers, predictable rules, and clean integration. No smart-contract complexity. Just money.
+Baseline is a minimalist Bitcoin-style payments chain — but it ships with the stuff operators actually need built-in: fast blocks, Core-ish RPC, a native address index, and a turnkey pool server. No smart contracts, no token zoo, no bloat.
 
-- **Simple payments**: standard transactions only, smaller attack surface
-- **Operator-ready**: production-grade RPC / Bitcoin Core compatibility + built-in Stratum pool server
-- **Lightweight & efficient**: Python 3.12+, no external dependencies, low resource usage
-- **Understandable by design**: compact codebase, clear documentation, and formal spec
-- **Compatible with Bitcoin tooling**: Designed for Bitcoin RPC compatibility; most Core-compatible wallets and explorers should work with Baseline with minimal changes.
+- **Turnkey mining + pool ops**: built-in Stratum v1 server (vardiff, sessions) + automatic payout tracking/ledger + payout tx builder (run a community pool without extra daemons).
+- **Explorer-ready out of the box**: native address index (UTXOs + tx history) exposed via RPC (getaddressutxos, getaddressbalance, getaddresstxids) — no external indexer needed.
+- **Fast confirmations, stable cadence**: 20s blocks + short retarget window designed to stay responsive without wild oscillation.
+- **Predictable emission (no drama)**: Bitcoin-style JSON-RPC surface for easier exchange/wallet/explorer integration, plus a built-in status panel.
+- **Minimal by design**: Python 3.12+, stdlib only, compact codebase, formal spec, strict linting + tests.
 
 ## Network Parameters
 
