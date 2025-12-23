@@ -75,8 +75,46 @@ class P2PServer:
         self._block_timeout = 60.0
         self.bytes_sent = 0
         self.bytes_received = 0
+        self._local_addresses: set[tuple[str, int]] = set()
+        self._init_local_addresses()
         self._load_known_addresses()
         self.mempool.register_listener(self._on_local_tx)
+
+    def _init_local_addresses(self) -> None:
+        """Initialize the set of local addresses to prevent self-connection."""
+        import socket
+        # Add configured listen address
+        self._local_addresses.add((self.host, self.listen_port))
+        # Add common localhost variants
+        for local_ip in ("127.0.0.1", "::1", "localhost"):
+            self._local_addresses.add((local_ip, self.listen_port))
+        # Try to detect local network interfaces
+        try:
+            hostname = socket.gethostname()
+            for info in socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM):
+                ip = info[4][0]
+                self._local_addresses.add((ip, self.listen_port))
+        except (socket.gaierror, OSError):
+            pass
+        # Also try to get external IP by connecting to a public server
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.settimeout(1.0)
+                s.connect(("8.8.8.8", 80))
+                external_ip = s.getsockname()[0]
+                self._local_addresses.add((external_ip, self.listen_port))
+        except OSError:
+            pass
+        self.log.debug("Local addresses for self-connection prevention: %s", self._local_addresses)
+
+    def is_local_address(self, host: str, port: int) -> bool:
+        """Check if the given address is a local address (self-connection)."""
+        return (host, port) in self._local_addresses
+
+    def add_local_address(self, host: str, port: int) -> None:
+        """Add an address to the local addresses set (e.g., known public IP)."""
+        self._local_addresses.add((host, port))
+        self.log.debug("Added local address: %s:%s", host, port)
 
     async def start(self) -> None:
         self.loop = asyncio.get_running_loop()
@@ -196,6 +234,10 @@ class P2PServer:
             return
         key = (host, port)
         if key in self.active_addresses():
+            return
+        # Prevent self-connection
+        if self.is_local_address(host, port):
+            self.log.debug("Skipping self-connection to %s:%s", host, port)
             return
 
         # Record connection attempt

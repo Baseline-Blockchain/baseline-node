@@ -331,12 +331,20 @@ class RPCHandlers(WalletRPCMixin):
         except ChainError as exc:
             raise RPCError(-26, str(exc)) from exc
         status = result.get("status")
-        if status in {"connected", "reorganized"} and self.mempool:
-            try:
-                self.mempool.remove_confirmed(block.transactions)
-            except Exception as exc:  # pragma: no cover - defensive
-                logging.getLogger("baseline.rpc").debug("Failed to prune mempool after submitblock: %s", exc)
-        return {"status": status, "hash": block.block_hash(), "height": result.get("height")}
+        block_hash = block.block_hash()
+        if status in {"connected", "reorganized"}:
+            if self.mempool:
+                try:
+                    self.mempool.remove_confirmed(block.transactions)
+                except Exception as exc:  # pragma: no cover - defensive
+                    logging.getLogger("baseline.rpc").debug("Failed to prune mempool after submitblock: %s", exc)
+            # Announce the new block to peers for propagation
+            if self.network and hasattr(self.network, "announce_block"):
+                try:
+                    self.network.announce_block(block_hash)
+                except Exception as exc:  # pragma: no cover - defensive
+                    logging.getLogger("baseline.rpc").debug("Failed to announce block %s: %s", block_hash, exc)
+        return {"status": status, "hash": block_hash, "height": result.get("height")}
 
     def getblockchaininfo(self) -> dict[str, Any]:
         best = self.state_db.get_best_tip()
