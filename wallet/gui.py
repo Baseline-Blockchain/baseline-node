@@ -143,35 +143,80 @@ class WalletLauncher(tk.Tk):
 
         self.protocol("WM_DELETE_WINDOW", self._handle_close)
         self._build_layout()
+        self._build_menu()
         self._load_startup_config()
         self.refresh_all()
         self._schedule_auto_refresh()
 
     def _build_menu(self) -> None:
-        """Create the top-level menu bar with common actions."""
+        """Create the top-level menu bar (only once)."""
+        if getattr(self, "_menubar", None) is not None:
+            return  # already built
 
-        menubar = tk.Menu(self)
-        actions = tk.Menu(menubar, tearoff=False)
-        actions.add_command(label="Refresh", command=self.refresh_all)
-        actions.add_command(label="Reload Config", command=self._load_config_dialog)
-        menubar.add_cascade(label="Actions", menu=actions)
+        self._menubar = tk.Menu(self)
 
-        wallet_menu = tk.Menu(menubar, tearoff=False)
-        wallet_menu.add_command(label="New Address...", command=self._handle_new_address)
-        wallet_menu.add_separator()
-        wallet_menu.add_command(label="Dump Wallet...", command=self._handle_dump_wallet)
-        wallet_menu.add_command(label="Import Wallet...", command=self._handle_import_wallet)
+        # Actions menu
+        self._actions_menu = tk.Menu(self._menubar, tearoff=False)
+        self._actions_menu.add_command(label="Refresh", command=self.refresh_all)
+        self._actions_menu.add_command(label="Reload Config", command=self._load_config_dialog)
+        self._menubar.add_cascade(label="Actions", menu=self._actions_menu)
 
-        should_show = not self.wallet_info.get("encrypted")
-        if should_show:
-            wallet_menu.add_command(label="Encrypt Wallet...", command=self._handle_encrypt_wallet)
+        # Wallet menu (store it on self!)
+        self.wallet_menu = tk.Menu(self._menubar, tearoff=False)
+        wm = self.wallet_menu
 
-        wallet_menu.add_separator()
-        wallet_menu.add_command(label="Import Private Key...", command=self._handle_import_privkey)
-        wallet_menu.add_separator()
-        wallet_menu.add_command(label="Rescan Wallet", command=self._handle_rescan_wallet)
-        menubar.add_cascade(label="Wallet", menu=wallet_menu)
-        self.config(menu=menubar)
+        wm.add_command(label="New Address...", command=self._handle_new_address)
+        self._menu_idx_new_addr = wm.index("end")
+
+        wm.add_separator()
+        wm.add_command(label="Dump Wallet...", command=self._handle_dump_wallet)
+        self._menu_idx_dump = wm.index("end")
+
+        wm.add_command(label="Import Wallet...", command=self._handle_import_wallet)
+        self._menu_idx_import_wallet = wm.index("end")
+
+        # Always add Encrypt, just enable/disable it (no flicker)
+        wm.add_command(label="Encrypt Wallet...", command=self._handle_encrypt_wallet)
+        self._menu_idx_encrypt = wm.index("end")
+
+        wm.add_separator()
+        wm.add_command(label="Import Private Key...", command=self._handle_import_privkey)
+        self._menu_idx_import_privkey = wm.index("end")
+
+        wm.add_separator()
+        wm.add_command(label="Rescan Wallet", command=self._handle_rescan_wallet)
+        self._menu_idx_rescan = wm.index("end")
+
+        self._menubar.add_cascade(label="Wallet", menu=wm)
+
+        # Attach once
+        self.config(menu=self._menubar)
+
+        # Initial state
+        self._update_menu_state()
+
+    def _update_menu_state(self) -> None:
+        if not self.wallet_menu:
+            return
+
+        online = bool(self.rpc_online)
+        encrypted = bool(self.wallet_info.get("encrypted"))
+
+        # Disable wallet actions if offline
+        normal_or_disabled = "normal" if online else "disabled"
+
+        for idx in (
+            self._menu_idx_new_addr,
+            self._menu_idx_dump,
+            self._menu_idx_import_wallet,
+            self._menu_idx_import_privkey,
+            self._menu_idx_rescan,
+        ):
+            self.wallet_menu.entryconfig(idx, state=normal_or_disabled)
+
+        # Encrypt is only usable when online AND not already encrypted
+        encrypt_state = "normal" if (online and not encrypted) else "disabled"
+        self.wallet_menu.entryconfig(self._menu_idx_encrypt, state=encrypt_state)
 
     def _update_from_balance(self, *_: object) -> None:
         """Update the displayed balance for the selected from-address."""
@@ -673,10 +718,10 @@ class WalletLauncher(tk.Tk):
 
     def refresh_all(self) -> None:
         self._refresh_status()
+        self._update_menu_state()
         self._refresh_addresses()
         self._refresh_transactions()
         self._refresh_mempool()
-        self._build_menu()
         self._update_fee_estimate()
 
     def _schedule_auto_refresh(self) -> None:
