@@ -61,6 +61,21 @@ class RPCServer:
         self._executor: ThreadPoolExecutor | None = None
         self._rate_limits: dict[str, _TokenBucket] = {}
         self._body_chunk = 64 * 1024
+        self.public_methods = {
+            "getblockcount",
+            "getbestblockhash",
+            "getblockhash",
+            "getblockheader",
+            "getblock",
+            "getrawtransaction",
+            "gettxout",
+            "getaddressutxos",
+            "getaddressbalance",
+            "getaddresstxids",
+            "estimatesmartfee",
+            "getmempoolinfo",
+            "sendrawtransaction",
+        }
 
     async def start(self) -> None:
         if self.server:
@@ -107,16 +122,6 @@ class RPCServer:
                 client_keep_alive = self._client_wants_keep_alive(headers, version)
                 auth_header = headers.get("authorization")
                 if method == "GET":
-                    if not self._check_auth(auth_header):
-                        await self._write_response(
-                            writer,
-                            401,
-                            b"Unauthorized",
-                            b"",
-                            keep_alive=False,
-                            extra_headers={"WWW-Authenticate": 'Basic realm="baseline"'},
-                        )
-                        break
                     if not self._consume_rate_limit(client_ip):
                         await self._write_response(
                             writer,
@@ -142,16 +147,6 @@ class RPCServer:
                 if method != "POST":
                     await self._write_response(writer, 405, b"Method Not Allowed", b"", keep_alive=False)
                     break
-                if not self._check_auth(auth_header):
-                    await self._write_response(
-                        writer,
-                        401,
-                        b"Unauthorized",
-                        b"",
-                        keep_alive=False,
-                        extra_headers={"WWW-Authenticate": 'Basic realm="baseline"'},
-                    )
-                    break
                 if not self._consume_rate_limit(client_ip):
                     await self._write_response(
                         writer,
@@ -174,6 +169,35 @@ class RPCServer:
                 if body is None:
                     await self._write_response(writer, 400, b"Bad Request", b"", keep_alive=False)
                     break
+                try:
+                    req_obj = json.loads(body.decode("utf-8"))
+                except json.JSONDecodeError:
+                    response_payload = json.dumps(self._error_response(None, -32700, "Parse error")).encode("utf-8")
+                    await self._write_response(
+                        writer,
+                        200,
+                        b"OK",
+                        response_payload,
+                        keep_alive=client_keep_alive,
+                        content_type="application/json",
+                    )
+                    if not client_keep_alive:
+                        break
+                    continue
+
+                # Auth gate only if required
+                if self._request_requires_auth(req_obj) and not self._check_auth(auth_header):
+                    await self._write_response(
+                        writer,
+                        401,
+                        b"Unauthorized",
+                        b"",
+                        keep_alive=False,
+                        extra_headers={"WWW-Authenticate": 'Basic realm="baseline"'},
+                    )
+                    break
+
+                # Now process normally
                 response_payload = await self._handle_payload(body)
                 await self._write_response(
                     writer,
@@ -287,6 +311,26 @@ class RPCServer:
             chunks.append(chunk)
             remaining -= len(chunk)
         return b"".join(chunks)
+
+    def _request_requires_auth(self, req: object) -> bool:
+        # If no allowlist configured, keep current behavior: everything needs auth
+        if not self.public_methods:
+            return True
+
+        methods = []
+        if isinstance(req, dict):
+            m = req.get("method")
+            if isinstance(m, str):
+                methods.append(m)
+        elif isinstance(req, list):
+            for item in req:
+                if isinstance(item, dict):
+                    m = item.get("method")
+                    if isinstance(m, str):
+                        methods.append(m)
+
+        # require auth if ANY requested method is not public
+        return any(m not in self.public_methods for m in methods)
 
     def _check_auth(self, header: str | None) -> bool:
         if not header or not header.startswith("Basic "):
