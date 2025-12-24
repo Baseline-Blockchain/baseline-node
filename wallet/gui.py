@@ -79,9 +79,10 @@ class WalletLauncher(tk.Tk):
         self.resizable(False, False)
         self.configure(bg=PALETTE["bg"])
         self._icon_image: tk.PhotoImage | None = None
+
+        self.wallet_menu_ready = False
         self._load_icon()
         self._apply_theme()
-        self._build_menu()
 
         self.config_path: Path | None = None
         self.rpc_settings: dict[str, Any] = {
@@ -118,7 +119,6 @@ class WalletLauncher(tk.Tk):
         self.tx_row_map: dict[str, dict[str, Any]] = {}
         self.from_combo: ttk.Combobox | None = None
         self.wallet_menu: tk.Menu | None = None
-        self._encrypt_menu_present = False
         self._setup_window: tk.Toplevel | None = None
         self._setup_message_var = tk.StringVar(value="")
         self._setup_info_var = tk.StringVar(value="")
@@ -161,12 +161,16 @@ class WalletLauncher(tk.Tk):
         wallet_menu.add_separator()
         wallet_menu.add_command(label="Dump Wallet...", command=self._handle_dump_wallet)
         wallet_menu.add_command(label="Import Wallet...", command=self._handle_import_wallet)
+
+        should_show = not self.wallet_info.get("encrypted")
+        if should_show:
+            wallet_menu.add_command(label="Encrypt Wallet...", command=self._handle_encrypt_wallet)
+
         wallet_menu.add_separator()
         wallet_menu.add_command(label="Import Private Key...", command=self._handle_import_privkey)
         wallet_menu.add_separator()
         wallet_menu.add_command(label="Rescan Wallet", command=self._handle_rescan_wallet)
         menubar.add_cascade(label="Wallet", menu=wallet_menu)
-        self.wallet_menu = wallet_menu
         self.config(menu=menubar)
 
     def _update_from_balance(self, *_: object) -> None:
@@ -175,24 +179,6 @@ class WalletLauncher(tk.Tk):
         addr = self.send_from_var.get().strip()
         balance = self._lookup_balance(addr)
         self.send_from_balance_var.set(f"Balance: {balance:.8f} BLINE")
-
-    def _update_wallet_menu_state(self, info: dict[str, Any]) -> None:
-        if not self.wallet_menu:
-            return
-        should_show = not info.get("encrypted")
-        if should_show and not self._encrypt_menu_present:
-            self.wallet_menu.insert(
-                0,
-                "command",
-                label="Encrypt Wallet...",
-                command=self._handle_encrypt_wallet,
-            )
-            self._encrypt_menu_present = True
-        elif not should_show and self._encrypt_menu_present:
-            idx = self._find_menu_entry(self.wallet_menu, "Encrypt Wallet...")
-            if idx is not None:
-                self.wallet_menu.delete(idx)
-            self._encrypt_menu_present = False
 
     def _lookup_balance(self, address: str) -> float:
         for record in self.address_records:
@@ -690,6 +676,7 @@ class WalletLauncher(tk.Tk):
         self._refresh_addresses()
         self._refresh_transactions()
         self._refresh_mempool()
+        self._build_menu()
         self._update_fee_estimate()
 
     def _schedule_auto_refresh(self) -> None:
@@ -819,7 +806,6 @@ class WalletLauncher(tk.Tk):
             self.network_version_var.set("n/a")
             self.network_fee_var.set("n/a")
 
-        self._update_wallet_menu_state(info)
         if info.get("address_count", 0) == 0:
             if not self._setup_skipped:
                 self._launch_initial_setup(info)
