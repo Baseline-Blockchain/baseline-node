@@ -8,6 +8,32 @@ import json
 from typing import Any
 
 
+class RPCError(Exception):
+    """Base exception for RPC problems."""
+
+
+class RPCRequestError(RPCError):
+    """Raised for HTTP-level failures."""
+
+    def __init__(self, status: int, body: str):
+        super().__init__(f"RPC HTTP error {status}: {body}")
+        self.status = status
+        self.body = body
+
+
+class RateLimitError(RPCRequestError):
+    """Raised when the RPC server rejects the request due to rate limiting."""
+
+
+class RPCResponseError(RPCError):
+    """Raised when the JSON-RPC response includes an error."""
+
+    def __init__(self, code: int | None, message: str | None):
+        super().__init__(f"RPC error {code}: {message}")
+        self.code = code
+        self.message = message
+
+
 class RPCClient:
     """Thin HTTP client for Baseline JSON-RPC."""
 
@@ -37,9 +63,11 @@ class RPCClient:
         response = conn.getresponse()
         body = response.read().decode("utf-8")
         if response.status != 200:
-            raise SystemExit(f"RPC HTTP error {response.status}: {body}")
+            if response.status == 429:
+                raise RateLimitError(response.status, body)
+            raise RPCRequestError(response.status, body)
         data = json.loads(body)
-        if data.get("error"):
-            err = data["error"]
-            raise SystemExit(f"RPC error {err.get('code')}: {err.get('message')}")
+        error = data.get("error")
+        if error:
+            raise RPCResponseError(error.get("code"), error.get("message"))
         return data["result"]

@@ -13,7 +13,7 @@ from typing import Any
 
 from baseline.core import crypto
 
-from .client import RPCClient
+from .client import RPCClient, RPCError
 from .config import apply_config_defaults
 from .helpers import fetch_wallet_info
 
@@ -152,100 +152,102 @@ def main() -> None:
         apply_config_defaults(args)
     client = RPCClient(args.rpc_host, args.rpc_port, args.rpc_user, args.rpc_password, args.timeout)
 
-    if args.command == "setup":
-        info = fetch_wallet_info(client)
-        print(f"Wallet encrypted: {info['encrypted']}")
-        print(f"Wallet locked   : {info['locked']}")
-        print(f"Addresses       : {info['address_count']}")
-        if args.encrypt and not info["encrypted"]:
-            phrase = prompt_new_passphrase()
+    try:
+        if args.command == "setup":
+            info = fetch_wallet_info(client)
+            print(f"Wallet encrypted: {info['encrypted']}")
+            print(f"Wallet locked   : {info['locked']}")
+            print(f"Addresses       : {info['address_count']}")
+            if args.encrypt and not info["encrypted"]:
+                phrase = prompt_new_passphrase()
+                client.call("encryptwallet", [phrase])
+                print("Wallet encrypted. Restart node before continuing.")
+            elif info["encrypted"] and info["locked"]:
+                print("Wallet is encrypted and locked; use 'unlock' or provide --passphrase when sending.")
+        elif args.command == "newaddress":
+            result = client.call("getnewaddress", [args.label] if args.label else [])
+            print(result)
+        elif args.command == "listaddresses":
+            result = client.call("listaddresses", [])
+            print(json.dumps(result, indent=2))
+        elif args.command == "balance":
+            params = [] if args.minconf == 1 else [None, args.minconf]
+            result = client.call("getbalance", params)
+            print(result)
+        elif args.command == "balances":
+            result = client.call("listaddressbalances", [args.minconf])
+            print(json.dumps(result, indent=2))
+        elif args.command == "listunspent":
+            params = [args.minconf, args.maxconf]
+            if args.addresses:
+                params.append(args.addresses)
+            result = client.call("listunspent", params)
+            print(json.dumps(result, indent=2))
+        elif args.command == "send":
+            unlocked = maybe_unlock_for_signing(client, args.passphrase, args.unlock_time)
+            options: dict[str, Any] = {}
+            if args.from_addresses:
+                options["fromaddresses"] = args.from_addresses
+            if args.change_address:
+                options["changeaddress"] = args.change_address
+            if args.fee is not None:
+                options["fee"] = args.fee
+            params: list[Any] = [args.address, args.amount]
+            if options:
+                params.extend(["", "", options])
+            txid = client.call("sendtoaddress", params)
+            print(txid)
+            if unlocked:
+                client.call("walletlock")
+        elif args.command == "tx":
+            result = client.call("gettransaction", [args.txid])
+            print(json.dumps(result, indent=2))
+        elif args.command == "listtx":
+            result = client.call("listtransactions", [args.label, args.count, args.skip, args.watchonly])
+            print(json.dumps(result, indent=2))
+        elif args.command == "encrypt":
+            phrase = args.passphrase or prompt_new_passphrase()
             client.call("encryptwallet", [phrase])
-            print("Wallet encrypted. Restart node before continuing.")
-        elif info["encrypted"] and info["locked"]:
-            print("Wallet is encrypted and locked; use 'unlock' or provide --passphrase when sending.")
-        return
-    elif args.command == "newaddress":
-        result = client.call("getnewaddress", [args.label] if args.label else [])
-        print(result)
-    elif args.command == "listaddresses":
-        result = client.call("listaddresses", [])
-        print(json.dumps(result, indent=2))
-    elif args.command == "balance":
-        params = [] if args.minconf == 1 else [None, args.minconf]
-        result = client.call("getbalance", params)
-        print(result)
-    elif args.command == "balances":
-        result = client.call("listaddressbalances", [args.minconf])
-        print(json.dumps(result, indent=2))
-    elif args.command == "listunspent":
-        params = [args.minconf, args.maxconf]
-        if args.addresses:
-            params.append(args.addresses)
-        result = client.call("listunspent", params)
-        print(json.dumps(result, indent=2))
-    elif args.command == "send":
-        unlocked = maybe_unlock_for_signing(client, args.passphrase, args.unlock_time)
-        options: dict[str, Any] = {}
-        if args.from_addresses:
-            options["fromaddresses"] = args.from_addresses
-        if args.change_address:
-            options["changeaddress"] = args.change_address
-        if args.fee is not None:
-            options["fee"] = args.fee
-        params: list[Any] = [args.address, args.amount]
-        if options:
-            params.extend(["", "", options])
-        txid = client.call("sendtoaddress", params)
-        print(txid)
-        if unlocked:
+            print("Wallet encrypted. Restart node to continue.")
+        elif args.command == "unlock":
+            client.call("walletpassphrase", [args.passphrase, args.timeout])
+            print(f"Wallet unlocked for {args.timeout} seconds.")
+        elif args.command == "lock":
             client.call("walletlock")
-    elif args.command == "tx":
-        result = client.call("gettransaction", [args.txid])
-        print(json.dumps(result, indent=2))
-    elif args.command == "listtx":
-        result = client.call("listtransactions", [args.label, args.count, args.skip, args.watchonly])
-        print(json.dumps(result, indent=2))
-    elif args.command == "encrypt":
-        phrase = args.passphrase or prompt_new_passphrase()
-        client.call("encryptwallet", [phrase])
-        print("Wallet encrypted. Restart node to continue.")
-    elif args.command == "unlock":
-        client.call("walletpassphrase", [args.passphrase, args.timeout])
-        print(f"Wallet unlocked for {args.timeout} seconds.")
-    elif args.command == "lock":
-        client.call("walletlock")
-        print("Wallet locked.")
-    elif args.command == "dump":
-        path = os.path.abspath(args.path)
-        unlocked = maybe_unlock_for_signing(client, args.passphrase, args.unlock_time)
-        try:
-            result = client.call("dumpwallet", [path])
-            print(f"Wallet dumped to {result}")
-        finally:
+            print("Wallet locked.")
+        elif args.command == "dump":
+            path = os.path.abspath(args.path)
+            unlocked = maybe_unlock_for_signing(client, args.passphrase, args.unlock_time)
+            try:
+                result = client.call("dumpwallet", [path])
+                print(f"Wallet dumped to {result}")
+            finally:
+                if unlocked:
+                    client.call("walletlock")
+        elif args.command == "importwallet":
+            unlocked = maybe_unlock_for_signing(client, args.passphrase, args.unlock_time)
+            try:
+                client.call("importwallet", [os.path.abspath(args.path), args.rescan])
+            finally:
+                if unlocked:
+                    client.call("walletlock")
+            print("Wallet imported.")
+        elif args.command == "importaddress":
+            client.call("importaddress", [args.address, args.label, args.rescan])
+            print("Address imported.")
+        elif args.command == "importprivkey":
+            unlocked = maybe_unlock_for_signing(client, args.passphrase, args.unlock_time)
+            client.call("importprivkey", [args.key, args.label, args.rescan])
+            print("Private key imported.")
             if unlocked:
                 client.call("walletlock")
-    elif args.command == "importwallet":
-        unlocked = maybe_unlock_for_signing(client, args.passphrase, args.unlock_time)
-        try:
-            client.call("importwallet", [os.path.abspath(args.path), args.rescan])
-        finally:
-            if unlocked:
-                client.call("walletlock")
-        print("Wallet imported.")
-    elif args.command == "importaddress":
-        client.call("importaddress", [args.address, args.label, args.rescan])
-        print("Address imported.")
-    elif args.command == "importprivkey":
-        unlocked = maybe_unlock_for_signing(client, args.passphrase, args.unlock_time)
-        client.call("importprivkey", [args.key, args.label, args.rescan])
-        print("Private key imported.")
-        if unlocked:
-            client.call("walletlock")
-    elif args.command == "rescan":
-        client.call("rescanwallet", [])
-        print("Wallet rescan started.")
-    else:
-        parser.error(f"Unknown command {args.command}")
+        elif args.command == "rescan":
+            client.call("rescanwallet", [])
+            print("Wallet rescan started.")
+        else:
+            parser.error(f"Unknown command {args.command}")
+    except RPCError as exc:
+        raise SystemExit(exc)
 
 
 if __name__ == "__main__":
