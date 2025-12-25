@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tkinter as tk
+from datetime import datetime, timedelta
 from pathlib import Path
 from tkinter import ttk
 from typing import Any
@@ -73,6 +74,14 @@ class WalletLauncher(
         self.address_records: list[dict[str, Any]] = []
         self.tx_records: list[dict[str, Any]] = []
         self.tx_row_map: dict[str, dict[str, Any]] = {}
+        self.schedule_tree: ttk.Treeview | None = None
+        self.schedule_records: list[dict[str, Any]] = []
+        self.schedule_row_map: dict[str, dict[str, Any]] = {}
+        self.schedule_dest_var = tk.StringVar()
+        self.schedule_amount_var = tk.StringVar()
+        self.schedule_lock_var = tk.StringVar(value=self._default_schedule_time())
+        self.schedule_cancelable_var = tk.BooleanVar(value=True)
+        self._schedule_cancel_button: ttk.Button | None = None
         self.from_combo: ttk.Combobox | None = None
         self.wallet_menu: tk.Menu | None = None
         self._setup_window: tk.Toplevel | None = None
@@ -105,3 +114,7 @@ class WalletLauncher(
         self._load_startup_config()
         self.refresh_all()
         self._schedule_auto_refresh()
+
+    def _default_schedule_time(self) -> str:
+        target = datetime.utcnow() + timedelta(hours=1)
+        return target.replace(second=0, microsecond=0).strftime("%Y-%m-%d %H:%M UTC")

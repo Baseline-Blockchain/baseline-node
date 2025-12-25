@@ -198,6 +198,53 @@ class WalletTests(unittest.TestCase):
         self.assertEqual(synced_entry["comment"], "gift memo")
         self.assertEqual(synced_entry["comment_to"], "friend")
 
+    def test_create_scheduled_transaction_records_entry(self) -> None:
+        wallet = WalletManager(self.wallet_path, self.state_db, self.block_store, self.mempool)
+        source_addr = wallet.get_new_address("source")
+        dest_addr = wallet.get_new_address("dest")
+        utxo = UTXORecord(
+            txid="dd" * 32,
+            vout=0,
+            amount=5 * COIN,
+            script_pubkey=script_from_address(source_addr),
+            height=0,
+            coinbase=False,
+        )
+        self.state_db.add_utxo(utxo)
+        schedule = wallet.create_scheduled_transaction(dest_addr, 1.5, lock_time=42, cancelable=True)
+        self.assertEqual(schedule["lock_time"], 42)
+        self.assertEqual(schedule["status"], "pending")
+        self.assertTrue(schedule["cancelable"])
+        self.assertAlmostEqual(schedule["amount"], 1.5)
+        self.assertTrue(wallet.mempool.contains(schedule["txid"]))
+        fetched = wallet.get_schedule(schedule["schedule_id"])
+        self.assertEqual(fetched["schedule_id"], schedule["schedule_id"])
+        self.assertEqual(fetched["status"], "pending")
+
+    def test_cancel_scheduled_transaction_creates_refund(self) -> None:
+        wallet = WalletManager(self.wallet_path, self.state_db, self.block_store, self.mempool)
+        source_addr = wallet.get_new_address("source")
+        dest_addr = wallet.get_new_address("dest")
+        utxo = UTXORecord(
+            txid="ee" * 32,
+            vout=0,
+            amount=6 * COIN,
+            script_pubkey=script_from_address(source_addr),
+            height=0,
+            coinbase=False,
+        )
+        self.state_db.add_utxo(utxo)
+        schedule = wallet.create_scheduled_transaction(dest_addr, 2.0, lock_time=75, cancelable=True)
+        original_tx = schedule["txid"]
+        canceled = wallet.cancel_scheduled_transaction(schedule["schedule_id"])
+        self.assertEqual(canceled["status"], "canceled")
+        self.assertIsNotNone(canceled["cancel_txid"])
+        self.assertFalse(wallet.mempool.contains(original_tx))
+        self.assertTrue(wallet.mempool.contains(canceled["cancel_txid"]))
+        refund_entry = wallet.get_transaction(canceled["cancel_txid"])
+        self.assertIsNotNone(refund_entry)
+        self.assertEqual(refund_entry["category"], "schedule_refund")
+
     def _mine_transaction_into_block(self, txid: str) -> None:
         tx = self.mempool.get(txid)
         self.assertIsNotNone(tx, "transaction must exist in mempool")

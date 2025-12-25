@@ -27,6 +27,10 @@ class WalletRPCMixin:
             "listunspent": self.listunspent,
             "getreceivedbyaddress": self.getreceivedbyaddress,
             "sendtoaddress": self.sendtoaddress,
+            "createscheduledtx": self.createscheduledtx,
+            "listscheduledtx": self.listscheduledtx,
+            "getschedule": self.getschedule,
+            "cancelscheduledtx": self.cancelscheduledtx,
             "gettransaction": self.rpc_gettransaction,
             "listtransactions": self.listtransactions,
             "rescanwallet": self.rescanwallet,
@@ -106,6 +110,34 @@ class WalletRPCMixin:
             )
         )
 
+    def createscheduledtx(
+        self,
+        address: str,
+        amount: float,
+        lock_time: int,
+        cancelable: bool,
+        options: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        opts = options or {}
+        from_addresses = opts.get("fromaddresses")
+        change_address = opts.get("changeaddress")
+        fee_override = opts.get("fee")
+        if fee_override is not None:
+            fee_liners = coins_to_liners(fee_override)
+        else:
+            fee_liners = MIN_RELAY_FEE_RATE
+        return self._wallet_call(
+            lambda w: w.create_scheduled_transaction(
+                address,
+                amount,
+                lock_time=int(lock_time),
+                cancelable=bool(cancelable),
+                fee=fee_liners,
+                from_addresses=from_addresses,
+                change_address=change_address,
+            )
+        )
+
     def getreceivedbyaddress(self, address: str, min_conf: int = 1) -> float:
         def _received(wallet: WalletManager) -> float:
             balances = wallet.address_balances(int(min_conf))
@@ -124,6 +156,15 @@ class WalletRPCMixin:
 
     def listtransactions(self, label: str = "*", count: int = 10, skip: int = 0, include_watchonly: bool = False) -> list[dict[str, object]]:
         return self._wallet_call(lambda w: w.list_transactions(count=int(count), skip=int(skip)))
+
+    def listscheduledtx(self) -> list[dict[str, Any]]:
+        return self._wallet_call(lambda w: w.list_scheduled_transactions())
+
+    def getschedule(self, schedule_id: str) -> dict[str, Any]:
+        return self._wallet_call(lambda w: w.get_schedule(schedule_id))
+
+    def cancelscheduledtx(self, schedule_id: str) -> dict[str, Any]:
+        return self._wallet_call(lambda w: w.cancel_scheduled_transaction(schedule_id))
 
     def rescanwallet(self) -> str:
         self._wallet_call(lambda w: w.rescan_wallet(), sync=False)

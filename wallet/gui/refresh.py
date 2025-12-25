@@ -46,6 +46,7 @@ class RefreshMixin:
                 self._refresh_addresses()
                 self._refresh_transactions()
                 self._refresh_mempool()
+                self._refresh_schedules()
                 self._update_fee_estimate()
             except RateLimitError as exc:
                 self._handle_rate_limit(exc)

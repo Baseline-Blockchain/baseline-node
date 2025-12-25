@@ -29,6 +29,7 @@ class RPCMixin:
         self._refresh_addresses()
         self._refresh_transactions()
         self._refresh_mempool()
+        self._refresh_schedules()
         self._update_fee_estimate()
 
     def _refresh_from_combo(self) -> None:
@@ -216,6 +217,52 @@ class RPCMixin:
         for txid in txids:
             self.mempool_box.insert("end", txid + "\n")
 
+    def _refresh_schedules(self) -> None:
+        tree = self.schedule_tree
+        if not tree:
+            return
+        for row in tree.get_children():
+            tree.delete(row)
+        self.schedule_row_map.clear()
+        self.schedule_records = []
+        if not self.rpc_online:
+            tree.insert("", "end", values=("RPC offline", "", "", "", "", ""), tags=("offline",))
+            self._update_schedule_cancel_button_state()
+            return
+        try:
+            client = self._build_client()
+            entries = client.call("listscheduledtx", [])
+        except Exception as exc:
+            tree.insert(
+                "",
+                "end",
+                values=("unable to load schedules", str(exc), "", "", "", ""),
+                tags=("offline",),
+            )
+            self._update_schedule_cancel_button_state()
+            return
+        for idx, entry in enumerate(entries):
+            schedule_id = entry.get("schedule_id", "")
+            iid = schedule_id or f"schedule-{idx}"
+            tag = "odd" if idx % 2 else "even"
+            self.schedule_row_map[iid] = entry
+            tree.insert(
+                "",
+                "end",
+                iid=iid,
+                values=(
+                    shorten(schedule_id, 14),
+                    entry.get("dest_address", ""),
+                    f"{entry.get('amount', 0.0):.8f}",
+                    self._format_schedule_time(entry.get("lock_time")),
+                    entry.get("status", ""),
+                    "✓" if entry.get("cancelable") else "✕",
+                ),
+                tags=(tag,),
+            )
+        self.schedule_records = entries
+        self._update_schedule_cancel_button_state()
+
     def _refresh_transactions(self) -> None:
         if not self.tx_tree:
             return
@@ -274,3 +321,14 @@ class RPCMixin:
             return client.call("getmempoolinfo", [])
         except Exception:
             return None
+
+    def _format_schedule_time(self, lock_time: Any) -> str:
+        if not isinstance(lock_time, int):
+            return ""
+        if 1_000_000_000 <= lock_time <= 0xFFFFFFFF:
+            try:
+                dt = datetime.utcfromtimestamp(lock_time)
+                return dt.strftime("%Y-%m-%d %H:%M UTC")
+            except (OverflowError, OSError, ValueError):
+                pass
+        return f"Height {lock_time}"

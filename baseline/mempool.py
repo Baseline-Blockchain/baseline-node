@@ -496,6 +496,14 @@ class Mempool:
             for tx in transactions:
                 self._drop_entry(tx.txid())
 
+    def drop_transaction(self, txid: str) -> bool:
+        """Drop a pending transaction, releasing its inputs."""
+        with self.lock:
+            if txid not in self.entries:
+                return False
+            self._drop_entry(txid)
+        return True
+
     def _rate_limit_peer(self, peer_id: str | None, cost: int) -> None:
         if not peer_id:
             return

@@ -66,6 +66,10 @@ Baseline ships with address/tx indexes enabled so block explorers can stay in sy
 | listaddressbalances [min_conf] | Per-address balances. |
 | listunspent [min] [max] [addresses] | Filtered UTXO view. |
 | sendtoaddress address amount [comment] [comment_to] [options] | Spend from wallet, optionally recording memo fields and specifying { "fromaddresses": [...], "changeaddress": "...", "fee": 0.0005 }. |
+| createscheduledtx address amount lock_time cancelable [options] | Reserve funds for a future lock-time by signing a transaction (returns `schedule_id`, `txid`, `lock_time`, `cancelable`, `raw_tx`). `lock_time` accepts a block height or UNIX timestamp; the GUI exposes a “Scheduled Date (UTC)” field and converts it to this value. Options match `sendtoaddress` (`fromaddresses`, `changeaddress`, `fee`). |
+| listscheduledtx | List active schedules with lock_time, amount, status, cancelable flag, inputs, owner address, raw tx, and an optional `scheduled_at` UTC timestamp for verification. |
+| getschedule schedule_id | return the same metadata as `listscheduledtx` but scoped to one schedule. |
+| cancelscheduledtx schedule_id | Drop the pending scheduled transaction (must be cancelable) and broadcast the refund tx back to the wallet, updating the schedule’s status. |
 | gettransaction txid | Wallet-specific metadata (amount, confirmations, memos). |
 | listtransactions [label] [count] [skip] | Recent wallet activity. |
 | rescanwallet | Clear cached wallet state and rescan the blockchain. |

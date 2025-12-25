@@ -9,6 +9,7 @@ Baseline is a minimalist Bitcoin-style payments chain — but it ships with the 
 - **Fast confirmations, stable cadence**: 20s blocks + short retarget window designed to stay responsive without wild oscillation.
 - **Predictable emission (no drama)**: Bitcoin-style JSON-RPC surface for easier exchange/wallet/explorer integration, plus a built-in status panel.
 - **Minimal by design**: Python 3.12+, stdlib only, compact codebase, formal spec, strict linting + tests.
+- **Scheduled Send capability**: Reserve future payments with cancelable and non-cancelable options.
 
 ## Network Parameters
 

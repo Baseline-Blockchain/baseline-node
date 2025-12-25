@@ -19,7 +19,7 @@ from .core.address import script_from_address
 from .core.block import Block
 from .core.tx import COIN, Transaction, TxInput, TxOutput
 from .mempool import Mempool, MempoolError
-from .policy import MIN_RELAY_FEE_RATE
+from .policy import MIN_RELAY_FEE_RATE, required_fee
 from .storage import BlockStore, StateDB
 
 
@@ -114,6 +114,7 @@ class WalletManager:
         self.data.setdefault("encrypted", False)
         self.data.setdefault("seed_encrypted", None)
         self.data.setdefault("salt", None)
+        self.data.setdefault("schedules", {})
         addresses = self.data.setdefault("addresses", {})
         for entry in addresses.values():
             entry.setdefault("watch_only", False)
@@ -130,6 +131,7 @@ class WalletManager:
             "addresses": {},
             "transactions": {},
             "outputs": {},
+            "schedules": {},
             "processed_height": -1,
         }
 
@@ -284,6 +286,17 @@ class WalletManager:
             raise ValueError("Missing private key for address")
         return priv
 
+    def _sign_transaction(self, tx: Transaction, selected: list[dict[str, object]]) -> None:
+        for idx, entry in enumerate(selected):
+            address = entry["address"]
+            priv = self._lookup_privkey(address)
+            script = script_from_address(address)
+            sighash = tx.signature_hash(idx, script, 0x01)
+            signature = crypto.sign(sighash, priv) + b"\x01"
+            pubkey = crypto.generate_pubkey(priv)
+            script_sig = bytes([len(signature)]) + signature + bytes([len(pubkey)]) + pubkey
+            tx.inputs[idx].script_sig = script_sig
+
     def send_to_address(
         self,
         dest_address: str,
@@ -347,15 +360,7 @@ class WalletManager:
         if change > 0:
             outputs.append(TxOutput(value=change, script_pubkey=script_from_address(chosen_change)))
         tx = Transaction(version=1, inputs=inputs, outputs=outputs, lock_time=0)
-        for idx, entry in enumerate(selected):
-            address = entry["address"]
-            priv = self._lookup_privkey(address)
-            script = script_from_address(address)
-            sighash = tx.signature_hash(idx, script, 0x01)
-            signature = crypto.sign(sighash, priv) + b"\x01"
-            pubkey = crypto.generate_pubkey(priv)
-            script_sig = bytes([len(signature)]) + signature + bytes([len(pubkey)]) + pubkey
-            tx.inputs[idx].script_sig = script_sig
+        self._sign_transaction(tx, selected)
         try:
             self.mempool.accept_transaction(tx, peer_id="wallet")
         except MempoolError as exc:
@@ -373,6 +378,191 @@ class WalletManager:
         )
         return tx.txid()
 
+    def _serialize_schedule_entry(self, entry: dict[str, object]) -> dict[str, object]:
+        result: dict[str, object] = dict(entry)
+        result["inputs"] = [dict(inp) for inp in entry.get("inputs", [])]
+        result["amount"] = liners_to_coins(entry["amount_liners"])
+        result["fee"] = liners_to_coins(entry["fee_liners"])
+        if entry.get("cancel_fee_liners") is not None:
+            result["cancel_fee"] = liners_to_coins(entry["cancel_fee_liners"])
+        return result
+
+    def create_scheduled_transaction(
+        self,
+        dest_address: str,
+        amount: Decimal | float | str | int,
+        *,
+        lock_time: int,
+        cancelable: bool = False,
+        fee: int = MIN_RELAY_FEE_RATE,
+        from_addresses: Sequence[str] | None = None,
+        change_address: str | None = None,
+    ) -> dict[str, object]:
+        amount_liners = coins_to_liners(amount)
+        if amount_liners <= 0:
+            raise ValueError("Amount must be positive")
+        lock_time = int(lock_time)
+        if lock_time < 0 or lock_time > 0xFFFFFFFF:
+            raise ValueError("lock_time must be between 0 and 2^32-1")
+        unspent = self.list_unspent()
+        entries = self.data.get("addresses", {})
+        allowed_set: set[str] | None = None
+        if from_addresses:
+            allowed_set = set()
+            for addr in from_addresses:
+                meta = entries.get(addr)
+                if meta is None:
+                    raise ValueError(f"Address {addr} not found in wallet")
+                if meta.get("watch_only"):
+                    raise ValueError(f"Address {addr} is watch-only and cannot spend")
+                allowed_set.add(addr)
+        if change_address:
+            change_meta = entries.get(change_address)
+            if change_meta is None or change_meta.get("watch_only"):
+                raise ValueError("Change address must belong to wallet and be spendable")
+        spendable = []
+        for entry in unspent:
+            meta = entries.get(entry["address"])
+            if not meta or meta.get("watch_only"):
+                continue
+            if allowed_set and entry["address"] not in allowed_set:
+                continue
+            spendable.append(entry)
+        if not spendable:
+            raise ValueError("No spendable inputs")
+        selected = []
+        total = 0
+        for entry in spendable:
+            selected.append(entry)
+            total += coins_to_liners(entry["amount"])
+            if total >= amount_liners + fee:
+                break
+        if total < amount_liners + fee:
+            raise ValueError("Insufficient funds")
+        inputs = [TxInput(prev_txid=entry["txid"], prev_vout=entry["vout"], script_sig=b"", sequence=0xFFFFFFFF) for entry in selected]
+        outputs = [TxOutput(value=amount_liners, script_pubkey=script_from_address(dest_address))]
+        change = total - amount_liners - fee
+        chosen_change = change_address or selected[0]["address"]
+        if not chosen_change:
+            for addr, meta in entries.items():
+                if not meta.get("watch_only"):
+                    chosen_change = addr
+                    break
+        if not chosen_change:
+            raise ValueError("No address available for change output")
+        if change > 0:
+            outputs.append(TxOutput(value=change, script_pubkey=script_from_address(chosen_change)))
+        tx = Transaction(version=1, inputs=inputs, outputs=outputs, lock_time=lock_time)
+        self._sign_transaction(tx, selected)
+        try:
+            self.mempool.accept_transaction(tx, peer_id="scheduled")
+        except MempoolError as exc:
+            raise ValueError(f"Scheduled transaction rejected: {exc}") from exc
+        inputs_meta = [
+            {
+                "txid": entry["txid"],
+                "vout": entry["vout"],
+                "address": entry["address"],
+                "amount": coins_to_liners(entry["amount"]),
+            }
+            for entry in selected
+        ]
+        raw_tx = tx.serialize().hex()
+        schedule_id = crypto.sha256d(tx.serialize() + lock_time.to_bytes(4, "little") + (b"\x01" if cancelable else b"\x00")).hex()
+        schedules = self.data.setdefault("schedules", {})
+        schedule_entry: dict[str, object] = {
+            "schedule_id": schedule_id,
+            "txid": tx.txid(),
+            "raw_tx": raw_tx,
+            "dest_address": dest_address,
+            "amount_liners": amount_liners,
+            "fee_liners": fee,
+            "lock_time": lock_time,
+            "cancelable": cancelable,
+            "status": "pending",
+            "created": int(time.time()),
+            "inputs": inputs_meta,
+            "change_address": chosen_change,
+            "owner_address": chosen_change,
+            "cancel_txid": None,
+            "cancel_fee_liners": None,
+            "confirmed_height": None,
+            "confirmed_blockhash": None,
+        }
+        schedules[schedule_id] = schedule_entry
+        self._record_transaction(
+            tx.txid(),
+            amount=-amount_liners,
+            category="scheduled",
+            addresses=[dest_address],
+            blockhash=None,
+            height=None,
+            fee=fee,
+        )
+        return self._serialize_schedule_entry(schedule_entry)
+
+    def list_scheduled_transactions(self) -> list[dict[str, object]]:
+        schedules = self.data.setdefault("schedules", {})
+        ordered = sorted(schedules.values(), key=lambda entry: entry.get("created", 0), reverse=True)
+        return [self._serialize_schedule_entry(entry) for entry in ordered]
+
+    def get_schedule(self, schedule_id: str) -> dict[str, object]:
+        entry = self.data.setdefault("schedules", {}).get(schedule_id)
+        if entry is None:
+            raise WalletError("Scheduled transaction not found")
+        return self._serialize_schedule_entry(entry)
+
+    def cancel_scheduled_transaction(self, schedule_id: str) -> dict[str, object]:
+        schedules = self.data.setdefault("schedules", {})
+        entry = schedules.get(schedule_id)
+        if not entry:
+            raise WalletError("Scheduled transaction not found")
+        if not entry.get("cancelable"):
+            raise WalletError("Scheduled transaction is not cancelable")
+        if entry.get("status") != "pending":
+            raise WalletError("Scheduled transaction is no longer pending")
+        txid = entry["txid"]
+        self.mempool.drop_transaction(txid)
+        owner = entry.get("owner_address") or entry["inputs"][0]["address"]
+        refund_tx, refund_fee = self._build_refund_transaction(entry, owner)
+        self.mempool.accept_transaction(refund_tx, peer_id="scheduled-refund")
+        entry["status"] = "canceled"
+        entry["cancel_txid"] = refund_tx.txid()
+        entry["cancel_fee_liners"] = refund_fee
+        entry["canceled_at"] = int(time.time())
+        self._save()
+        self._record_transaction(
+            refund_tx.txid(),
+            amount=refund_tx.outputs[0].value,
+            category="schedule_refund",
+            addresses=[owner],
+            blockhash=None,
+            height=None,
+            fee=refund_fee,
+        )
+        return self._serialize_schedule_entry(entry)
+
+    def _build_refund_transaction(self, entry: dict[str, object], owner_address: str) -> tuple[Transaction, int]:
+        inputs = entry["inputs"]
+        total_input = sum(inp["amount"] for inp in inputs)
+        target_script = script_from_address(owner_address)
+        output_value = total_input
+        while True:
+            tx_inputs = [
+                TxInput(prev_txid=inp["txid"], prev_vout=inp["vout"], script_sig=b"", sequence=0xFFFFFFFF)
+                for inp in inputs
+            ]
+            tx_outputs = [TxOutput(value=output_value, script_pubkey=target_script)]
+            tx = Transaction(version=1, inputs=tx_inputs, outputs=tx_outputs, lock_time=0)
+            self._sign_transaction(tx, inputs)
+            size = len(tx.serialize())
+            fee = required_fee(size)
+            new_output = total_input - fee
+            if new_output < 0:
+                raise WalletError("Not enough funds to cover refund fee")
+            if new_output == output_value:
+                return tx, fee
+            output_value = new_output
     def _record_transaction(
         self,
         txid: str,
@@ -475,6 +665,8 @@ class WalletManager:
                     "comment": comment,
                     "comment_to": comment_to,
                 }
+                if self._mark_schedule_confirmed(txid, height, header.hash):
+                    dirty = True
             self.data["processed_height"] = height
             dirty = True
             blocks_processed += 1
@@ -490,6 +682,17 @@ class WalletManager:
             last_error="",
         )
         return processed_height >= best_height
+
+    def _mark_schedule_confirmed(self, txid: str, height: int, blockhash: str) -> bool:
+        schedules = self.data.setdefault("schedules", {})
+        for entry in schedules.values():
+            if entry.get("txid") == txid and entry.get("status") == "pending":
+                entry["status"] = "confirmed"
+                entry["confirmed_height"] = height
+                entry["confirmed_blockhash"] = blockhash
+                entry["confirmed_at"] = int(time.time())
+                return True
+        return False
 
     def rescan_wallet(self) -> None:
         """Reset processed height and clear cached outputs/transactions."""

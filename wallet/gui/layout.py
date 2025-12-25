@@ -82,6 +82,23 @@ class LayoutMixin:
             foreground=[("disabled", PALETTE["muted"])],
         )
         style.configure(
+            "ScheduledCancel.TButton",
+            background="#1d4ed8",
+            foreground="#ffffff",
+            borderwidth=0,
+            focusthickness=1,
+            focuscolor=PALETTE["highlight"],
+            padding=(12, 6),
+        )
+        style.map(
+            "ScheduledCancel.TButton",
+            background=[
+                ("active", lighten("#1d4ed8")),
+                ("disabled", lighten("#1d4ed8", 0.5)),
+            ],
+            foreground=[("disabled", "#e0f2fe")],
+        )
+        style.configure(
             "TEntry",
             fieldbackground=PALETTE["panel"],
             background=PALETTE["panel"],
@@ -164,6 +181,28 @@ class LayoutMixin:
             background=[("selected", PALETTE["highlight"])],
             foreground=[("selected", "#ffffff")],
         )
+        style.configure(
+            "ScheduledCheck.TCheckbutton",
+            background=PALETTE["panel"],
+            foreground=PALETTE["text"],
+        )
+        style.map(
+            "ScheduledCheck.TCheckbutton",
+            background=[("active", PALETTE["panel"]), ("!active", PALETTE["panel"])],
+            foreground=[("disabled", PALETTE["muted"])],
+        )
+        style.configure(
+            "ScheduledScroll.TScrollbar",
+            gripcount=0,
+            background=PALETTE["accent"],
+            troughcolor="#d9e3ff",
+            bordercolor=PALETTE["accent"],
+            arrowcolor=PALETTE["text"],
+        )
+        try:
+            style.layout("ScheduledScroll.TScrollbar", style.layout("Vertical.TScrollbar"))
+        except tk.TclError:
+            pass
 
     def _build_layout(self) -> None:
         container = ttk.Frame(self, padding=(10, 10, 10, 10))
@@ -183,6 +222,10 @@ class LayoutMixin:
         history = ttk.Frame(notebook, padding=10)
         notebook.add(history, text="History")
         self._build_history_tab(history)
+
+        scheduled = ttk.Frame(notebook, padding=10)
+        notebook.add(scheduled, text="Scheduled Send")
+        self._build_scheduled_tab(scheduled)
 
         send = ttk.Frame(notebook, padding=10)
         notebook.add(send, text="Send")
@@ -313,6 +356,79 @@ class LayoutMixin:
         tree.tag_configure("offline", background=PALETTE["panel"], foreground=PALETTE["muted"])
         tree.bind("<Double-1>", self._show_transaction_details)
         tree.pack(fill="both", expand=True)
+
+    def _build_scheduled_tab(self, frame: ttk.Frame) -> None:
+        tree_frame = ttk.Frame(frame)
+        tree_frame.pack(fill="both", expand=True)
+        columns = ("schedule", "destination", "amount", "lock_time", "status", "cancelable")
+        tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=12, style="Card.Treeview")
+        self.schedule_tree = tree
+        tree.heading("schedule", text="Schedule ID")
+        tree.heading("destination", text="Destination")
+        tree.heading("amount", text="Amount (BLINE)")
+        tree.heading("lock_time", text="Scheduled Time")
+        tree.heading("status", text="Status")
+        tree.heading("cancelable", text="Cancelable")
+        tree.column("schedule", width=190)
+        tree.column("destination", width=220)
+        tree.column("amount", width=110, anchor="e")
+        tree.column("lock_time", width=120, anchor="center")
+        tree.column("status", width=100, anchor="center")
+        tree.column("cancelable", width=60, anchor="center")
+        odd_color = lighten(PALETTE["accent"], 0.35)
+        tree.tag_configure("even", background=PALETTE["panel"], foreground=PALETTE["text"])
+        tree.tag_configure("odd", background=odd_color, foreground=PALETTE["text"])
+        tree.tag_configure("offline", background=PALETTE["panel"], foreground=PALETTE["muted"])
+        tree.bind("<<TreeviewSelect>>", self._on_schedule_selection)
+        scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview, style="ScheduledScroll.TScrollbar")
+        tree.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        tree.pack(fill="both", expand=True)
+
+        cancel_frame = ttk.Frame(frame)
+        cancel_frame.pack(fill="x", pady=(6, 12))
+        self._schedule_cancel_button = ttk.Button(
+            cancel_frame,
+            text="Cancel Selected Schedule",
+            style="ScheduledCancel.TButton",
+            command=self._cancel_selected_schedule,
+        )
+        self._schedule_cancel_button.pack(side="left")
+        self._schedule_cancel_button.state(["disabled"])
+
+        card = ttk.Frame(frame, style="Card.TFrame", padding=16)
+        card.pack(fill="x")
+        card.columnconfigure(0, weight=1)
+        card.columnconfigure(1, weight=1)
+        ttk.Label(card, text="Destination Address", style="SectionHeading.TLabel").grid(
+            row=0, column=0, columnspan=2, sticky="w"
+        )
+        ttk.Entry(card, textvariable=self.schedule_dest_var, style="Form.TEntry").grid(
+            row=1, column=0, columnspan=2, sticky="ew", pady=(4, 6)
+        )
+
+        ttk.Label(card, text="Amount (BLINE)", style="SectionHeading.TLabel").grid(row=2, column=0, sticky="w")
+        ttk.Entry(card, textvariable=self.schedule_amount_var, style="Form.TEntry").grid(
+            row=3, column=0, sticky="ew", pady=(4, 6)
+        )
+        ttk.Label(card, text="Scheduled Date (UTC) or block height", style="SectionHeading.TLabel").grid(
+            row=2, column=1, sticky="w"
+        )
+        ttk.Entry(card, textvariable=self.schedule_lock_var, style="Form.TEntry").grid(
+            row=3, column=1, sticky="ew", pady=(4, 6)
+        )
+        ttk.Checkbutton(
+            card,
+            text="Cancelable (allows refund before scheduled time)",
+            variable=self.schedule_cancelable_var,
+            style="ScheduledCheck.TCheckbutton",
+        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 4))
+        ttk.Button(
+            card,
+            text="Schedule Payment",
+            command=self._create_scheduled_transaction,
+            style="Primary.TButton",
+        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
     def _show_address_notice(self, message: str, duration: int = 2000) -> None:
         if self._address_notice_after:

@@ -12,6 +12,38 @@ from ..client import RPCClient
 from ..helpers import fetch_wallet_info
 
 
+def parse_schedule_target(raw: str) -> int:
+    """Convert user-facing schedule text into numeric lock_time."""
+
+    value = raw.strip()
+    if not value:
+        raise ValueError("Scheduled date or height is required.")
+    if value.isdigit():
+        return int(value)
+    cleaned = value.upper()
+    if cleaned.endswith("UTC"):
+        value = value[:-3].strip()
+        cleaned = value.upper()
+    if cleaned.endswith("Z"):
+        value = value[:-1].strip()
+        cleaned = value.upper()
+    dt = None
+    try:
+        dt = datetime.fromisoformat(value)
+    except ValueError:
+        pass
+    if dt is None:
+        for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+            try:
+                dt = datetime.strptime(value, fmt)
+                break
+            except ValueError:
+                continue
+    if dt is None:
+        raise ValueError("Scheduled date must be YYYY-MM-DD[ HH:MM[:SS]] or a block height.")
+    return int(dt.replace(microsecond=0).timestamp())
+
+
 class ActionMixin:
     """Mixin for user actions and dialog flows."""
 
@@ -398,3 +430,107 @@ class ActionMixin:
             messagebox.showerror("Unlock Failed", str(exc))
             return None
         return True
+
+    def _parse_schedule_target(self, raw: str) -> int:
+        return parse_schedule_target(raw)
+
+    def _create_scheduled_transaction(self) -> None:
+        dest = self.schedule_dest_var.get().strip()
+        amount_raw = self.schedule_amount_var.get().strip()
+        lock_raw = self.schedule_lock_var.get().strip()
+        if not dest or not amount_raw or not lock_raw:
+            messagebox.showwarning("Missing Fields", "Destination, amount, and scheduled date are required.")
+            return
+        try:
+            amount = float(amount_raw)
+        except ValueError:
+            messagebox.showerror("Amount Error", "Amount must be a decimal number.")
+            return
+        try:
+            lock_time = self._parse_schedule_target(lock_raw)
+        except ValueError as exc:
+            messagebox.showerror("Scheduled Date Error", str(exc))
+            return
+        cancelable = bool(self.schedule_cancelable_var.get())
+
+        client = self._build_client()
+        unlocked = self._ensure_unlocked(client)
+        if unlocked is None:
+            return
+        try:
+            result = client.call("createscheduledtx", [dest, amount, lock_time, cancelable])
+        except Exception as exc:
+            messagebox.showerror("Schedule Failed", str(exc))
+            return
+        finally:
+            if unlocked:
+                with contextlib.suppress(Exception):
+                    client.call("walletlock", [])
+        schedule_id = result.get("schedule_id", "n/a")
+        messagebox.showinfo(
+            "Scheduled Transaction Created",
+            f"Schedule {schedule_id} created for {amount:.8f} BLINE locking at {lock_time}.",
+        )
+        self.schedule_dest_var.set("")
+        self.schedule_amount_var.set("")
+        default_time = self._default_schedule_time() if hasattr(self, "_default_schedule_time") else ""
+        self.schedule_lock_var.set(default_time)
+        self.schedule_cancelable_var.set(True)
+        self.refresh_all()
+
+    def _cancel_selected_schedule(self) -> None:
+        tree = self.schedule_tree
+        if not tree:
+            return
+        selection = tree.selection()
+        if not selection:
+            messagebox.showwarning("No Selection", "Select a schedule to cancel.")
+            return
+        entry = self.schedule_row_map.get(selection[0])
+        if not entry:
+            return
+        schedule_id = entry.get("schedule_id")
+        if not entry.get("cancelable"):
+            messagebox.showwarning("Not Cancelable", "This schedule cannot be canceled.")
+            return
+        if entry.get("status") != "pending":
+            messagebox.showwarning("Schedule Locked", "This schedule is not pending anymore.")
+            return
+
+        client = self._build_client()
+        unlocked = self._ensure_unlocked(client)
+        if unlocked is None:
+            return
+        try:
+            result = client.call("cancelscheduledtx", [schedule_id])
+        except Exception as exc:
+            messagebox.showerror("Cancel Failed", str(exc))
+            return
+        finally:
+            if unlocked:
+                with contextlib.suppress(Exception):
+                    client.call("walletlock", [])
+        cancel_txid = result.get("cancel_txid", "n/a")
+        messagebox.showinfo(
+            "Schedule Canceled",
+            f"Schedule {schedule_id} canceled. Refund tx: {cancel_txid}",
+        )
+        self.refresh_all()
+
+    def _on_schedule_selection(self, _event: tk.Event[tk.Misc] | None) -> None:
+        self._update_schedule_cancel_button_state()
+
+    def _update_schedule_cancel_button_state(self) -> None:
+        button = self._schedule_cancel_button
+        tree = self.schedule_tree
+        if not button or not tree:
+            return
+        selection = tree.selection()
+        disable = True
+        if selection:
+            entry = self.schedule_row_map.get(selection[0])
+            disable = not entry or not entry.get("cancelable") or entry.get("status") != "pending"
+        if disable:
+            button.state(["disabled"])
+        else:
+            button.state(["!disabled"])
