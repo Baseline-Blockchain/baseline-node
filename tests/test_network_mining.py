@@ -7,7 +7,7 @@ from baseline.config import NodeConfig
 from baseline.core import crypto, difficulty
 from baseline.core.address import script_from_address
 from baseline.core.block import Block, BlockHeader, merkle_root_hash
-from baseline.core.chain import Chain
+from baseline.core.chain import Chain, ChainError
 from baseline.core.tx import Transaction, TxInput, TxOutput
 from baseline.mempool import Mempool
 from baseline.mining.payout import PayoutTracker
@@ -140,6 +140,25 @@ class NetworkMiningTests(unittest.TestCase):
         for node in self.nodes:
             best = node.state_db.get_best_tip()
             self.assertEqual(best[0], final_hash)
+
+    def test_rejects_double_spend_block(self) -> None:
+        miner = self.nodes[0]
+        base_block = miner.mine_block()
+        raw_base = base_block.serialize()
+        for node in self.nodes:
+            node.chain.add_block(base_block, raw_base)
+        prev_tx = base_block.transactions[0]
+        spend_output_index = len(prev_tx.outputs) - 1
+        spend_amount = prev_tx.outputs[spend_output_index].value - 1_000
+        dest_script = miner.script
+        spend_tx = miner.create_spend_transaction(prev_tx, spend_output_index, dest_script, spend_amount, fee=1_000)
+        conflicting_tx = miner.create_spend_transaction(prev_tx, spend_output_index, dest_script, spend_amount, fee=1_000)
+        bad_block = miner.mine_block(parent_hash=base_block.block_hash(), extra_txs=[spend_tx, conflicting_tx])
+        raw_bad = bad_block.serialize()
+        for node in self.nodes:
+            with self.assertRaises(ChainError) as ctx:
+                node.chain.add_block(bad_block, raw_bad)
+            self.assertIn("Double spend inside block", str(ctx.exception))
 
 
 class PayoutTrackerReorgTests(unittest.TestCase):
@@ -322,3 +341,66 @@ class PayoutTrackerReorgTests(unittest.TestCase):
             script_from_address(worker2_address): expected_worker2,
         }
         self._assert_payout_distribution(payout_tx, expected, pool_fee)
+
+    def test_payout_tracker_cleans_matured_utxo_on_reorg(self) -> None:
+        base_blocks: list[Block] = []
+        for _ in range(2):
+            block = self.primary.mine_block()
+            raw = block.serialize()
+            self.primary.chain.add_block(block, raw)
+            self.fork.chain.add_block(block, raw)
+            base_blocks.append(block)
+        parent_hash = base_blocks[-1].block_hash()
+        matured_branch: list[Block] = []
+        for _ in range(3):
+            block = self.primary.mine_block(parent_hash=parent_hash)
+            matured_branch.append(block)
+            self.primary.chain.add_block(block, block.serialize())
+            self.fork.chain.add_block(block, block.serialize())
+            self._wait_for_header(self.primary, block.block_hash())
+            parent_hash = block.block_hash()
+        matured_hash = matured_branch[-1].block_hash()
+        matured_header = self.primary.state_db.get_header(matured_hash)
+        assert matured_header is not None
+        matured_height = matured_header.height
+        extension_block = self.primary.mine_block(parent_hash=matured_hash)
+        self.primary.chain.add_block(extension_block, extension_block.serialize())
+        self.fork.chain.add_block(extension_block, extension_block.serialize())
+        self._wait_for_header(self.primary, extension_block.block_hash())
+        best_height = self._wait_for_best_tip(self.primary, extension_block.block_hash())
+        tracker = self._build_tracker("payout-reorg-mature-removal.json")
+        primary_address = crypto.address_from_pubkey(self.primary.pubkey)
+        worker2_address = crypto.address_from_pubkey(crypto.generate_pubkey(7))
+        tracker.min_fee_rate = 0
+        tracker.record_share("primary", primary_address, difficulty=1.0)
+        tracker.record_share("worker-2", worker2_address, difficulty=2.0)
+        coinbase_tx = matured_branch[-1].transactions[0]
+        reward = coinbase_tx.outputs[1].value
+        txid = coinbase_tx.txid()
+        tracker.record_block(height=matured_height, coinbase_txid=txid, reward=reward, vout=1)
+        tracker.process_maturity(best_height=best_height)
+        self.assertTrue(tracker.matured_utxos)
+        self.assertIsNotNone(self.primary.state_db.get_utxo(txid, 1))
+
+        reorg_parent_hash = base_blocks[0].block_hash()
+        reorg_parent_header = self.primary.state_db.get_header(reorg_parent_hash)
+        assert reorg_parent_header is not None
+        reorg_branch_parent = reorg_parent_hash
+        blocks_needed = best_height - reorg_parent_header.height + 2
+        reorg_blocks: list[Block] = []
+        # Extend a branch from the earlier base block so the matured block is orphaned.
+        for _ in range(blocks_needed):
+            block = self.fork.mine_block(parent_hash=reorg_branch_parent)
+            raw = block.serialize()
+            self.fork.chain.add_block(block, raw)
+            self.primary.chain.add_block(block, raw)
+            reorg_blocks.append(block)
+            reorg_branch_parent = block.block_hash()
+        self._wait_for_header(self.primary, reorg_blocks[-1].block_hash())
+        new_height = self._wait_for_best_tip(self.primary, reorg_blocks[-1].block_hash())
+        self.assertGreater(new_height, best_height)
+        self.assertIsNone(self.primary.state_db.get_utxo(txid, 1))
+
+        payout_tx = tracker.create_payout_transaction(self.primary.state_db)
+        self.assertIsNone(payout_tx)
+        self.assertFalse(tracker.matured_utxos)
