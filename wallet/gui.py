@@ -1118,7 +1118,7 @@ class WalletLauncher(tk.Tk):
             self.refresh_all()
 
     def _handle_new_address(self) -> None:
-        label = simpledialog.askstring("New Address", "Label for the new address (optional):") or ""
+        label = simpledialog.askstring("New Address", "Label for the new address (optional):", parent=self) or ""
         try:
             client = self._build_client()
             unlocked = self._ensure_unlocked(client)
@@ -1140,10 +1140,10 @@ class WalletLauncher(tk.Tk):
         self.refresh_all()
 
     def _encrypt_wallet_flow(self) -> bool:
-        pass1 = simpledialog.askstring("Encrypt Wallet", "Enter passphrase:", show="*")
+        pass1 = simpledialog.askstring("Encrypt Wallet", "Enter passphrase:", show="*", parent=self)
         if not pass1:
             return False
-        pass2 = simpledialog.askstring("Encrypt Wallet", "Confirm passphrase:", show="*")
+        pass2 = simpledialog.askstring("Encrypt Wallet", "Confirm passphrase:", show="*", parent=self)
         if pass1 != pass2:
             messagebox.showwarning("Encrypt Wallet", "Passphrases did not match.")
             return False
@@ -1160,7 +1160,7 @@ class WalletLauncher(tk.Tk):
         path = filedialog.asksaveasfilename(
             title="Dump Wallet",
             defaultextension=".json",
-            filetypes=[("JSON", "*.json"), ("All files", "*.*")],
+            filetypes=[("JSON", "*.json"), ("All files", "*.*")], parent=self
         )
         if not path:
             return
@@ -1183,7 +1183,7 @@ class WalletLauncher(tk.Tk):
     def _handle_import_wallet(self) -> None:
         path = filedialog.askopenfilename(
             title="Import Wallet",
-            filetypes=[("JSON", "*.json"), ("All files", "*.*")],
+            filetypes=[("JSON", "*.json"), ("All files", "*.*")],parent=self
         )
         if not path:
             return
@@ -1206,11 +1206,11 @@ class WalletLauncher(tk.Tk):
         self.refresh_all()
 
     def _handle_import_privkey(self) -> None:
-        key = simpledialog.askstring("Import Private Key", "Enter WIF private key:")
+        key = simpledialog.askstring("Import Private Key", "Enter WIF private key:", parent=self)
         if not key:
             return
-        label = simpledialog.askstring("Import Private Key", "Enter label (optional):") or ""
-        rescan = messagebox.askyesno("Import Private Key", "Rescan the blockchain for this key?")
+        label = simpledialog.askstring("Import Private Key", "Enter label (optional):", parent=self) or ""
+        rescan = messagebox.askyesno("Import Private Key", "Rescan the blockchain for this key?", parent=self)
         try:
             client = self._build_client()
             unlocked = self._ensure_unlocked(client)
@@ -1348,10 +1348,10 @@ class WalletLauncher(tk.Tk):
             return False
         if not info.get("locked"):
             return True
-        passphrase = simpledialog.askstring("Unlock Wallet", "Wallet passphrase:", show="*")
+        passphrase = simpledialog.askstring("Unlock Wallet", "Wallet passphrase:", show="*", parent=self)
         if not passphrase:
             return None
-        timeout = simpledialog.askinteger("Unlock Duration", "Seconds to keep wallet unlocked:", initialvalue=120, minvalue=30)
+        timeout = simpledialog.askinteger("Unlock Duration", "Seconds to keep wallet unlocked:", parent=self, initialvalue=120, minvalue=30)
         if timeout is None:
             return None
         try:
