@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 from tkinter import filedialog, messagebox
-from typing import Any
 
 from ..config import load_config_overrides
 from .styles import DEFAULT_CONFIG

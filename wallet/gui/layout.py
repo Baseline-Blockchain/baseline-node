@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import tkinter as tk
 from tkinter import ttk
+
 from .styles import ASSET_DIR, PALETTE, lighten
 
 

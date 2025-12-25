@@ -247,7 +247,7 @@ def main() -> None:
         else:
             parser.error(f"Unknown command {args.command}")
     except RPCError as exc:
-        raise SystemExit(exc)
+        raise SystemExit(exc) from exc
 
 
 if __name__ == "__main__":

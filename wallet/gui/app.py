@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import tkinter as tk
+from pathlib import Path
 from tkinter import ttk
 from typing import Any
 

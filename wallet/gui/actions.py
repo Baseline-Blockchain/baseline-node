@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import contextlib
-from datetime import datetime
 import tkinter as tk
+from datetime import datetime
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any
 
@@ -375,7 +375,7 @@ class ActionMixin:
         self.send_memo_var.set("")
         self.send_memo_to_var.set("")
 
-    def _ensure_unlocked(self, client: "RPCClient") -> bool | None:
+    def _ensure_unlocked(self, client: RPCClient) -> bool | None:
         try:
             info = fetch_wallet_info(client)
         except Exception as exc:
