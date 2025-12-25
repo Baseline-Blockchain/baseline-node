@@ -4,6 +4,7 @@ from pathlib import Path
 
 from baseline.config import NodeConfig
 from baseline.core import crypto
+from baseline.core.address import script_from_address
 from baseline.core.chain import Chain
 from baseline.core.tx import COIN
 from baseline.mempool import Mempool
@@ -113,4 +114,51 @@ class PayoutTrackerTests(unittest.TestCase):
         assert payout_tx is not None
         self.assertEqual(payout_tx.outputs[0].value, balance_before)
         self.assertEqual(self.tracker.workers[self.worker_id].balance, 0)
+        self.assertEqual(len(self.tracker.matured_utxos), 0)
+
+    def test_multiple_workers_share_rewards_proportionally(self) -> None:
+        subsidy = 50 * COIN
+        foundation = (subsidy + 99) // 100
+        reward = subsidy - foundation
+        worker2_pub = crypto.generate_pubkey(7)
+        worker2_address = crypto.address_from_pubkey(worker2_pub)
+        self.tracker.record_share(self.worker_id, self.worker_address, difficulty=1.0)
+        self.tracker.record_share("worker-2", worker2_address, difficulty=2.0)
+        txid = "cd" * 32
+        self.tracker.record_block(height=5, coinbase_txid=txid, reward=reward)
+        self.tracker.process_maturity(best_height=7)
+        pool_fee = int(reward * (self.tracker.pool_fee_percent / 100.0))
+        distributable = reward - pool_fee
+        expected_worker1 = int(distributable * (1.0 / 3.0))
+        expected_worker2 = int(distributable * (2.0 / 3.0))
+        leftover = distributable - (expected_worker1 + expected_worker2)
+        self.assertEqual(self.tracker.pool_balance, pool_fee + leftover)
+        utxo = UTXORecord(
+            txid=txid,
+            vout=0,
+            amount=reward,
+            script_pubkey=self.pool_script,
+            height=5,
+            coinbase=True,
+        )
+        dummy_state = DummyState({(txid, 0): utxo})
+        payout_tx = self.tracker.create_payout_transaction(dummy_state)
+        self.assertIsNotNone(payout_tx)
+        assert payout_tx is not None
+        worker_scripts = {
+            script_from_address(self.worker_address): expected_worker1,
+            script_from_address(worker2_address): expected_worker2,
+        }
+        found_amounts: dict[bytes, int] = {}
+        pool_amount = 0
+        for output in payout_tx.outputs:
+            if output.script_pubkey in worker_scripts:
+                found_amounts[output.script_pubkey] = output.value
+            if output.script_pubkey == self.pool_script:
+                pool_amount += output.value
+        for script, amount in worker_scripts.items():
+            self.assertEqual(found_amounts.get(script), amount)
+        self.assertGreater(pool_amount, 0)
+        self.assertEqual(self.tracker.workers[self.worker_id].balance, 0)
+        self.assertEqual(self.tracker.workers["worker-2"].balance, 0)
         self.assertEqual(len(self.tracker.matured_utxos), 0)

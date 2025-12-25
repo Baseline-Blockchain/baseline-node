@@ -253,7 +253,8 @@ class WalletLauncher(tk.Tk):
         if png_path.exists():
             try:
                 self._icon_image = tk.PhotoImage(file=str(png_path))
-                self.tk.call("wm", "iconphoto", self._w, self._icon_image)
+                self.iconphoto(False, self._icon_image)
+                self.iconphoto(True, self._icon_image)
             except Exception as exc:
                 print(f"[wallet-gui] Unable to load logo.png: {exc}")
         else:
