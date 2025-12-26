@@ -75,6 +75,8 @@ class RPCServer:
             "estimatesmartfee",
             "getmempoolinfo",
             "sendrawtransaction",
+            "listscheduledtx",
+            "getschedule",
         }
 
     async def start(self) -> None:
