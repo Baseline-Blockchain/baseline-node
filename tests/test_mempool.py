@@ -9,7 +9,7 @@ from baseline.core.chain import GENESIS_PRIVKEY, GENESIS_PUBKEY, Chain
 from baseline.core.tx import COIN, Transaction, TxInput, TxOutput
 from baseline.mempool import Mempool, MempoolError
 from baseline.policy import MIN_RELAY_FEE_RATE
-from baseline.storage import BlockStore, StateDB
+from baseline.storage import BlockStore, StateDB, UTXORecord
 
 
 class MempoolTests(unittest.TestCase):
@@ -102,6 +102,40 @@ class MempoolTests(unittest.TestCase):
         tx.validate_basic()
         return tx
 
+    def _add_utxo(self, txid: str, vout: int, amount: int, script_pubkey: bytes) -> None:
+        record = UTXORecord(
+            txid=txid,
+            vout=vout,
+            amount=amount,
+            script_pubkey=script_pubkey,
+            height=0,
+            coinbase=False,
+        )
+        self.state_db.add_utxo(record)
+
+    def _signed_spend_from(
+        self,
+        prev_txid: str,
+        prev_vout: int,
+        amount: int,
+        *,
+        fee: int,
+        priv: int,
+        script_pubkey: bytes,
+    ) -> Transaction:
+        tx = Transaction(
+            version=1,
+            inputs=[TxInput(prev_txid=prev_txid, prev_vout=prev_vout, script_sig=b"", sequence=0xFFFFFFFF)],
+            outputs=[TxOutput(value=amount - fee, script_pubkey=script_pubkey)],
+            lock_time=0,
+        )
+        sighash = tx.signature_hash(0, script_pubkey, 0x01)
+        signature = crypto.sign(sighash, priv) + b"\x01"
+        pubkey = crypto.generate_pubkey(priv)
+        tx.inputs[0].script_sig = len(signature).to_bytes(1, "little") + signature + len(pubkey).to_bytes(1, "little") + pubkey
+        tx.validate_basic()
+        return tx
+
     def test_accept_transaction(self) -> None:
         tx = self._signed_spend()
         res = self.mempool.accept_transaction(tx)
@@ -141,3 +175,37 @@ class MempoolTests(unittest.TestCase):
         res = self.mempool.accept_transaction(tx, peer_id="test")
         self.assertEqual(res["status"], "accepted")
         self.assertIn(tx.txid(), self.mempool.transaction_ids())
+
+    def test_rejects_nonstandard_script_pubkey(self) -> None:
+        genesis_txid = self.chain.genesis_block.transactions[0].txid()
+        tx = Transaction(
+            version=1,
+            inputs=[TxInput(prev_txid=genesis_txid, prev_vout=0, script_sig=b"", sequence=0xFFFFFFFF)],
+            outputs=[TxOutput(value=50 * COIN - MIN_RELAY_FEE_RATE, script_pubkey=b"\x51")],
+            lock_time=0,
+        )
+        sighash = tx.signature_hash(0, self.script_pubkey, 0x01)
+        signature = crypto.sign(sighash, GENESIS_PRIVKEY) + b"\x01"
+        pubkey = GENESIS_PUBKEY
+        script_sig = len(signature).to_bytes(1, "little") + signature + len(pubkey).to_bytes(1, "little") + pubkey
+        tx.inputs[0].script_sig = script_sig
+        tx.validate_basic()
+        with self.assertRaises(MempoolError):
+            self.mempool.accept_transaction(tx, peer_id="test")
+
+    def test_mempool_evicts_low_fee_when_full(self) -> None:
+        priv = 7777
+        pub = crypto.generate_pubkey(priv)
+        script_pubkey = b"\x76\xa9\x14" + crypto.hash160(pub) + b"\x88\xac"
+        txid_low = "ab" * 32
+        txid_high = "cd" * 32
+        amount = 10 * COIN
+        self._add_utxo(txid_low, 0, amount, script_pubkey)
+        self._add_utxo(txid_high, 0, amount, script_pubkey)
+        pool = Mempool(self.chain, max_weight=1200)
+        low_fee_tx = self._signed_spend_from(txid_low, 0, amount, fee=5_000, priv=priv, script_pubkey=script_pubkey)
+        high_fee_tx = self._signed_spend_from(txid_high, 0, amount, fee=20_000, priv=priv, script_pubkey=script_pubkey)
+        pool.accept_transaction(low_fee_tx, peer_id="test")
+        pool.accept_transaction(high_fee_tx, peer_id="test")
+        self.assertIn(high_fee_tx.txid(), pool.transaction_ids())
+        self.assertNotIn(low_fee_tx.txid(), pool.transaction_ids())

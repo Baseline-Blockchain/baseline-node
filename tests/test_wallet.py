@@ -293,6 +293,132 @@ class WalletTests(unittest.TestCase):
         reverted = wallet.get_schedule(schedule["schedule_id"])
         self.assertEqual(reverted["status"], "pending")
 
+    def test_schedule_reorg_reconfirms_on_new_chain(self) -> None:
+        wallet = WalletManager(self.wallet_path, self.state_db, self.block_store, self.mempool)
+        source_addr = wallet.get_new_address("source")
+        dest_addr = wallet.get_new_address("dest")
+        utxo = UTXORecord(
+            txid="13" * 32,
+            vout=0,
+            amount=5 * COIN,
+            script_pubkey=script_from_address(source_addr),
+            height=0,
+            coinbase=False,
+        )
+        self.state_db.add_utxo(utxo)
+        schedule = wallet.create_scheduled_transaction(dest_addr, 1.0, lock_time=0, cancelable=True)
+        schedule_tx = self.mempool.get(schedule["txid"])
+        self.assertIsNotNone(schedule_tx)
+        assert schedule_tx is not None
+        main_block = self._mine_block(self.chain.genesis_hash, [schedule_tx])
+        res = self.chain.add_block(main_block, main_block.serialize())
+        self.assertIn(res["status"], {"connected", "reorganized"})
+        wallet.sync_chain()
+        confirmed = wallet.get_schedule(schedule["schedule_id"])
+        self.assertEqual(confirmed["status"], "confirmed")
+
+        detector = self.chain.fork_manager.detector
+        detector.min_reorg_interval = 0.0
+        detector.max_reorgs_per_hour = 10_000
+        detector.last_reorg_time = 0.0
+        detector.reorg_window_start = 0.0
+        detector.reorg_count = 0
+
+        fork_prev = self.chain.genesis_hash
+        for _ in range(2):
+            block = self._mine_block(fork_prev, [])
+            self.chain.add_block(block, block.serialize())
+            fork_prev = block.block_hash()
+
+        wallet.sync_chain()
+        pending = wallet.get_schedule(schedule["schedule_id"])
+        self.assertEqual(pending["status"], "pending")
+
+        new_block = self._mine_block(fork_prev, [schedule_tx])
+        res = self.chain.add_block(new_block, new_block.serialize())
+        self.assertIn(res["status"], {"connected", "reorganized"})
+        wallet.sync_chain()
+        reconfirmed = wallet.get_schedule(schedule["schedule_id"])
+        self.assertEqual(reconfirmed["status"], "confirmed")
+
+    def test_schedule_deep_reorg_multiple_entries(self) -> None:
+        wallet = WalletManager(self.wallet_path, self.state_db, self.block_store, self.mempool)
+        source_addr = wallet.get_new_address("source")
+        dest_addr = wallet.get_new_address("dest")
+        utxo1 = UTXORecord(
+            txid="21" * 32,
+            vout=0,
+            amount=6 * COIN,
+            script_pubkey=script_from_address(source_addr),
+            height=0,
+            coinbase=False,
+        )
+        utxo2 = UTXORecord(
+            txid="22" * 32,
+            vout=0,
+            amount=7 * COIN,
+            script_pubkey=script_from_address(source_addr),
+            height=0,
+            coinbase=False,
+        )
+        self.state_db.add_utxo(utxo1)
+        self.state_db.add_utxo(utxo2)
+        schedule_a = wallet.create_scheduled_transaction(dest_addr, 1.0, lock_time=0, cancelable=True)
+        schedule_b = wallet.create_scheduled_transaction(dest_addr, 1.2, lock_time=0, cancelable=True)
+        tx_a = self.mempool.get(schedule_a["txid"])
+        tx_b = self.mempool.get(schedule_b["txid"])
+        self.assertIsNotNone(tx_a)
+        self.assertIsNotNone(tx_b)
+        assert tx_a is not None
+        assert tx_b is not None
+
+        block1 = self._mine_block(self.chain.genesis_hash, [tx_a])
+        res = self.chain.add_block(block1, block1.serialize())
+        self.assertIn(res["status"], {"connected", "reorganized"})
+        self.mempool.remove_confirmed(block1.transactions)
+
+        block2 = self._mine_block(block1.block_hash(), [tx_b])
+        res = self.chain.add_block(block2, block2.serialize())
+        self.assertIn(res["status"], {"connected", "reorganized"})
+        self.mempool.remove_confirmed(block2.transactions)
+
+        wallet.sync_chain()
+        confirmed_a = wallet.get_schedule(schedule_a["schedule_id"])
+        confirmed_b = wallet.get_schedule(schedule_b["schedule_id"])
+        self.assertEqual(confirmed_a["status"], "confirmed")
+        self.assertEqual(confirmed_b["status"], "confirmed")
+
+        detector = self.chain.fork_manager.detector
+        detector.min_reorg_interval = 0.0
+        detector.max_reorgs_per_hour = 10_000
+        detector.last_reorg_time = 0.0
+        detector.reorg_window_start = 0.0
+        detector.reorg_count = 0
+
+        fork_prev = self.chain.genesis_hash
+        for _ in range(3):
+            block = self._mine_block(fork_prev, [])
+            self.chain.add_block(block, block.serialize())
+            fork_prev = block.block_hash()
+
+        self.assertTrue(self.mempool.contains(schedule_a["txid"]))
+        self.assertTrue(self.mempool.contains(schedule_b["txid"]))
+
+        wallet.sync_chain()
+        pending_a = wallet.get_schedule(schedule_a["schedule_id"])
+        pending_b = wallet.get_schedule(schedule_b["schedule_id"])
+        self.assertEqual(pending_a["status"], "pending")
+        self.assertEqual(pending_b["status"], "pending")
+
+        block3 = self._mine_block(fork_prev, [tx_a])
+        res = self.chain.add_block(block3, block3.serialize())
+        self.assertIn(res["status"], {"connected", "reorganized"})
+        wallet.sync_chain()
+        reconfirmed_a = wallet.get_schedule(schedule_a["schedule_id"])
+        reconfirmed_b = wallet.get_schedule(schedule_b["schedule_id"])
+        self.assertEqual(reconfirmed_a["status"], "confirmed")
+        self.assertEqual(reconfirmed_b["status"], "pending")
+
     def test_scheduled_transaction_persists_after_reload(self) -> None:
         wallet = WalletManager(self.wallet_path, self.state_db, self.block_store, self.mempool)
         source_addr = wallet.get_new_address("source")
@@ -348,6 +474,23 @@ class WalletTests(unittest.TestCase):
         schedule = wallet.create_scheduled_transaction(dest_addr, 1.0, lock_time=0, cancelable=False)
         with self.assertRaises(WalletError):
             wallet.cancel_scheduled_transaction(schedule["schedule_id"])
+
+    def test_schedule_conflicts_with_immediate_spend(self) -> None:
+        wallet = WalletManager(self.wallet_path, self.state_db, self.block_store, self.mempool)
+        source_addr = wallet.get_new_address("source")
+        dest_addr = wallet.get_new_address("dest")
+        utxo = UTXORecord(
+            txid="14" * 32,
+            vout=0,
+            amount=5 * COIN,
+            script_pubkey=script_from_address(source_addr),
+            height=0,
+            coinbase=False,
+        )
+        self.state_db.add_utxo(utxo)
+        wallet.create_scheduled_transaction(dest_addr, 1.0, lock_time=0, cancelable=True)
+        with self.assertRaises(ValueError):
+            wallet.send_to_address(dest_addr, 1.0)
 
     def _make_coinbase(self, height: int) -> Transaction:
         height_bytes = height.to_bytes((height.bit_length() + 7) // 8 or 1, "little")

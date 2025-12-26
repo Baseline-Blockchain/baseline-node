@@ -255,6 +255,20 @@ class RPCTestCase(unittest.TestCase):
             self.handlers.dispatch("cancelscheduledtx", [created["schedule_id"]])
         self.assertEqual(ctx.exception.code, -4)
 
+    def test_scheduled_transaction_invalid_lock_time(self) -> None:
+        recv_address = self.handlers.dispatch("getnewaddress", [])
+        payment = self._build_payment_tx(recv_address, 5 * COIN)
+        self._mine_block(self.chain.genesis_hash, [payment])
+        self.wallet.sync_chain()
+        dest_pub = crypto.generate_pubkey(5656)
+        dest_address = crypto.address_from_pubkey(dest_pub)
+        with self.assertRaises(RPCError) as ctx:
+            self.handlers.dispatch("createscheduledtx", [dest_address, 1.0, -1, True])
+        self.assertEqual(ctx.exception.code, -3)
+        with self.assertRaises(RPCError) as ctx:
+            self.handlers.dispatch("createscheduledtx", [dest_address, 1.0, 0x1_0000_0000, True])
+        self.assertEqual(ctx.exception.code, -3)
+
     def test_wallet_encrypt_and_unlock_via_rpc(self) -> None:
         self.handlers.dispatch("getnewaddress", [])
         self.handlers.dispatch("encryptwallet", ["passphrase"])

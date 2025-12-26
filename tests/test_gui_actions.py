@@ -1,7 +1,6 @@
 from datetime import datetime
 
 import pytest
-
 from wallet.gui.actions import parse_schedule_target
 
 
