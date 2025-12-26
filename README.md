@@ -34,13 +34,21 @@ Subsidy decays exponentially each block with a 4,158,884-block half-life (~2.64 
 
 ### 1. Install Python environment
 
-Baseline targets **Python 3.12 or newer** (3.12/3.13 verified). Make sure your `python` shim points to a compatible interpreter before creating the virtualenv.
-   ```bash
-   python -m venv .venv
-   . .venv/Scripts/activate  # or source .venv/bin/activate on UNIX
-   pip install --upgrade pip
-   ```
-   No extra packages are required; the stdlib is enough.
+Baseline targets **Python 3.12 or newer** (3.12/3.13 verified). Confirm Python is available before continuing:
+
+```bash
+python --version || py -3 --version
+```
+
+If the first command fails on Windows, try `py -3`. Once you have a compatible interpreter, create the virtualenv:
+
+```bash
+python -m venv .venv
+. .venv/Scripts/activate  # or source .venv/bin/activate on UNIX
+pip install --upgrade pip
+```
+
+No extra packages are required; the stdlib is enough.
 
 ### 2. Install Baseline
    ```bash
