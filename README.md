@@ -54,7 +54,7 @@ No extra packages are required; the stdlib is enough.
    ```bash
    pip install -e .
    ```
-   This exposes the `baseline-node`, `baseline-wallet`, `baseline-wallet-gui`, and `baseline-miner` executables in your virtual environment.
+   This exposes the `baseline-node`, `baseline-wallet`, and `baseline-wallet-gui` executables in your virtual environment.
 
 ### 3. Set config values
 
@@ -111,16 +111,6 @@ baseline-wallet --config config.json --help
    Workers are tracked by username for payouts; shares accrue until coinbase rewards mature (20 blocks), then the payout tracker crafts and broadcasts the payment transaction..
 
 - Yes, you can already have community mining pools! Just point miners with proper addresses at a Baseline node with Stratum enabled and the payouts will flow automatically.
-
-### Reference miner (`tools/simple_miner.py`)
-
-This script is a CPU-only proof-of-concept that repeatedly fetches templates over RPC and submits solved blocks via `submitblock`:
-
-```bash
-baseline-miner --config config.json --attempts-per-template 500000
-```
-
-It is intentionally simple—great for smoke testing, not for real hash-rate. For real deployments, point ASICs at the built-in Stratum endpoint.
 
 ## How It Works (High-Level)
 

@@ -14,9 +14,6 @@ Baseline ships with a Stratum v1 server plus a payout tracker so you can operate
 ```
 # ASIC/FPGA example (address + worker name)
 bfgminer -o stratum+tcp://pool.example.org:3333 -u NExampleAddr.worker01 -p x
-
-# Reference CPU miner (bundled)
-baseline-miner --config config.json --attempts-per-template 500000
 ```
 
 If your hardware or proxy cannot include the address in the username, set the username to a worker label (for example `worker01`) and pass the payout address via the Stratum password (`-p NExampleAddr`). The server tests both fields and authorizes only when it finds a valid Baseline address.

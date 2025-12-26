@@ -105,7 +105,7 @@ If you bring your own signing stack, you can disable the built-in wallet and rel
 ## Testing / Staging
 
 - Run `baseline-node --config config.json --reset-chainstate` to wipe test deployments.
-- Use the reference CPU miner (`baseline-miner`) or Stratum pool to generate mock funds.
+- Use the built-in Stratum pool (or any internal tooling on a private dev network) to generate mock funds.
 - Mirror your production automation against a testnet cluster before mainnet rollout.
 
 ## Compatibility Notes

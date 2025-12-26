@@ -106,7 +106,6 @@ The handler raises RPCError(code, message) for user issues (bad params, invalid 
 Two helper CLIs wrap RPC:
 
 - baseline-wallet (`wallet/cli.py`) - interactive wallet commands.
-- baseline-miner (`tools/simple_miner.py`) - CPU reference miner.
 - rpc-stress (`tools/rpc_stress.py`) - lightweight load tester that opens multiple concurrent RPC clients and reports aggregate throughput/latencies.
 
 Both respect --config and reuse the RPC credentials defined there.
