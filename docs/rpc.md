@@ -98,6 +98,7 @@ The handler raises RPCError(code, message) for user issues (bad params, invalid 
 - Bind RPC to localhost; use SSH tunnels or reverse proxies if remote control is required.
 - Rotate credentials regularly and never share them with miners.
 - Limit request size with `rpc.max_request_bytes` (defaults to 256 kB) and take advantage of the built-in per-IP rate limiter/timeouts to keep untrusted clients from saturating the server. These knobs live under `[rpc]` in `config.json`.
+- Loopback clients are exempt from the rate limiter by default so local explorers can make many parallel calls; set `rpc.rate_limit_exempt_loopback=false` to rate-limit localhost too.
 - Monitor logs for repeated authentication failures.
 
 ## Tooling

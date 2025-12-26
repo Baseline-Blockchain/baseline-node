@@ -75,7 +75,7 @@ class RPCServerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_rate_limit_returns_429(self) -> None:
         handler = DummyHandlers()
-        await self._start_server(handler, max_requests_per_minute=1)
+        await self._start_server(handler, max_requests_per_minute=1, rate_limit_exempt_loopback=False)
         payload = {"jsonrpc": "2.0", "id": 1, "method": "ping", "params": []}
         status, _ = await self._rpc_call(payload)
         self.assertEqual(status, 200)

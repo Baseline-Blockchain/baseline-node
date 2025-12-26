@@ -57,6 +57,7 @@ class RPCConfig:
     max_batch_size: int = 32
     max_batch_concurrency: int = 8
     max_requests_per_minute: int = 120
+    rate_limit_exempt_loopback: bool = True
 
     def validate(self) -> None:
         if not (1 <= self.port <= 65535):

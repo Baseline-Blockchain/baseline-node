@@ -8,6 +8,7 @@ import asyncio
 import base64
 import contextlib
 import hmac
+import ipaddress
 import json
 import os
 import time
@@ -58,6 +59,7 @@ class RPCServer:
         self._max_batch_size = config.rpc.max_batch_size
         self._max_batch_concurrency = config.rpc.max_batch_concurrency
         self._max_requests_per_minute = config.rpc.max_requests_per_minute
+        self._rate_limit_exempt_loopback = config.rpc.rate_limit_exempt_loopback
         self._executor: ThreadPoolExecutor | None = None
         self._rate_limits: dict[str, _TokenBucket] = {}
         self._body_chunk = 64 * 1024
@@ -386,6 +388,12 @@ class RPCServer:
         return True
 
     def _consume_rate_limit(self, client_ip: str) -> bool:
+        if self._rate_limit_exempt_loopback:
+            try:
+                if ipaddress.ip_address(client_ip).is_loopback:
+                    return True
+            except ValueError:
+                pass
         limit = self._max_requests_per_minute
         if limit <= 0:
             return True
