@@ -18,7 +18,7 @@ from baseline.net.security import (
     PeerReputation,
     RateLimiter,
 )
-from baseline.storage.state import StateDB
+from baseline.storage.state import HeaderData, StateDB
 
 
 class SecurityTests(unittest.TestCase):
@@ -389,6 +389,61 @@ class UpgradeTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             self.upgrade_manager.add_custom_upgrade(duplicate_bit_upgrade)
+
+    def test_upgrade_locks_in_and_activates(self):
+        """Test upgrade signaling transitions from STARTED to LOCKED_IN to ACTIVE."""
+        current_time = int(time.time())
+        upgrade = UpgradeDefinition(
+            name="feature_signal",
+            bit=2,
+            start_time=current_time - 100,
+            timeout=current_time + 10_000,
+            threshold=3,
+            period=4,
+            min_activation_height=0,
+            description="Feature signaling test"
+        )
+        self.upgrade_manager.add_custom_upgrade(upgrade)
+
+        def store_header(height: int, version: int) -> None:
+            header = BlockHeader(
+                version=version,
+                prev_hash=f"{max(0, height - 1):064x}",
+                merkle_root="00" * 32,
+                timestamp=current_time,
+                bits=0x1d00ffff,
+                nonce=0,
+            )
+            header_record = HeaderData(
+                hash=f"{height:064x}",
+                prev_hash=header.prev_hash,
+                height=height,
+                bits=header.bits,
+                nonce=header.nonce,
+                timestamp=header.timestamp,
+                merkle_root=header.merkle_root,
+                chainwork=str(height + 1),
+                version=header.version,
+                status=0,
+            )
+            self.state_db.store_header(header_record)
+            self.upgrade_manager.process_new_block(header, height)
+
+        signal_version = 1 | (1 << upgrade.bit)
+        for height in range(0, 4):
+            version = signal_version if height < 3 else 1
+            store_header(height, version)
+
+        state = self.upgrade_manager.version_tracker.get_upgrade_state("feature_signal", 4, current_time)
+        self.assertEqual(state, UpgradeState.LOCKED_IN)
+
+        for height in range(4, 9):
+            store_header(height, 1)
+
+        state = self.upgrade_manager.version_tracker.get_upgrade_state("feature_signal", 8, current_time)
+        self.assertEqual(state, UpgradeState.ACTIVE)
+        activation_height = self.state_db.get_upgrade_activation_height("feature_signal")
+        self.assertEqual(activation_height, 8)
 
 
 if __name__ == "__main__":

@@ -272,8 +272,8 @@ class StateDB:
         self._enqueue_write(
             lambda conn: conn.execute(
                 """
-                INSERT INTO headers(hash, prev_hash, height, bits, nonce, timestamp, merkle_root, chainwork, status)
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO headers(hash, prev_hash, height, bits, nonce, timestamp, merkle_root, chainwork, version, status)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(hash) DO UPDATE SET
                     prev_hash=excluded.prev_hash,
                     height=excluded.height,
@@ -282,6 +282,7 @@ class StateDB:
                     timestamp=excluded.timestamp,
                     merkle_root=excluded.merkle_root,
                     chainwork=excluded.chainwork,
+                    version=excluded.version,
                     status=excluded.status
                 """,
                 (
@@ -293,6 +294,7 @@ class StateDB:
                     header.timestamp,
                     header.merkle_root,
                     header.chainwork,
+                    header.version,
                     header.status,
                 ),
             )
@@ -302,7 +304,7 @@ class StateDB:
         self._ensure_open()
         conn = self._reader_conn()
         row = conn.execute(
-            "SELECT hash, prev_hash, height, bits, nonce, timestamp, merkle_root, chainwork, status "
+            "SELECT hash, prev_hash, height, bits, nonce, timestamp, merkle_root, chainwork, version, status "
             "FROM headers WHERE hash=?",
             (block_hash,),
         ).fetchone()
@@ -317,6 +319,7 @@ class StateDB:
             timestamp=row["timestamp"],
             merkle_root=row["merkle_root"],
             chainwork=row["chainwork"],
+            version=row["version"],
             status=row["status"],
         )
 
@@ -901,7 +904,7 @@ class StateDB:
         self._ensure_open()
         conn = self._reader_conn()
         row = conn.execute(
-            "SELECT hash, prev_hash, height, bits, nonce, timestamp, merkle_root, chainwork, status "
+            "SELECT hash, prev_hash, height, bits, nonce, timestamp, merkle_root, chainwork, version, status "
             "FROM headers WHERE height=? AND status=0 LIMIT 1",
             (height,)
         ).fetchone()
@@ -916,6 +919,7 @@ class StateDB:
             timestamp=row["timestamp"],
             merkle_root=row["merkle_root"],
             chainwork=row["chainwork"],
+            version=row["version"],
             status=row["status"],
         )
 

@@ -209,6 +209,7 @@ class Chain:
             timestamp=self.genesis_block.header.timestamp,
             merkle_root=self.genesis_block.header.merkle_root,
             chainwork=str(difficulty.block_work(self.genesis_block.header.bits)),
+            version=self.genesis_block.header.version,
             status=0,
         )
         self.state_db.store_header(header)
@@ -270,6 +271,7 @@ class Chain:
             timestamp=block.header.timestamp,
             merkle_root=block.header.merkle_root,
             chainwork=str(chainwork_int),
+            version=block.header.version,
             status=1,
         )
         self.block_store.append_block(bytes.fromhex(block_hash), raw_block)

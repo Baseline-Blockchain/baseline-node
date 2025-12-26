@@ -103,6 +103,16 @@ class VersionBitsTracker:
         if self._is_upgrade_active(upgrade_name, height):
             return UpgradeState.ACTIVE
 
+        period = upgrade.period
+        period_start = (height // period) * period
+
+        # After a full locked-in period, activation should occur.
+        if period_start >= 2 * period:
+            prev_prev_start = period_start - 2 * period
+            signaling_count = self._count_signaling_blocks(upgrade, prev_prev_start, period)
+            if signaling_count >= upgrade.threshold and height >= upgrade.min_activation_height:
+                return UpgradeState.ACTIVE
+
         # Check if locked in
         if self._is_upgrade_locked_in(upgrade_name, height):
             return UpgradeState.LOCKED_IN
