@@ -731,6 +731,27 @@ class StateDB:
             results.append({"txid": row["txid"], "height": height, "blockhash": block_hash})
         return results
 
+    def get_rich_list(self, limit: int = 25, offset: int = 0) -> list[dict[str, Any]]:
+        """Return the richest addresses by current UTXO balance.
+
+        This derives balances from the address UTXO index (address_utxos).
+        """
+        self._ensure_open()
+        limit = max(1, int(limit))
+        offset = max(0, int(offset))
+        conn = self._reader_conn()
+        rows = conn.execute(
+            """
+            SELECT address, COALESCE(SUM(amount), 0) AS balance_liners
+            FROM address_utxos
+            GROUP BY address
+            ORDER BY balance_liners DESC
+            LIMIT ? OFFSET ?
+            """,
+            (limit, offset),
+        ).fetchall()
+        return [{"address": row["address"], "balance_liners": int(row["balance_liners"])} for row in rows]
+
     # Transaction + block metrics helpers --------------------------------------
 
     def index_block_transactions(self, block_hash: str, height: int, txids: Sequence[str]) -> None:

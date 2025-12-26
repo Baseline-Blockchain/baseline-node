@@ -13,7 +13,7 @@ from baseline.mempool import Mempool
 from baseline.mining.templates import TemplateBuilder
 from baseline.policy import MIN_RELAY_FEE_RATE
 from baseline.rpc.handlers import RPCError, RPCHandlers
-from baseline.storage import BlockStore, StateDB
+from baseline.storage import BlockStore, StateDB, UTXORecord
 from baseline.wallet import WalletManager
 
 
@@ -334,6 +334,49 @@ class RPCTestCase(unittest.TestCase):
         self.assertEqual(first["txid"], payment.txid())
         self.assertIsInstance(first["height"], int)
         self.assertIsInstance(first["blockhash"], str)
+
+    def test_getrichlist_ranks_by_balance(self) -> None:
+        addr1 = crypto.address_from_pubkey(crypto.generate_pubkey(10))
+        addr2 = crypto.address_from_pubkey(crypto.generate_pubkey(11))
+        addr3 = crypto.address_from_pubkey(crypto.generate_pubkey(12))
+
+        self.state_db.add_utxo(
+            UTXORecord(
+                txid="11" * 32,
+                vout=0,
+                amount=50_000 * COIN,
+                script_pubkey=script_from_address(addr1),
+                height=1,
+                coinbase=False,
+            )
+        )
+        self.state_db.add_utxo(
+            UTXORecord(
+                txid="22" * 32,
+                vout=0,
+                amount=120_000 * COIN,
+                script_pubkey=script_from_address(addr2),
+                height=1,
+                coinbase=False,
+            )
+        )
+        self.state_db.add_utxo(
+            UTXORecord(
+                txid="33" * 32,
+                vout=0,
+                amount=70_000 * COIN,
+                script_pubkey=script_from_address(addr3),
+                height=1,
+                coinbase=False,
+            )
+        )
+
+        ranked = self.handlers.dispatch("getrichlist", [10, 0])
+        self.assertGreaterEqual(len(ranked), 3)
+        self.assertEqual(ranked[0]["address"], addr2)
+        self.assertEqual(ranked[0]["balance_liners"], 120_000 * COIN)
+        self.assertEqual(ranked[1]["address"], addr3)
+        self.assertEqual(ranked[2]["address"], addr1)
 
     def test_importprivkey_via_rpc(self) -> None:
         priv = 424242

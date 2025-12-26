@@ -1,17 +1,23 @@
 # JSON-RPC API
 
-Baseline exposes a Bitcoin-like JSON-RPC server over HTTP with Basic Auth. Configure credentials in config.rpc. The server listens on 
-pc.host:rpc.port (default 127.0.0.1:8832).
+Baseline exposes a Bitcoin-like JSON-RPC server over HTTP. The server listens on `config.rpc.host:config.rpc.port` (default `127.0.0.1:8832`).
+
+## Authentication
+
+- Read-only methods in the node allowlist are served without Basic Auth (for explorers and public telemetry).
+- Wallet methods and mutating methods still require Basic Auth (configure via `config.rpc.username` / `config.rpc.password`).
 
 ## Status Panel
 
-Performing an authenticated `GET /` against the RPC endpoint (e.g. `http://127.0.0.1:8832/`) returns a plain-text dashboard instead of JSON. The panel uses the same Basic Auth credentials and shows the current height, best block hash, peer counts, mempool size, sync status, uptime, wallet + NTP status, and other quick diagnostics. The wallet row now reflects the background sync state (`ready`, `syncing`, processed height) so you can tell at a glance whether wallet RPC results are current.
+Performing a `GET /` against the RPC endpoint (e.g. `http://127.0.0.1:8832/`) returns a plain-text dashboard instead of JSON. The panel shows the current height, best block hash, peer counts, mempool size, sync status, uptime, wallet + NTP status, and other quick diagnostics. The wallet row reflects background sync state (`ready`, `syncing`, processed height) so you can tell at a glance whether wallet RPC results are current.
 
 ## Request Format
 
-`ash
-curl --user baseline-rpc:changeme      --data '{"jsonrpc":"2.0","id":1,"method":"getblockchaininfo","params":[]}'      http://127.0.0.1:8832/
-`
+```bash
+curl --user baseline-rpc:changeme \
+  --data '{"jsonrpc":"2.0","id":1,"method":"getblockchaininfo","params":[]}' \
+  http://127.0.0.1:8832/
+```
 
 Responses follow the standard {"result": ..., "error": null, "id": ...} pattern. Failures return numeric codes aligned with Bitcoin Core where practical (e.g., -32601 method not found, -26 transaction rejected).
 
@@ -54,6 +60,7 @@ Baseline ships with address/tx indexes enabled so block explorers can stay in sy
 | `getaddressutxos {"addresses":[...]} ` | Returns spendable outputs for the provided addresses (liners + scripts + height). |
 | `getaddressbalance {"addresses":[...]}` | Aggregate confirmed balance + total received (both in liners and BLINE). |
 | `getaddresstxids {"addresses":[...], "include_height":true}` | Lists transaction ids touching any of the addresses. When `include_height` is `true` each entry becomes `{ "txid": "...", "height": 123, "blockhash": "..." }`, which is crucial for explorers that want to fetch block-aware details in one pass. |
+| `getrichlist [count] [offset]` | Returns the richest addresses by current UTXO balance. Each entry includes `{ "address": "...", "balance_liners": 123, "balance": 1.23 }` sorted descending. Use `offset` to paginate. |
 
 ## Wallet Methods (when wallet enabled)
 
@@ -73,8 +80,8 @@ Baseline ships with address/tx indexes enabled so block explorers can stay in sy
 | gettransaction txid | Wallet-specific metadata (amount, confirmations, memos). |
 | listtransactions [label] [count] [skip] | Recent wallet activity. |
 | rescanwallet | Clear cached wallet state and rescan the blockchain. |
-| ncryptwallet passphrase | Permanently encrypt wallet seed; requires restart to unlock. |
-| walletpassphrase pass timeout | Temporary unlock for 	imeout seconds. |
+| encryptwallet passphrase | Permanently encrypt wallet seed; requires restart to unlock. |
+| walletpassphrase pass timeout | Temporary unlock for timeout seconds. |
 | walletlock | Force-lock encrypted wallet. |
 | dumpwallet path | Export deterministic seed + address table for backup. |
 | importwallet path [rescan] | Restore from a dump file. |
@@ -84,8 +91,7 @@ Baseline ships with address/tx indexes enabled so block explorers can stay in sy
 
 ## Error Handling
 
-The handler raises RPCError(code, message) for user issues (bad params, invalid tx, locked wallet). Unexpected exceptions bubble up as -32603 Internal error with stack traces in 
-ode.log.
+The handler raises RPCError(code, message) for user issues (bad params, invalid tx, locked wallet). Unexpected exceptions bubble up as -32603 Internal error with stack traces in `node.log`.
 
 ## Security Tips
 

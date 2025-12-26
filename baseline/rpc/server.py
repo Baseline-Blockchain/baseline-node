@@ -69,6 +69,7 @@ class RPCServer:
             "getblock",
             "getrawtransaction",
             "gettxout",
+            "getrichlist",
             "getaddressutxos",
             "getaddressbalance",
             "getaddresstxids",

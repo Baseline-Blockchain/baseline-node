@@ -1,16 +1,18 @@
+# ruff: noqa: S311
+
 import random
 import tempfile
 import unittest
 from pathlib import Path
 
+from baseline.config import NodeConfig
 from baseline.core import crypto
+from baseline.core.chain import GENESIS_PRIVKEY, GENESIS_PUBKEY, Chain
 from baseline.core.tx import COIN, Transaction, TxInput, TxOutput, TxSerializationError
 from baseline.mempool import Mempool, MempoolError
 from baseline.net.security import MessageValidator
-from baseline.storage import BlockStore, StateDB, UTXORecord
-from baseline.config import NodeConfig
-from baseline.core.chain import Chain, GENESIS_PRIVKEY, GENESIS_PUBKEY
 from baseline.policy import MIN_RELAY_FEE_RATE
+from baseline.storage import BlockStore, StateDB, UTXORecord
 
 
 class RpcMempoolFuzzTests(unittest.TestCase):

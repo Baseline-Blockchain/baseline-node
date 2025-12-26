@@ -58,6 +58,7 @@ class RPCHandlers(WalletRPCMixin):
             "getbestblockhash": self.getbestblockhash,
             "getdifficulty": self.getdifficulty,
             "getrawmempool": self.getrawmempool,
+            "getrichlist": self.getrichlist,
             "getaddressutxos": self.getaddressutxos,
             "getaddressbalance": self.getaddressbalance,
             "getaddresstxids": self.getaddresstxids,
@@ -123,6 +124,20 @@ class RPCHandlers(WalletRPCMixin):
                     "depends": list(entry.depends),
                 }
         return result
+
+    def getrichlist(self, count: int = 25, offset: int = 0) -> list[dict[str, Any]]:
+        """Return richest addresses by current UTXO balance."""
+        count = int(count)
+        offset = int(offset)
+        if count <= 0:
+            raise RPCError(-8, "count must be > 0")
+        if offset < 0:
+            raise RPCError(-8, "offset must be >= 0")
+        count = min(count, 5000)
+        rows = self.state_db.get_rich_list(count, offset)
+        for row in rows:
+            row["balance"] = row["balance_liners"] / COIN
+        return rows
 
     def getaddressutxos(self, options: Any) -> list[dict[str, Any]]:
         addresses = self._parse_address_list(options)

@@ -5,7 +5,7 @@ from pathlib import Path
 from baseline.config import NodeConfig
 from baseline.core import crypto, difficulty
 from baseline.core.block import Block, BlockHeader, merkle_root_hash
-from baseline.core.chain import GENESIS_PUBKEY, GENESIS_PRIVKEY, Chain
+from baseline.core.chain import GENESIS_PRIVKEY, GENESIS_PUBKEY, Chain
 from baseline.core.tx import COIN, Transaction, TxInput, TxOutput
 from baseline.mempool import Mempool, MempoolError
 from baseline.policy import MIN_RELAY_FEE_RATE
@@ -96,7 +96,7 @@ class StressTests(unittest.TestCase):
     def test_reorg_storm_high_work_branch(self) -> None:
         prev = self.chain.genesis_hash
         # build base chain 4 blocks deep
-        for height in range(1, 5):
+        for _height in range(1, 5):
             block = self._mine_block(prev, [])
             res = self.chain.add_block(block)
             self.assertIn(res["status"], {"connected", "reorganized"})
@@ -105,9 +105,9 @@ class StressTests(unittest.TestCase):
         fork_prev = self.chain.genesis_hash
         # create a longer branch to force a reorg
         newer_tip = fork_prev
-        for height in range(1, 7):
+        for _height in range(1, 7):
             block = self._mine_block(newer_tip, [])
-            res = self.chain.add_block(block)
+            self.chain.add_block(block)
             newer_tip = block.block_hash()
         best_tip = self.state_db.get_best_tip()
         self.assertEqual(best_tip[0], newer_tip)
