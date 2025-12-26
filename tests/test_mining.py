@@ -6,10 +6,11 @@ from baseline.config import NodeConfig
 from baseline.core import crypto
 from baseline.core.address import script_from_address
 from baseline.core.chain import Chain
-from baseline.core.tx import COIN
+from baseline.core.tx import COIN, Transaction, TxInput, TxOutput
 from baseline.mempool import Mempool
 from baseline.mining.payout import PayoutTracker
 from baseline.mining.templates import EXTRANONCE2_SIZE, TemplateBuilder
+from baseline.policy import MIN_RELAY_FEE_RATE
 from baseline.storage import BlockStore, StateDB, UTXORecord
 
 
@@ -57,6 +58,53 @@ class TemplateBuilderTests(unittest.TestCase):
             self.assertEqual(coinbase.outputs[0].value, foundation)
         self.assertEqual(coinbase.outputs[-1].script_pubkey, self.pool_script)
         self.assertEqual(len(template.merkle_branches), 0)
+
+    def test_template_skips_non_final_lock_time(self) -> None:
+        priv = 424242
+        pub = crypto.generate_pubkey(priv)
+        script_pubkey = b"\x76\xa9\x14" + crypto.hash160(pub) + b"\x88\xac"
+        utxo1 = UTXORecord(
+            txid="11" * 32,
+            vout=0,
+            amount=5 * COIN,
+            script_pubkey=script_pubkey,
+            height=0,
+            coinbase=False,
+        )
+        utxo2 = UTXORecord(
+            txid="22" * 32,
+            vout=0,
+            amount=5 * COIN,
+            script_pubkey=script_pubkey,
+            height=0,
+            coinbase=False,
+        )
+        self.state_db.add_utxo(utxo1)
+        self.state_db.add_utxo(utxo2)
+
+        def signed_spend(prev_txid: str, lock_time: int) -> Transaction:
+            tx = Transaction(
+                version=1,
+                inputs=[TxInput(prev_txid=prev_txid, prev_vout=0, script_sig=b"", sequence=0xFFFFFFFF)],
+                outputs=[TxOutput(value=5 * COIN - MIN_RELAY_FEE_RATE, script_pubkey=script_pubkey)],
+                lock_time=lock_time,
+            )
+            sighash = tx.signature_hash(0, script_pubkey, 0x01)
+            signature = crypto.sign(sighash, priv) + b"\x01"
+            tx.inputs[0].script_sig = bytes([len(signature)]) + signature + bytes([len(pub)]) + pub
+            tx.validate_basic()
+            return tx
+
+        future_tx = signed_spend("11" * 32, lock_time=5)
+        final_tx = signed_spend("22" * 32, lock_time=0)
+        self.mempool.accept_transaction(future_tx, peer_id="test")
+        self.mempool.accept_transaction(final_tx, peer_id="test")
+
+        builder = TemplateBuilder(self.chain, self.mempool, self.pool_script)
+        template = builder.build_template()
+        txids = [tx.txid() for tx in template.transactions]
+        self.assertIn(final_tx.txid(), txids)
+        self.assertNotIn(future_tx.txid(), txids)
 
 
 class DummyState:

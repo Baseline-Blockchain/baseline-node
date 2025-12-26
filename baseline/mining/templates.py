@@ -55,14 +55,14 @@ class TemplateBuilder:
         if parent_header is None:
             raise RuntimeError(f"Parent header not found for hash {prev_hash}")
         view = self.chain._build_view_for_parent(prev_hash)
-        selected, total_fees = self._select_transactions(height, view)
+        timestamp = max(synchronized_time_int(), parent_header.timestamp + 1)
+        selected, total_fees = self._select_transactions(height, timestamp, view)
         subsidy = self.chain._block_subsidy(height)
         foundation_reward = self.chain._foundation_reward(subsidy)
         miner_reward = max(0, subsidy - foundation_reward) + total_fees
         coinbase_value = subsidy + total_fees
         coinb1, coinb2, pool_vout = self._build_coinbase_parts(height, miner_reward, foundation_reward)
         merkle_branches = self._build_merkle_branches(selected)
-        timestamp = max(synchronized_time_int(), parent_header.timestamp + 1)
         bits = self.chain._expected_bits(height, parent_header)
         target = difficulty.compact_to_target(bits)
         return Template(
@@ -83,21 +83,23 @@ class TemplateBuilder:
             pool_vout=pool_vout,
         )
 
-    def _select_transactions(self, height: int, view: UTXOView) -> tuple[list[Transaction], int]:
+    def _select_transactions(self, height: int, timestamp: int, view: UTXOView) -> tuple[list[Transaction], int]:
         with self.mempool.lock:
             entries = list(self.mempool.entries.values())
         entries.sort(key=lambda entry: entry.fee_rate, reverse=True)
         selected: list[Transaction] = []
         total_fees = 0
         for entry in entries:
-            if self._try_apply(entry.tx, height, view):
+            if self._try_apply(entry.tx, height, timestamp, view):
                 selected.append(entry.tx)
                 total_fees += entry.fee
         return selected, total_fees
 
-    def _try_apply(self, tx: Transaction, height: int, view: UTXOView) -> bool:
+    def _try_apply(self, tx: Transaction, height: int, timestamp: int, view: UTXOView) -> bool:
         snapshot = dict(view.overlay)
         try:
+            if not tx.is_final(height, timestamp):
+                raise ValueError("lock_time not satisfied")
             seen_inputs = set()
             total_input = 0
             for txin in tx.inputs:

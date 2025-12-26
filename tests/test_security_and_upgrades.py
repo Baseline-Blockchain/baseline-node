@@ -127,6 +127,32 @@ class SecurityTests(unittest.TestCase):
         self.assertFalse(is_valid)
         self.assertIn("Too many inventory items", error)
 
+    def test_message_validator_rejects_invalid_lock_time(self):
+        """Test lock_time validation in tx messages."""
+        base_tx = {
+            "type": "tx",
+            "transaction": {
+                "version": 1,
+                "inputs": [{"prev_txid": "00" * 32, "prev_vout": 0}],
+                "outputs": [{"value": 1, "script_pubkey": "51"}],
+                "lock_time": 0,
+            },
+        }
+
+        too_large = dict(base_tx)
+        too_large["transaction"] = dict(base_tx["transaction"])
+        too_large["transaction"]["lock_time"] = 0x1_0000_0000
+        is_valid, error = MessageValidator.validate_message(too_large)
+        self.assertFalse(is_valid)
+        self.assertIn("lock_time", error)
+
+        negative = dict(base_tx)
+        negative["transaction"] = dict(base_tx["transaction"])
+        negative["transaction"]["lock_time"] = -1
+        is_valid, error = MessageValidator.validate_message(negative)
+        self.assertFalse(is_valid)
+        self.assertIn("lock_time", error)
+
     def test_p2p_security_integration(self):
         """Test integrated P2P security."""
         security = P2PSecurity()

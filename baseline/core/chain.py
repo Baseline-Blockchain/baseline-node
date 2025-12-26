@@ -354,6 +354,8 @@ class Chain:
         coinbase_tx = block.transactions[0]
         if not coinbase_tx.is_coinbase():
             raise ChainError("First transaction must be coinbase")
+        if not coinbase_tx.is_final(height, block.header.timestamp):
+            raise ChainError("Coinbase lock_time not satisfied")
         self._validate_coinbase_script(coinbase_tx.inputs[0].script_sig, height)
         coinbase_value = sum(out.value for out in coinbase_tx.outputs)
         for out_index, txout in enumerate(coinbase_tx.outputs):
@@ -376,6 +378,8 @@ class Chain:
         for _tx_index, tx in enumerate(block.transactions[1:], start=1):
             if tx.is_coinbase():
                 raise ChainError("Multiple coinbase transactions")
+            if not tx.is_final(height, block.header.timestamp):
+                raise ChainError("Transaction lock_time not satisfied")
             input_value = 0
             for vin_index, txin in enumerate(tx.inputs):
                 key = (txin.prev_txid, txin.prev_vout)

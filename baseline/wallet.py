@@ -597,13 +597,18 @@ class WalletManager:
         should_abort: Callable[[], bool] | None = None,
         max_blocks: int | None = None,
     ) -> bool:
+        dirty = self._reconcile_schedules_with_chain()
         best = self.state_db.get_best_tip()
         if not best:
+            if dirty:
+                self._save()
             return True
         best_height = best[1]
         processed_height = int(self.data.get("processed_height", -1))
         start = processed_height + 1
         if start > best_height:
+            if dirty:
+                self._save()
             self._update_sync_status(processed_height=processed_height, syncing=False)
             return True
         self._update_sync_status(syncing=True, last_error="")
@@ -616,7 +621,7 @@ class WalletManager:
         outputs: dict[str, dict] = self.data.setdefault("outputs", {})
         txs: dict[str, dict] = self.data.setdefault("transactions", {})
         blocks_processed = 0
-        dirty = False
+        dirty = bool(dirty)
         for height in range(start, best_height + 1):
             if aborted():
                 break
@@ -682,6 +687,33 @@ class WalletManager:
             last_error="",
         )
         return processed_height >= best_height
+
+    def _reconcile_schedules_with_chain(self) -> bool:
+        schedules = self.data.setdefault("schedules", {})
+        dirty = False
+        for entry in schedules.values():
+            if entry.get("status") != "confirmed":
+                continue
+            blockhash = entry.get("confirmed_blockhash")
+            height = entry.get("confirmed_height")
+            if not blockhash or height is None:
+                continue
+            status = self.state_db.get_header_status(blockhash)
+            if status != 0:
+                self._reset_schedule_confirmation(entry)
+                dirty = True
+                continue
+            main_header = self.state_db.get_main_header_at_height(int(height))
+            if main_header is None or main_header.hash != blockhash:
+                self._reset_schedule_confirmation(entry)
+                dirty = True
+        return dirty
+
+    def _reset_schedule_confirmation(self, entry: dict[str, object]) -> None:
+        entry["status"] = "pending"
+        entry["confirmed_height"] = None
+        entry["confirmed_blockhash"] = None
+        entry["confirmed_at"] = None
 
     def _mark_schedule_confirmed(self, txid: str, height: int, blockhash: str) -> bool:
         schedules = self.data.setdefault("schedules", {})

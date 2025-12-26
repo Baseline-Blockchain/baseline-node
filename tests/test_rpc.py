@@ -223,6 +223,38 @@ class RPCTestCase(unittest.TestCase):
         entries = self.handlers.dispatch("listtransactions", ["*", 5, 0, False])
         self.assertTrue(any(item["txid"] == txid for item in entries))
 
+    def test_scheduled_transaction_rpc_flow(self) -> None:
+        recv_address = self.handlers.dispatch("getnewaddress", [])
+        payment = self._build_payment_tx(recv_address, 5 * COIN)
+        self._mine_block(self.chain.genesis_hash, [payment])
+        self.wallet.sync_chain()
+        dest_pub = crypto.generate_pubkey(1212)
+        dest_address = crypto.address_from_pubkey(dest_pub)
+        best = self.state_db.get_best_tip()
+        lock_time = (best[1] if best else 0) + 5
+        created = self.handlers.dispatch("createscheduledtx", [dest_address, 1.0, lock_time, True])
+        schedule_id = created["schedule_id"]
+        listed = self.handlers.dispatch("listscheduledtx", [])
+        self.assertTrue(any(item["schedule_id"] == schedule_id for item in listed))
+        fetched = self.handlers.dispatch("getschedule", [schedule_id])
+        self.assertEqual(fetched["schedule_id"], schedule_id)
+        canceled = self.handlers.dispatch("cancelscheduledtx", [schedule_id])
+        self.assertEqual(canceled["status"], "canceled")
+
+    def test_scheduled_transaction_cancel_non_cancelable(self) -> None:
+        recv_address = self.handlers.dispatch("getnewaddress", [])
+        payment = self._build_payment_tx(recv_address, 5 * COIN)
+        self._mine_block(self.chain.genesis_hash, [payment])
+        self.wallet.sync_chain()
+        dest_pub = crypto.generate_pubkey(3434)
+        dest_address = crypto.address_from_pubkey(dest_pub)
+        best = self.state_db.get_best_tip()
+        lock_time = (best[1] if best else 0) + 5
+        created = self.handlers.dispatch("createscheduledtx", [dest_address, 1.0, lock_time, False])
+        with self.assertRaises(RPCError) as ctx:
+            self.handlers.dispatch("cancelscheduledtx", [created["schedule_id"]])
+        self.assertEqual(ctx.exception.code, -4)
+
     def test_wallet_encrypt_and_unlock_via_rpc(self) -> None:
         self.handlers.dispatch("getnewaddress", [])
         self.handlers.dispatch("encryptwallet", ["passphrase"])

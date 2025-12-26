@@ -86,13 +86,13 @@ class MempoolTests(unittest.TestCase):
             block.header.nonce += 1
         return block
 
-    def _signed_spend(self, value: int = 50 * COIN - MIN_RELAY_FEE_RATE) -> Transaction:
+    def _signed_spend(self, value: int = 50 * COIN - MIN_RELAY_FEE_RATE, *, lock_time: int = 0) -> Transaction:
         genesis_txid = self.chain.genesis_block.transactions[0].txid()
         tx = Transaction(
             version=1,
             inputs=[TxInput(prev_txid=genesis_txid, prev_vout=0, script_sig=b"", sequence=0xFFFFFFFF)],
             outputs=[TxOutput(value=value, script_pubkey=self.script_pubkey)],
-            lock_time=0,
+            lock_time=lock_time,
         )
         sighash = tx.signature_hash(0, self.script_pubkey, 0x01)
         signature = crypto.sign(sighash, GENESIS_PRIVKEY) + b"\x01"
@@ -132,3 +132,12 @@ class MempoolTests(unittest.TestCase):
         parent_res = self.mempool.accept_transaction(parent)
         self.assertEqual(parent_res["status"], "accepted")
         self.assertIn(child.txid(), self.mempool.transaction_ids())
+
+    def test_accepts_future_lock_time(self) -> None:
+        best = self.state_db.get_best_tip()
+        height = best[1] if best else 0
+        future_lock = height + 5
+        tx = self._signed_spend(lock_time=future_lock)
+        res = self.mempool.accept_transaction(tx, peer_id="test")
+        self.assertEqual(res["status"], "accepted")
+        self.assertIn(tx.txid(), self.mempool.transaction_ids())

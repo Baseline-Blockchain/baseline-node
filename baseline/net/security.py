@@ -316,6 +316,8 @@ class MessageValidator:
 
         if not isinstance(tx_data["lock_time"], int) or tx_data["lock_time"] < 0:
             return False, "Invalid lock_time"
+        if tx_data["lock_time"] > 0xFFFFFFFF:
+            return False, "Invalid lock_time"
 
         return True, ""
 

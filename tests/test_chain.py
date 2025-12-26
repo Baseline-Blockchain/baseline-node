@@ -5,7 +5,7 @@ from pathlib import Path
 from baseline.config import NodeConfig
 from baseline.core import crypto, difficulty
 from baseline.core.block import Block, BlockHeader, merkle_root_hash
-from baseline.core.chain import GENESIS_PRIVKEY, GENESIS_PUBKEY, Chain
+from baseline.core.chain import GENESIS_PRIVKEY, GENESIS_PUBKEY, Chain, ChainError
 from baseline.core.tx import COIN, Transaction, TxInput, TxOutput
 from baseline.policy import MIN_RELAY_FEE_RATE
 from baseline.storage import BlockStore, StateDB
@@ -51,6 +51,60 @@ class ChainTests(unittest.TestCase):
         self.assertEqual(res["status"], "connected")
         best = self.state_db.get_best_tip()
         self.assertEqual(best[1], 3)
+
+    def test_block_rejects_future_height_lock_time(self) -> None:
+        prev_hash = self.chain.genesis_hash
+        for height in (1, 2):
+            coinbase = self._make_coinbase(height)
+            block = self._mine_block(prev_hash, height, [coinbase])
+            res = self.chain.add_block(block)
+            self.assertEqual(res["status"], "connected")
+            prev_hash = block.block_hash()
+        genesis_txid = self.chain.genesis_block.transactions[0].txid()
+        spend_tx = Transaction(
+            version=1,
+            inputs=[TxInput(prev_txid=genesis_txid, prev_vout=0, script_sig=b"", sequence=0xFFFFFFFF)],
+            outputs=[TxOutput(value=50 * COIN - MIN_RELAY_FEE_RATE, script_pubkey=self.script_pubkey)],
+            lock_time=4,
+        )
+        sighash = spend_tx.signature_hash(0, self.script_pubkey, 0x01)
+        signature = crypto.sign(sighash, GENESIS_PRIVKEY) + b"\x01"
+        pubkey = GENESIS_PUBKEY
+        spend_tx.inputs[0].script_sig = len(signature).to_bytes(1, "little") + signature + len(pubkey).to_bytes(1, "little") + pubkey
+        spend_tx.validate_basic()
+        coinbase = self._make_coinbase(3)
+        block = self._mine_block(prev_hash, 3, [coinbase, spend_tx])
+        with self.assertRaises(ChainError):
+            self.chain.add_block(block)
+
+    def test_block_rejects_future_time_lock_time(self) -> None:
+        prev_hash = self.chain.genesis_hash
+        for height in (1, 2):
+            coinbase = self._make_coinbase(height)
+            block = self._mine_block(prev_hash, height, [coinbase])
+            res = self.chain.add_block(block)
+            self.assertEqual(res["status"], "connected")
+            prev_hash = block.block_hash()
+        parent_header = self.state_db.get_header(prev_hash)
+        assert parent_header is not None
+        block_time = parent_header.timestamp + self.config.mining.block_interval_target
+        lock_time = block_time + 1000
+        genesis_txid = self.chain.genesis_block.transactions[0].txid()
+        spend_tx = Transaction(
+            version=1,
+            inputs=[TxInput(prev_txid=genesis_txid, prev_vout=0, script_sig=b"", sequence=0xFFFFFFFF)],
+            outputs=[TxOutput(value=50 * COIN - MIN_RELAY_FEE_RATE, script_pubkey=self.script_pubkey)],
+            lock_time=lock_time,
+        )
+        sighash = spend_tx.signature_hash(0, self.script_pubkey, 0x01)
+        signature = crypto.sign(sighash, GENESIS_PRIVKEY) + b"\x01"
+        pubkey = GENESIS_PUBKEY
+        spend_tx.inputs[0].script_sig = len(signature).to_bytes(1, "little") + signature + len(pubkey).to_bytes(1, "little") + pubkey
+        spend_tx.validate_basic()
+        coinbase = self._make_coinbase(3)
+        block = self._mine_block(prev_hash, 3, [coinbase, spend_tx])
+        with self.assertRaises(ChainError):
+            self.chain.add_block(block)
 
     def _make_coinbase(self, height: int, value: int | None = None) -> Transaction:
         if value is None:

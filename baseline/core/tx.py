@@ -10,6 +10,7 @@ from . import crypto
 
 COIN = 100_000_000
 MAX_MONEY = 300_000_000 * COIN
+LOCK_TIME_THRESHOLD = 500_000_000
 
 
 class TxSerializationError(Exception):
@@ -117,6 +118,13 @@ class Transaction:
             return False
         txin = self.inputs[0]
         return txin.prev_txid == "00" * 32 and txin.prev_vout == 0xFFFFFFFF
+
+    def is_final(self, height: int, timestamp: int) -> bool:
+        if self.lock_time == 0:
+            return True
+        if self.lock_time < LOCK_TIME_THRESHOLD:
+            return self.lock_time <= height
+        return self.lock_time <= timestamp
 
     def signature_hash(self, input_index: int, script_pubkey: bytes, sighash_type: int) -> bytes:
         if input_index >= len(self.inputs):
