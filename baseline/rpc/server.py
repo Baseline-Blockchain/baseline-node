@@ -64,6 +64,7 @@ class RPCServer:
         self.public_methods = {
             "getblockcount",
             "getbestblockhash",
+            "getblockchaininfo",
             "getblockhash",
             "getblockheader",
             "getblock",
