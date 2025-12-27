@@ -1,4 +1,4 @@
-# Baseline ![Tests](https://github.com/Baseline-Blockchain/baseline-node/actions/workflows/tests.yml/badge.svg)
+# Baseline
 
 ![Baseline Wallet GUI preview showing baseline-wallet-gui](preview.png)
 
