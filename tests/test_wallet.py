@@ -20,6 +20,7 @@ class WalletTests(unittest.TestCase):
         data_dir = Path(self.tmpdir.name)
         config = NodeConfig()
         config.data_dir = data_dir
+        config.mining.allow_consensus_overrides = True
         config.ensure_data_layout()
         self.block_store = BlockStore(data_dir / "blocks")
         self.state_db = StateDB(data_dir / "chainstate" / "state.sqlite3")
@@ -47,6 +48,8 @@ class WalletTests(unittest.TestCase):
         wallet.get_new_address()
         wallet.encrypt_wallet("secret-pass")
         self.assertTrue(wallet.is_encrypted())
+        with self.assertRaises(WalletError):
+            wallet.unlock_wallet("wrong-pass", 1)
         with self.assertRaises(WalletLockedError):
             wallet.get_new_address()
         wallet.unlock_wallet("secret-pass", 1)

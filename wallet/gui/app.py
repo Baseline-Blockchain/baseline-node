@@ -31,11 +31,13 @@ class WalletLauncher(
     def __init__(self) -> None:
         super().__init__()
         self.title("Baseline Wallet")
-        self.geometry("880x660")
-        self.resizable(False, False)
+        self.geometry("880x880")
+        self.minsize(880, 880)
+        self.resizable(True, True)
         self.configure(bg=PALETTE["bg"])
 
         self._icon_image: tk.PhotoImage | None = None
+        self._resize_after: str | None = None
 
         self.wallet_menu_ready = False
         self._load_icon()
@@ -62,7 +64,10 @@ class WalletLauncher(
         self.chain_difficulty_var = tk.StringVar(value="n/a")
         self.chain_hash_var = tk.StringVar(value="n/a")
         self.chain_time_var = tk.StringVar(value="n/a")
+        self.chain_genesis_var = tk.StringVar(value="n/a")
+        self.wallet_height_var = tk.StringVar(value="n/a")
         self.peer_count_var = tk.StringVar(value="0 peers")
+        self.network_name_var = tk.StringVar(value="n/a")
         self.network_version_var = tk.StringVar(value="n/a")
         self.network_fee_var = tk.StringVar(value="n/a")
         self.mempool_usage_var = tk.StringVar(value="0 / 0 B")
@@ -77,20 +82,17 @@ class WalletLauncher(
         self.schedule_tree: ttk.Treeview | None = None
         self.schedule_records: list[dict[str, Any]] = []
         self.schedule_row_map: dict[str, dict[str, Any]] = {}
+        self.schedule_from_combo: ttk.Combobox | None = None
+        self.schedule_from_var = tk.StringVar()
+        self.schedule_from_balance_var = tk.StringVar(value="Balance: 0.0 BLINE")
         self.schedule_dest_var = tk.StringVar()
         self.schedule_amount_var = tk.StringVar()
+        self.schedule_fee_var = tk.StringVar()
         self.schedule_lock_var = tk.StringVar(value=self._default_schedule_time())
         self.schedule_cancelable_var = tk.BooleanVar(value=True)
         self._schedule_cancel_button: ttk.Button | None = None
         self.from_combo: ttk.Combobox | None = None
         self.wallet_menu: tk.Menu | None = None
-        self._setup_window: tk.Toplevel | None = None
-        self._setup_message_var = tk.StringVar(value="")
-        self._setup_info_var = tk.StringVar(value="")
-        self._setup_address_var = tk.StringVar(value="No address created yet.")
-        self._setup_encrypt_var = tk.StringVar(value="")
-        self._setup_encrypt_button: ttk.Button | None = None
-        self._setup_skipped = False
 
         self.send_address_var = tk.StringVar()
         self.send_amount_var = tk.StringVar()
@@ -98,6 +100,7 @@ class WalletLauncher(
         self.send_memo_var = tk.StringVar()
         self.send_memo_to_var = tk.StringVar()
         self._auto_fee_value: str | None = None
+        self._auto_schedule_fee_value: str | None = None
         self.send_from_var = tk.StringVar()
         self.send_from_balance_var = tk.StringVar(value="Balance: 0.0 BLINE")
         self._address_notice_var = tk.StringVar(value="")

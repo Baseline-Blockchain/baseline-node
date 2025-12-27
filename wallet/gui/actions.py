@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import tkinter as tk
 from datetime import datetime
+from decimal import ROUND_DOWN, Decimal
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any
 
 from ..client import RPCClient
 from ..helpers import fetch_wallet_info
+
+log = logging.getLogger(__name__)
 
 
 def parse_schedule_target(raw: str) -> int:
@@ -46,6 +50,199 @@ def parse_schedule_target(raw: str) -> int:
 
 class ActionMixin:
     """Mixin for user actions and dialog flows."""
+
+    def _warn_if_no_peers(self) -> bool:
+        try:
+            info = self._build_client().call("getnetworkinfo", [])
+        except Exception:
+            return True
+        if not isinstance(info, dict):
+            return True
+        peers = info.get("connections", 0)
+        if isinstance(peers, int) and peers <= 0:
+            return bool(
+                messagebox.askyesno(
+                    "No Peers Connected",
+                    "Your node currently has 0 peers.\n\n"
+                    "The transaction may not propagate until peers connect.\n"
+                    "Send anyway?",
+                )
+            )
+        return True
+
+    def _handle_show_seed(self) -> None:
+        if not messagebox.askyesno(
+            "Show Wallet Seed",
+            "The wallet seed controls ALL funds.\n\n"
+            "Anyone with this value can steal your coins.\n"
+            "Only reveal it in a private/safe environment.\n\n"
+            "Show seed now?",
+        ):
+            return
+        client = self._build_client()
+        unlocked = self._ensure_unlocked(client)
+        if unlocked is None:
+            return
+        try:
+            seed_hex = client.call("exportseed", [])
+        except Exception as exc:
+            messagebox.showerror("Show Wallet Seed", str(exc))
+            return
+        finally:
+            if unlocked:
+                with contextlib.suppress(Exception):
+                    client.call("walletlock", [])
+
+        win = tk.Toplevel(self)
+        win.title("Wallet Seed")
+        win.geometry("740x240")
+        win.transient(self)
+
+        frame = ttk.Frame(win, padding=14)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(
+            frame,
+            text="Store this seed offline. If you lose it, you lose access to funds. If it leaks, funds can be stolen.",
+            style="CardLabel.TLabel",
+            wraplength=700,
+            justify="left",
+        ).pack(anchor="w")
+
+        box = tk.Text(
+            frame,
+            height=3,
+            wrap="none",
+            bg="#ffffff",
+            fg="#111827",
+            insertbackground="#111827",
+            relief="flat",
+            highlightthickness=1,
+            highlightbackground="#c7d2fe",
+            highlightcolor="#93c5fd",
+        )
+        box.pack(fill="x", pady=(10, 10))
+        box.insert("1.0", str(seed_hex).strip())
+        box.config(state="disabled")
+
+        btns = ttk.Frame(frame)
+        btns.pack(fill="x")
+
+        def _copy() -> None:
+            try:
+                self.clipboard_clear()
+                self.clipboard_append(str(seed_hex).strip())
+                messagebox.showinfo("Copied", "Seed copied to clipboard.")
+            except Exception as exc:
+                messagebox.showerror("Copy Failed", str(exc))
+
+        ttk.Button(btns, text="Copy Seed", style="Primary.TButton", command=_copy).pack(side="left")
+        ttk.Button(btns, text="Close", style="Secondary.TButton", command=win.destroy).pack(side="right")
+
+    def _handle_import_seed(self) -> None:
+        if not messagebox.askyesno(
+            "Import Wallet Seed",
+            "Importing a seed replaces the wallet keys.\n\n"
+            "This will wipe existing wallet addresses/transactions and require a rescan.\n"
+            "Only do this if you trust the seed source.\n\n"
+            "Continue?",
+        ):
+            return
+        seed_hex = simpledialog.askstring(
+            "Import Wallet Seed",
+            "Paste 64-hex seed:",
+            parent=self,
+        )
+        if not seed_hex:
+            return
+        seed_hex = seed_hex.strip()
+        if not messagebox.askyesno(
+            "Confirm Seed Import",
+            "This will overwrite the current wallet seed and clear wallet state.\n\n"
+            "Continue importing seed?",
+        ):
+            return
+        client = self._build_client()
+        unlocked = self._ensure_unlocked(client)
+        if unlocked is None:
+            return
+        try:
+            client.call("importseed", [seed_hex, True])
+        except Exception as exc:
+            messagebox.showerror("Import Wallet Seed", str(exc))
+            return
+        finally:
+            if unlocked:
+                with contextlib.suppress(Exception):
+                    client.call("walletlock", [])
+        messagebox.showinfo(
+            "Seed Imported",
+            "Seed imported. Create a new address and rescan if you expect historical funds.",
+        )
+        self.refresh_all()
+
+    def _coin_to_liners(self, amount_raw: str) -> int:
+        quantized = Decimal(str(amount_raw)).quantize(Decimal("0.00000001"), rounding=ROUND_DOWN)
+        return int((quantized * Decimal("100000000")).to_integral_value(rounding=ROUND_DOWN))
+
+    def _required_fee_liners(self, size: int, fee_rate_liners: int) -> int:
+        return (size * fee_rate_liners + 999) // 1000
+
+    def _estimate_send_fee(
+        self,
+        client: RPCClient,
+        *,
+        amount_liners: int,
+        fee_rate_liners: int,
+        from_address: str | None,
+    ) -> tuple[int, int, int, bool] | None:
+        try:
+            if from_address:
+                utxos = client.call("listunspent", [1, 9999999, [from_address]])
+            else:
+                utxos = client.call("listunspent", [])
+        except Exception:
+            return None
+        if not isinstance(utxos, list) or not utxos:
+            return None
+
+        spendable = {record["address"] for record in self.address_records if record.get("spendable", True)}
+        candidates: list[int] = []
+        for entry in utxos:
+            if not isinstance(entry, dict):
+                continue
+            addr = entry.get("address")
+            if not isinstance(addr, str) or addr not in spendable:
+                continue
+            amount = entry.get("amount_liners")
+            if isinstance(amount, int):
+                candidates.append(amount)
+            else:
+                try:
+                    candidates.append(self._coin_to_liners(str(entry.get("amount", "0"))))
+                except Exception:
+                    continue
+        if not candidates:
+            return None
+
+        candidates.sort(reverse=True)
+
+        def _estimate_size(num_inputs: int, num_outputs: int) -> int:
+            return 10 + num_inputs * 150 + num_outputs * 34
+
+        total = 0
+        num_inputs = 0
+        for value in candidates:
+            num_inputs += 1
+            total += int(value)
+            fee_no = self._required_fee_liners(_estimate_size(num_inputs, 1), fee_rate_liners)
+            if total < amount_liners + fee_no:
+                continue
+            fee_with = self._required_fee_liners(_estimate_size(num_inputs, 2), fee_rate_liners)
+            change = total - amount_liners - fee_with
+            if change > 0:
+                return fee_with, _estimate_size(num_inputs, 2), num_inputs, True
+            return fee_no, _estimate_size(num_inputs, 1), num_inputs, False
+        return None
 
     def _extract_tx_address(self, entry: dict[str, Any]) -> str:
         address = entry.get("address")
@@ -125,91 +322,7 @@ class ActionMixin:
         text.insert("1.0", "\n".join(lines))
         text.config(state="disabled")
 
-    def _handle_wallet_setup(self) -> None:
-        try:
-            client = self._build_client()
-            info = fetch_wallet_info(client)
-        except Exception as exc:
-            messagebox.showerror("Wallet Setup", f"Failed to query wallet: {exc}")
-            return
-        self._setup_skipped = False
-        self._launch_initial_setup(info)
-
     def _handle_encrypt_wallet(self) -> None:
-        if self._encrypt_wallet_flow():
-            self.refresh_all()
-
-    def _launch_initial_setup(self, info: dict[str, Any]) -> None:
-        if self._setup_window and self._setup_window.winfo_exists():
-            self._update_setup_labels(info)
-            self._setup_window.deiconify()
-            self._setup_window.lift()
-            return
-        win = tk.Toplevel(self)
-        win.title("Wallet Setup")
-        win.geometry("500x340")
-        win.transient(self)
-        self._setup_window = win
-        frame = ttk.Frame(win, padding=14)
-        frame.pack(fill="both", expand=True)
-        ttk.Label(frame, textvariable=self._setup_message_var, wraplength=460).pack(anchor="w", pady=(0, 10))
-        ttk.Label(frame, textvariable=self._setup_info_var, style="CardLabel.TLabel").pack(anchor="w", pady=(0, 6))
-        ttk.Button(frame, text="Create Address", style="Primary.TButton", command=self._setup_create_initial_address).pack(
-            anchor="w", pady=(10, 4)
-        )
-        ttk.Label(frame, textvariable=self._setup_address_var, style="CardLabel.TLabel").pack(anchor="w")
-        self._setup_encrypt_button = ttk.Button(frame, text="Encrypt Wallet...", style="Primary.TButton", command=self._setup_encrypt_wallet)
-        self._setup_encrypt_button.pack(anchor="w", pady=(12, 4))
-        ttk.Label(frame, textvariable=self._setup_encrypt_var, style="CardLabel.TLabel").pack(anchor="w")
-        ttk.Button(frame, text="Skip for now", command=self._skip_setup).pack(anchor="e", pady=(20, 0))
-        self._update_setup_labels(info)
-
-    def _close_setup_window(self) -> None:
-        if self._setup_window and self._setup_window.winfo_exists():
-            self._setup_window.destroy()
-        self._setup_window = None
-
-    def _skip_setup(self) -> None:
-        self._setup_skipped = True
-        self._close_setup_window()
-
-    def _update_setup_labels(self, info: dict[str, Any]) -> None:
-        count = info.get("address_count", 0)
-        if count:
-            self._setup_message_var.set("Wallet already exists. You can create additional addresses or encrypt/back up here.")
-        else:
-            self._setup_message_var.set(
-                "This node does not have a wallet yet. Create the first address and optionally encrypt it to continue."
-            )
-        self._setup_info_var.set(f"Address count: {count}")
-        encrypted = bool(info.get("encrypted"))
-        self._setup_encrypt_var.set("Wallet encrypted" if encrypted else "Wallet not encrypted")
-        if self._setup_encrypt_button:
-            if encrypted:
-                self._setup_encrypt_button.state(["disabled"])
-            else:
-                self._setup_encrypt_button.state(["!disabled"])
-
-    def _setup_create_initial_address(self) -> None:
-        try:
-            client = self._build_client()
-            unlocked = self._ensure_unlocked(client)
-            if unlocked is None:
-                return
-            try:
-                new_addr = client.call("getnewaddress", [])
-            finally:
-                if unlocked:
-                    with contextlib.suppress(Exception):
-                        client.call("walletlock", [])
-        except Exception as exc:
-            messagebox.showerror("Create Address", f"Failed to create address: {exc}")
-            return
-        self._setup_address_var.set(f"Created address: {new_addr}")
-        messagebox.showinfo("Create Address", f"New receiving address:\n{new_addr}")
-        self.refresh_all()
-
-    def _setup_encrypt_wallet(self) -> None:
         if self._encrypt_wallet_flow():
             self.refresh_all()
 
@@ -249,12 +362,15 @@ class ActionMixin:
         except Exception as exc:
             messagebox.showerror("Encrypt Wallet", f"Failed to encrypt wallet: {exc}")
             return False
-        messagebox.showinfo("Encrypt Wallet", "Wallet encrypted. Restart the node to continue.")
+        messagebox.showinfo(
+            "Encrypt Wallet",
+            "Wallet encrypted.\n\nThe wallet will now stay locked until you unlock it (the GUI will prompt when needed).",
+        )
         return True
 
     def _handle_dump_wallet(self) -> None:
         path = filedialog.asksaveasfilename(
-            title="Dump Wallet",
+            title="Export Wallet File",
             defaultextension=".json",
             filetypes=[("JSON", "*.json"), ("All files", "*.*")],
             parent=self,
@@ -273,19 +389,19 @@ class ActionMixin:
                     with contextlib.suppress(Exception):
                         client.call("walletlock", [])
         except Exception as exc:
-            messagebox.showerror("Dump Wallet", f"Failed to dump wallet: {exc}")
+            messagebox.showerror("Export Wallet File", f"Failed to export wallet: {exc}")
             return
-        messagebox.showinfo("Dump Wallet", f"Wallet backup saved to:\n{path}")
+        messagebox.showinfo("Export Wallet File", f"Wallet backup saved to:\n{path}")
 
     def _handle_import_wallet(self) -> None:
         path = filedialog.askopenfilename(
-            title="Import Wallet",
+            title="Import Wallet File",
             filetypes=[("JSON", "*.json"), ("All files", "*.*")],
             parent=self,
         )
         if not path:
             return
-        rescan = messagebox.askyesno("Import Wallet", "Rescan the blockchain after import?")
+        rescan = messagebox.askyesno("Import Wallet File", "Rescan the blockchain after import?")
         try:
             client = self._build_client()
             unlocked = self._ensure_unlocked(client)
@@ -298,9 +414,9 @@ class ActionMixin:
                     with contextlib.suppress(Exception):
                         client.call("walletlock", [])
         except Exception as exc:
-            messagebox.showerror("Import Wallet", f"Failed to import wallet: {exc}")
+            messagebox.showerror("Import Wallet File", f"Failed to import wallet: {exc}")
             return
-        messagebox.showinfo("Import Wallet", "Wallet imported successfully.")
+        messagebox.showinfo("Import Wallet File", "Wallet imported successfully.")
         self.refresh_all()
 
     def _handle_import_privkey(self) -> None:
@@ -343,7 +459,7 @@ class ActionMixin:
     def _send_payment(self) -> None:
         address = self.send_address_var.get().strip()
         amount_raw = self.send_amount_var.get().strip()
-        fee_raw = self.send_fee_var.get().strip()
+        feerate_raw = self.send_fee_var.get().strip()
         from_addr = self.send_from_var.get().strip()
         memo = self.send_memo_var.get().strip()
         memo_to = self.send_memo_to_var.get().strip()
@@ -356,9 +472,9 @@ class ActionMixin:
             messagebox.showerror("Amount Error", "Amount must be a decimal number.")
             return
         try:
-            fee = float(fee_raw) if fee_raw else None
+            feerate = float(feerate_raw) if feerate_raw else None
         except ValueError:
-            messagebox.showerror("Fee Error", "Fee must be a decimal number.")
+            messagebox.showerror("Fee Rate Error", "Fee rate must be a decimal number.")
             return
 
         if from_addr:
@@ -370,14 +486,58 @@ class ActionMixin:
                 )
                 return
 
+        if not self._warn_if_no_peers():
+            return
+
+        change_hint = from_addr or "(wallet default)"
+        fee_hint = f"{feerate:.8f} BLINE/KB" if feerate is not None else "(node default)"
+        fee_amount_hint = "n/a"
+        size_hint = ""
+        try:
+            amount_liners = self._coin_to_liners(amount_raw)
+            fee_rate_liners = None
+            if feerate_raw:
+                fee_rate_liners = self._coin_to_liners(feerate_raw)
+            else:
+                mempool = self._build_client().call("getmempoolinfo", [])
+                if isinstance(mempool, dict):
+                    min_fee = mempool.get("mempoolminfee", mempool.get("minrelaytxfee"))
+                    if isinstance(min_fee, (int, float)):
+                        fee_rate_liners = self._coin_to_liners(str(min_fee))
+            if fee_rate_liners is not None:
+                preview = self._estimate_send_fee(
+                    self._build_client(),
+                    amount_liners=amount_liners,
+                    fee_rate_liners=fee_rate_liners,
+                    from_address=from_addr or None,
+                )
+                if preview:
+                    fee_liners, size_bytes, num_inputs, has_change = preview
+                    fee_amount_hint = f"{fee_liners / 100000000:.8f} BLINE"
+                    outs = 2 if has_change else 1
+                    size_hint = f" (~{size_bytes} bytes, {num_inputs} in / {outs} out)"
+        except Exception as exc:  # noqa: BLE001
+            log.debug("Fee preview failed: %s", exc)
+        if not messagebox.askyesno(
+            "Confirm Send",
+            "Send payment?\n\n"
+            f"To: {address}\n"
+            f"Amount: {amount:.8f} BLINE\n"
+            f"From: {from_addr or '(any spendable)'}\n"
+            f"Fee rate: {fee_hint}\n"
+            f"Estimated fee: {fee_amount_hint}{size_hint}\n"
+            f"Change: {change_hint}\n",
+        ):
+            return
+
         client = self._build_client()
         unlocked = self._ensure_unlocked(client)
         if unlocked is None:
             return
         params: list[Any] = [address, amount]
         options: dict[str, Any] = {}
-        if fee is not None:
-            options["fee"] = fee
+        if feerate is not None:
+            options["feerate"] = feerate
         if from_addr:
             options["fromaddresses"] = [from_addr]
         if memo or memo_to or options:
@@ -435,8 +595,10 @@ class ActionMixin:
         return parse_schedule_target(raw)
 
     def _create_scheduled_transaction(self) -> None:
+        from_addr = self.schedule_from_var.get().strip()
         dest = self.schedule_dest_var.get().strip()
         amount_raw = self.schedule_amount_var.get().strip()
+        feerate_raw = self.schedule_fee_var.get().strip()
         lock_raw = self.schedule_lock_var.get().strip()
         if not dest or not amount_raw or not lock_raw:
             messagebox.showwarning("Missing Fields", "Destination, amount, and scheduled date are required.")
@@ -447,18 +609,34 @@ class ActionMixin:
             messagebox.showerror("Amount Error", "Amount must be a decimal number.")
             return
         try:
+            feerate = float(feerate_raw) if feerate_raw else None
+        except ValueError:
+            messagebox.showerror("Fee Rate Error", "Fee rate must be a decimal number.")
+            return
+        try:
             lock_time = self._parse_schedule_target(lock_raw)
         except ValueError as exc:
             messagebox.showerror("Scheduled Date Error", str(exc))
             return
         cancelable = bool(self.schedule_cancelable_var.get())
 
+        if not self._warn_if_no_peers():
+            return
+
         client = self._build_client()
         unlocked = self._ensure_unlocked(client)
         if unlocked is None:
             return
         try:
-            result = client.call("createscheduledtx", [dest, amount, lock_time, cancelable])
+            options: dict[str, Any] = {}
+            if from_addr:
+                options["fromaddresses"] = [from_addr]
+            if feerate is not None:
+                options["feerate"] = feerate
+            args: list[Any] = [dest, amount, lock_time, cancelable]
+            if options:
+                args.append(options)
+            result = client.call("createscheduledtx", args)
         except Exception as exc:
             messagebox.showerror("Schedule Failed", str(exc))
             return
@@ -467,9 +645,13 @@ class ActionMixin:
                 with contextlib.suppress(Exception):
                     client.call("walletlock", [])
         schedule_id = result.get("schedule_id", "n/a")
+        fee_value = result.get("fee")
+        fee_display = f"{fee_value:.8f} BLINE" if isinstance(fee_value, (int, float)) else "n/a"
         messagebox.showinfo(
             "Scheduled Transaction Created",
-            f"Schedule {schedule_id} created for {amount:.8f} BLINE locking at {lock_time}.",
+            f"Schedule {schedule_id} created for {amount:.8f} BLINE.\n"
+            f"Lock time: {lock_time}\n"
+            f"Fee: {fee_display}",
         )
         self.schedule_dest_var.set("")
         self.schedule_amount_var.set("")

@@ -55,7 +55,8 @@ def build_parser() -> argparse.ArgumentParser:
     send.add_argument("--unlock-time", type=int, default=90, help="Seconds to keep wallet unlocked for signing")
     send.add_argument("--from-address", action="append", dest="from_addresses", help="Restrict inputs to this address (repeatable)")
     send.add_argument("--change-address", help="Force change to return to this wallet address")
-    send.add_argument("--fee", type=float, help="Custom fee in BLINE (defaults to 0.00001)")
+    send.add_argument("--fee", type=float, help="Custom absolute fee in BLINE (overrides fee rate)")
+    send.add_argument("--feerate", type=float, help="Custom fee rate in BLINE/kB (defaults to node min relay)")
 
     tx = sub.add_parser("tx", help="Inspect a wallet transaction")
     tx.add_argument("txid")
@@ -161,7 +162,7 @@ def main() -> None:
             if args.encrypt and not info["encrypted"]:
                 phrase = prompt_new_passphrase()
                 client.call("encryptwallet", [phrase])
-                print("Wallet encrypted. Restart node before continuing.")
+                print("Wallet encrypted. The wallet is now locked; use 'unlock' or provide --passphrase when sending.")
             elif info["encrypted"] and info["locked"]:
                 print("Wallet is encrypted and locked; use 'unlock' or provide --passphrase when sending.")
         elif args.command == "newaddress":
@@ -192,6 +193,8 @@ def main() -> None:
                 options["changeaddress"] = args.change_address
             if args.fee is not None:
                 options["fee"] = args.fee
+            elif args.feerate is not None:
+                options["feerate"] = args.feerate
             params: list[Any] = [args.address, args.amount]
             if options:
                 params.extend(["", "", options])
@@ -208,7 +211,7 @@ def main() -> None:
         elif args.command == "encrypt":
             phrase = args.passphrase or prompt_new_passphrase()
             client.call("encryptwallet", [phrase])
-            print("Wallet encrypted. Restart node to continue.")
+            print("Wallet encrypted. The wallet is now locked; use 'unlock' before spending.")
         elif args.command == "unlock":
             client.call("walletpassphrase", [args.passphrase, args.timeout])
             print(f"Wallet unlocked for {args.timeout} seconds.")

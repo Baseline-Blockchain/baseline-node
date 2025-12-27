@@ -312,6 +312,15 @@ class RPCTestCase(unittest.TestCase):
         info = self.handlers.dispatch("walletinfo", [])
         self.assertTrue(info["encrypted"])
 
+    def test_exportseed_and_importseed_rpc(self) -> None:
+        seed_hex = self.handlers.dispatch("exportseed", [])
+        self.assertIsInstance(seed_hex, str)
+        self.assertEqual(len(seed_hex), 64)
+        expected = self.wallet._derive_address_for_seed(bytes.fromhex(seed_hex), 0)
+        self.handlers.dispatch("importseed", [seed_hex, True])
+        addr = self.handlers.dispatch("getnewaddress", [])
+        self.assertEqual(addr, expected)
+
     def test_address_index_rpcs(self) -> None:
         recv_address = self.handlers.dispatch("getnewaddress", [])
         payment = self._build_payment_tx(recv_address, 5 * COIN)

@@ -51,7 +51,7 @@ Baseline reuses version-bit signaling (see baseline/core/upgrade.py). Upgrades m
 1. **Implementation** – Merge code guarded behind an UpgradeDefinition with name, bit, start_time, timeout, and threshold fields.
 2. **Testnet Deployment** – Launch or reuse a public testnet where miners/pools can exercise the change. Record results in the BIP.
 3. **Release Candidate** – Cut a tagged build (e.g., 0.2.0-rc1) containing the upgrade with activation parameters pointing to the future mainnet window.
-4. **Miner Signaling** – Pools upgrade and begin setting the assigned version bit. The upgrade manager tracks states (DEFINED → STARTED → LOCKED_IN → ACTIVE). Thresholds default to ≥95% of blocks in a retarget window (20 blocks) unless the BIP specifies otherwise.
+4. **Miner Signaling** – Pools upgrade and begin setting the assigned version bit. The upgrade manager tracks states (DEFINED → STARTED → LOCKED_IN → ACTIVE). Thresholds default to ≥95% of blocks in a signaling period (20 blocks) unless the BIP specifies otherwise.
 5. **Activation** – One retarget interval after LOCKED_IN, the new rules become mandatory. Non-upgraded nodes will reject future blocks.
 
 ### Emergency Procedures
@@ -62,8 +62,7 @@ Baseline reuses version-bit signaling (see baseline/core/upgrade.py). Upgrades m
 ## Current Status
 
 - No upgrades are defined. UpgradeManager reports no active bits.
-- Consensus parameters (coinbase_maturity, lock_interval_target, 
-etarget_interval, initial_bits, subsidy_halving_interval) are locked at startup. Nodes refuse to run if the config deviates unless mining.allow_consensus_overrides=true is explicitly set (testnet/dev-only).
+- Consensus parameters (coinbase_maturity, block_interval_target, initial_bits, subsidy_halving_interval) are locked at startup. Nodes refuse to run if the config deviates unless mining.allow_consensus_overrides=true is explicitly set (testnet/dev-only).
 
 ## Responsibilities
 

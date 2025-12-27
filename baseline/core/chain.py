@@ -30,17 +30,31 @@ GENESIS_MESSAGE = b"Baseline genesis"
 GENESIS_LEGACY_SUBSIDY = 50 * COIN
 MAX_FUTURE_BLOCK_TIME = 3 * 60  # 3 minutes
 
+# Mainnet genesis (2025-12-28T00:00:00Z). This is consensus-critical.
+MAINNET_GENESIS_TIMESTAMP = 1_766_880_000
+MAINNET_GENESIS_MERKLE_ROOT = "1c633c7361f56181e314720e41068f7ce4dab2ddd2393e33e6ecc22f8ff3458e"
+MAINNET_GENESIS_NONCE = 3_972_321
+MAINNET_GENESIS_HASH = "0296e442a941422e74cf874cae8ea4c0bf3d654fb819c1a37891e853d6060000"
+
+# Private devnets (allow_consensus_overrides=true) use a deterministic genesis timestamp
+# that stays comfortably in the past for test suites.
+DEVNET_GENESIS_TIMESTAMP = 1_733_966_400
+DEVNET_POW_LIMIT_BITS = 0x207FFFFF
+
 FOUNDATION_FEE_NUMERATOR = 1
 FOUNDATION_FEE_DENOMINATOR = 100
-EARLY_RETARGET_HEIGHT = 10_000
-EARLY_RETARGET_CLAMP = 2
-DEFAULT_RETARGET_CLAMP = 4
+
+# Mainnet difficulty uses a per-block LWMA retarget to handle sudden hashrate swings.
+LWMA_WINDOW = 60
+LWMA_SOLVETIME_CLAMP_FACTOR = 6
 
 CONSENSUS_DEFAULTS = {
     "coinbase_maturity": 20,
     "block_interval_target": 20,
-    "retarget_interval": 20,
-    "initial_bits": 0x207FFFFF,
+    # "PoW limit" (easiest difficulty) used as the maximum target in LWMA and in the genesis bits field.
+    "pow_limit_bits": 0x1E08637B,
+    # Launch difficulty (height 1), before LWMA has a meaningful window.
+    "initial_bits": 0x1D0225C1,
     "subsidy_halving_interval": 4_158_884,
     "foundation_address": "NMUrmCNAH5VUrjLSvM4ULu7eNtD1i8qcyK",
 }
@@ -97,7 +111,11 @@ class Chain:
         self.state_db = state_db
         self.block_store = block_store
         self.log = logging.getLogger("baseline.chain")
-        self.max_target = difficulty.compact_to_target(self.config.mining.initial_bits)
+        if getattr(self.config.mining, "allow_consensus_overrides", False):
+            # Keep dev/test nets fast to mine unless explicitly configured otherwise.
+            if self.config.mining.pow_limit_bits == CONSENSUS_DEFAULTS["pow_limit_bits"]:
+                self.config.mining.pow_limit_bits = DEVNET_POW_LIMIT_BITS
+        self.max_target = difficulty.compact_to_target(self.config.mining.pow_limit_bits)
         try:
             self.foundation_script = script_from_address(self.config.mining.foundation_address)
         except ValueError as exc:  # noqa: BLE001
@@ -110,6 +128,10 @@ class Chain:
         self.upgrade_manager = UpgradeManager(state_db)
 
         self._enforce_consensus_parameters()
+        if getattr(self.config.mining, "allow_consensus_overrides", False):
+            # Dev/test nets default to the easiest target unless explicitly overridden.
+            if self.config.mining.initial_bits == CONSENSUS_DEFAULTS["initial_bits"]:
+                self.config.mining.initial_bits = self.config.mining.pow_limit_bits
         self._ensure_genesis()
         self.log.info("Current block height %s", self.state_db.get_best_tip()[1] if self.state_db.get_best_tip() else 0)
 
@@ -135,22 +157,39 @@ class Chain:
             lock_time=0,
         )
         merkle = merkle_root_hash([coinbase])
+        timestamp = MAINNET_GENESIS_TIMESTAMP if not self.config.mining.allow_consensus_overrides else DEVNET_GENESIS_TIMESTAMP
+        nonce = 0
+
+        if not self.config.mining.allow_consensus_overrides:
+            if merkle != MAINNET_GENESIS_MERKLE_ROOT:
+                raise ChainError("Mainnet genesis merkle root mismatch; check foundation_address/coinbase encoding")
+            nonce = MAINNET_GENESIS_NONCE
+
         header = BlockHeader(
             version=1,
             prev_hash="00" * 32,
             merkle_root=merkle,
-            timestamp=1733966400,
-            bits=self.config.mining.initial_bits,
-            nonce=0,
+            timestamp=timestamp,
+            bits=self.config.mining.pow_limit_bits,
+            nonce=nonce,
         )
         block = Block(header=header, transactions=[coinbase])
-        nonce = 0
-        while not difficulty.check_proof_of_work(block.block_hash(), block.header.bits):
-            nonce += 1
-            block.header.nonce = nonce
-            if nonce > 0xFFFFFFFF:
-                raise ChainError("Failed to solve genesis block")
-        self.log.info("Genesis block solved nonce=%s hash=%s", block.header.nonce, block.block_hash())
+
+        if self.config.mining.allow_consensus_overrides:
+            while not difficulty.check_proof_of_work(block.block_hash(), block.header.bits):
+                nonce += 1
+                block.header.nonce = nonce
+                if nonce > 0xFFFFFFFF:
+                    raise ChainError("Failed to solve genesis block")
+            self.log.info("Genesis block solved nonce=%s hash=%s", block.header.nonce, block.block_hash())
+            return block
+
+        genesis_hash = block.block_hash()
+        if not difficulty.check_proof_of_work(genesis_hash, block.header.bits):
+            raise ChainError("Hardcoded mainnet genesis does not satisfy proof-of-work")
+        if genesis_hash != MAINNET_GENESIS_HASH:
+            raise ChainError("Hardcoded mainnet genesis hash mismatch; check build constants")
+        self.log.info("Mainnet genesis block nonce=%s hash=%s", block.header.nonce, genesis_hash)
         return block
 
     def _encode_coinbase_script(self, height: int, extra: bytes) -> bytes:
@@ -165,6 +204,18 @@ class Chain:
         best = self.state_db.get_best_tip()
         genesis_hash = self.genesis_hash
         if best is not None:
+            # Refuse to run with an on-disk chainstate that doesn't match our computed genesis.
+            header = self.state_db.get_header(genesis_hash)
+            if header is None or header.height != 0:
+                raise ChainError(
+                    "Chainstate genesis mismatch. "
+                    "If you changed mainnet/devnet consensus parameters, resync with --reset-chainstate."
+                )
+            if not self.block_store.has_block(genesis_hash):
+                raise ChainError(
+                    "Chainstate references genesis but block store is missing it. "
+                    "Resync with --reset-chainstate."
+                )
             return
         self.log.info("Initializing chain with genesis block %s", genesis_hash)
         raw = self.genesis_block.serialize()
@@ -443,25 +494,48 @@ class Chain:
         return (subsidy * FOUNDATION_FEE_NUMERATOR + FOUNDATION_FEE_DENOMINATOR - 1) // FOUNDATION_FEE_DENOMINATOR
 
     def _expected_bits(self, height: int, parent_header: HeaderData) -> int:
-        interval = self.config.mining.retarget_interval
-        if height % interval != 0 or height < interval:
+        return self._expected_bits_lwma(height, parent_header)
+
+    def _expected_bits_lwma(self, height: int, parent_header: HeaderData) -> int:
+        # Zawy's LWMA: compute a linearly weighted solvetime average over a rolling window,
+        # combined with an average target, to retarget every block.
+        if height <= 1:
+            return self.config.mining.initial_bits
+        if height < 3:
             return parent_header.bits
-        ancestor_hash = self._ancestor_hash(parent_header.hash, interval - 1)
-        if ancestor_hash is None:
+
+        target_spacing = max(1, self.config.mining.block_interval_target)
+        window = min(LWMA_WINDOW, height - 1)
+        if window < 2:
             return parent_header.bits
-        ancestor = self.state_db.get_header(ancestor_hash)
-        if ancestor is None:
-            raise ChainError("Missing ancestor for retarget")
-        actual_span = parent_header.timestamp - ancestor.timestamp
-        target_span = self.config.mining.block_interval_target * interval
-        clamp = EARLY_RETARGET_CLAMP if height <= EARLY_RETARGET_HEIGHT else DEFAULT_RETARGET_CLAMP
-        return difficulty.calculate_new_bits(
-            parent_header.bits,
-            actual_span,
-            target_span,
-            self.max_target,
-            clamp_factor=clamp,
-        )
+
+        end_height = parent_header.height
+        start_height = max(0, end_height - window)
+        headers = self.state_db.get_headers_range(start_height, end_height)
+        if len(headers) < (end_height - start_height + 1):
+            return parent_header.bits
+        if len(headers) < window + 1:
+            return parent_header.bits
+
+        sum_targets = 0
+        sum_weighted_solvetime = 0
+        max_solvetime = LWMA_SOLVETIME_CLAMP_FACTOR * target_spacing
+        actual_window = len(headers) - 1
+        weight_sum = actual_window * (actual_window + 1) // 2
+
+        for i in range(1, actual_window + 1):
+            solvetime = headers[i].timestamp - headers[i - 1].timestamp
+            solvetime = max(1, min(max_solvetime, solvetime))
+            sum_weighted_solvetime += solvetime * i
+            sum_targets += difficulty.compact_to_target(headers[i].bits)
+
+        # next_target = avg_target * (lwma_solvetime / target_spacing)
+        # where lwma_solvetime = sum_weighted_solvetime / weight_sum
+        # => next_target = sum_targets * sum_weighted_solvetime / (actual_window * weight_sum * target_spacing)
+        denom = actual_window * weight_sum * target_spacing
+        next_target = (sum_targets * sum_weighted_solvetime) // max(1, denom)
+        next_target = max(1, min(self.max_target, next_target))
+        return difficulty.target_to_compact(next_target)
 
     def _ancestor_hash(self, block_hash: str, steps: int) -> str | None:
         current = block_hash

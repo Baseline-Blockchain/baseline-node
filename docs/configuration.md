@@ -43,8 +43,8 @@ Baseline loads `config.json`, fills in deterministic defaults from `NodeConfig`,
   "mining": {
     "coinbase_maturity": 20,
     "block_interval_target": 20,
-    "retarget_interval": 20,
-    "initial_bits": 546098431,
+    "pow_limit_bits": 503866235,
+    "initial_bits": 486680001,
     "subsidy_halving_interval": 4158884,
     "pool_fee_percent": 1.5,
     "pool_private_key": null,
@@ -102,7 +102,7 @@ Tuple/list values accept comma-delimited strings (`BASELINE_NETWORK__SEEDS="node
 
 ### Consensus Overrides
 
-Consensus-critical values (`coinbase_maturity`, `block_interval_target`, `retarget_interval`, `initial_bits`, `subsidy_halving_interval`, `foundation_address`) are **locked** on mainnet. The node compares your config against the compiled defaults and refuses to start if they differ. This prevents accidental forks or runaway inflation.
+Consensus-critical values (`coinbase_maturity`, `block_interval_target`, `initial_bits`, `subsidy_halving_interval`, `foundation_address`) are **locked** on mainnet. The node compares your config against the compiled defaults and refuses to start if they differ. This prevents accidental forks or runaway inflation.
 
 - `mining.allow_consensus_overrides`: defaults to `false`. Setting it to `true` suppresses the safety check and logs a warning, allowing you to run bespoke devnets or integration tests. Never enable it on public networks; doing so will cause your node to diverge from the canonical chain.
 

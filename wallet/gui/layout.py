@@ -12,6 +12,68 @@ from .styles import ASSET_DIR, PALETTE, lighten
 class LayoutMixin:
     """Mixin that drives the widget layout and presentation."""
 
+    def _schedule_responsive_layout(self) -> None:
+        if getattr(self, "_resize_after", None) is not None:
+            with contextlib.suppress(Exception):
+                self.after_cancel(self._resize_after)
+        self._resize_after = self.after(100, self._apply_responsive_layout)
+
+    def _apply_responsive_layout(self) -> None:
+        self._resize_after = None
+        self._resize_tree_columns()
+        self._resize_overview_wrap()
+
+    def _resize_overview_wrap(self) -> None:
+        chain_card = getattr(self, "_overview_chain_card", None)
+        if not chain_card or not chain_card.winfo_exists():
+            return
+        wrap_width = max(220, chain_card.winfo_width() - 40)
+        for label in (
+            getattr(self, "_overview_hash_label", None),
+            getattr(self, "_overview_genesis_label", None),
+        ):
+            if label and label.winfo_exists():
+                label.configure(wraplength=wrap_width)
+
+    def _resize_tree_columns(self) -> None:
+        def resize(tree: ttk.Treeview | None, spec: dict[str, int], stretch_column: str) -> None:
+            if not tree or not tree.winfo_exists():
+                return
+            width = tree.winfo_width()
+            if width <= 1:
+                return
+            fixed = sum(v for k, v in spec.items() if k != stretch_column)
+            remaining = max(spec.get(stretch_column, 100), width - fixed - 20)
+            for name, col_width in spec.items():
+                if name == stretch_column:
+                    tree.column(name, width=remaining, minwidth=100, stretch=True)
+                else:
+                    tree.column(name, width=col_width, minwidth=col_width, stretch=False)
+
+        resize(
+            self.address_tree,
+            {"address": 360, "label": 160, "spendable": 100, "balance": 120},
+            "address",
+        )
+        resize(
+            self.tx_tree,
+            {"time": 150, "txid": 260, "category": 120, "amount": 150, "confirmations": 90},
+            "txid",
+        )
+        resize(
+            self.schedule_tree,
+            {
+                "schedule": 190,
+                "destination": 200,
+                "amount": 110,
+                "fee": 95,
+                "lock_time": 120,
+                "status": 100,
+                "cancelable": 60,
+            },
+            "destination",
+        )
+
     def _load_icon(self) -> None:
         """Load the packaged logo and apply it as the window icon."""
 
@@ -79,6 +141,20 @@ class LayoutMixin:
         style.map(
             "Primary.TButton",
             background=[("active", lighten(PALETTE["button"]))],
+            foreground=[("disabled", PALETTE["muted"])],
+        )
+        style.configure(
+            "Secondary.TButton",
+            background=PALETTE["tab_active"],
+            foreground=PALETTE["text"],
+            borderwidth=0,
+            focusthickness=1,
+            focuscolor=PALETTE["highlight"],
+            padding=(12, 6),
+        )
+        style.map(
+            "Secondary.TButton",
+            background=[("active", lighten(PALETTE["tab_active"]))],
             foreground=[("disabled", PALETTE["muted"])],
         )
         style.configure(
@@ -207,6 +283,7 @@ class LayoutMixin:
     def _build_layout(self) -> None:
         container = ttk.Frame(self, padding=(10, 10, 10, 10))
         container.pack(fill="both", expand=True)
+        container.bind("<Configure>", lambda _event: self._schedule_responsive_layout())
 
         notebook = ttk.Notebook(container)
         notebook.pack(fill="both", expand=True)
@@ -265,17 +342,33 @@ class LayoutMixin:
         detail.columnconfigure(2, weight=1)
 
         chain_card = ttk.Frame(detail, style="Card.TFrame", padding=16)
+        self._overview_chain_card = chain_card
         chain_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         ttk.Label(chain_card, text="CHAIN STATUS", style="SectionHeading.TLabel").pack(anchor="w")
         self._add_overview_row(chain_card, "Sync Progress", self.chain_progress_var)
         self._add_overview_row(chain_card, "Difficulty", self.chain_difficulty_var)
+        self._add_overview_row(chain_card, "Wallet Height", self.wallet_height_var)
         self._add_overview_row(chain_card, "Last Block Time", self.chain_time_var)
-        self._add_overview_row(chain_card, "Best Block", self.chain_hash_var, style="MonoLabel.TLabel", wrap=280)
+        self._overview_hash_label = self._add_overview_row(
+            chain_card,
+            "Best Block",
+            self.chain_hash_var,
+            style="MonoLabel.TLabel",
+            wrap=280,
+        )
+        self._overview_genesis_label = self._add_overview_row(
+            chain_card,
+            "Genesis",
+            self.chain_genesis_var,
+            style="MonoLabel.TLabel",
+            wrap=280,
+        )
 
         network_card = ttk.Frame(detail, style="Card.TFrame", padding=16)
         network_card.grid(row=0, column=1, sticky="nsew", padx=8)
         ttk.Label(network_card, text="NETWORK", style="SectionHeading.TLabel").pack(anchor="w")
         self._add_overview_row(network_card, "Connections", self.peer_count_var)
+        self._add_overview_row(network_card, "Network", self.network_name_var)
         self._add_overview_row(network_card, "Client Version", self.network_version_var)
         self._add_overview_row(network_card, "Relay Fee", self.network_fee_var)
 
@@ -294,7 +387,7 @@ class LayoutMixin:
         *,
         style: str = "MetricLabel.TLabel",
         wrap: int | None = None,
-    ) -> None:
+    ) -> ttk.Label:
         wrapper = ttk.Frame(container, style="Card.TFrame")
         wrapper.pack(fill="x", pady=(8, 0))
         ttk.Label(wrapper, text=label, style="SectionHeading.TLabel").pack(anchor="w")
@@ -302,6 +395,7 @@ class LayoutMixin:
         if wrap:
             lbl.configure(wraplength=wrap, justify="left")
         lbl.pack(anchor="w")
+        return lbl
 
     def _update_wallet_tip(self, message: str | None) -> None:
         if not self.wallet_tip_label:
@@ -323,10 +417,10 @@ class LayoutMixin:
         tree.heading("label", text="Label")
         tree.heading("spendable", text="Spendable")
         tree.heading("balance", text="Balance")
-        tree.column("address", width=360)
-        tree.column("label", width=160)
-        tree.column("spendable", width=100, anchor="center")
-        tree.column("balance", width=120, anchor="e")
+        tree.column("address", width=360, minwidth=180, stretch=True)
+        tree.column("label", width=160, minwidth=120, stretch=False)
+        tree.column("spendable", width=100, minwidth=90, anchor="center", stretch=False)
+        tree.column("balance", width=120, minwidth=90, anchor="e", stretch=False)
         odd_color = lighten(PALETTE["accent"], 0.35)
         tree.tag_configure("even", background=PALETTE["panel"], foreground=PALETTE["text"])
         tree.tag_configure("odd", background=odd_color, foreground=PALETTE["text"])
@@ -348,11 +442,11 @@ class LayoutMixin:
         tree.heading("category", text="Type")
         tree.heading("amount", text="Amount (BLINE)")
         tree.heading("confirmations", text="Conf")
-        tree.column("time", width=150)
-        tree.column("txid", width=260)
-        tree.column("category", width=120, anchor="center")
-        tree.column("amount", width=150, anchor="e")
-        tree.column("confirmations", width=90, anchor="center")
+        tree.column("time", width=150, minwidth=120, stretch=False)
+        tree.column("txid", width=260, minwidth=220, stretch=True)
+        tree.column("category", width=120, minwidth=90, anchor="center", stretch=False)
+        tree.column("amount", width=150, minwidth=100, anchor="e", stretch=False)
+        tree.column("confirmations", width=90, minwidth=60, anchor="center", stretch=False)
         tree.tag_configure("offline", background=PALETTE["panel"], foreground=PALETTE["muted"])
         tree.bind("<Double-1>", self._show_transaction_details)
         tree.pack(fill="both", expand=True)
@@ -360,21 +454,23 @@ class LayoutMixin:
     def _build_scheduled_tab(self, frame: ttk.Frame) -> None:
         tree_frame = ttk.Frame(frame)
         tree_frame.pack(fill="both", expand=True)
-        columns = ("schedule", "destination", "amount", "lock_time", "status", "cancelable")
+        columns = ("schedule", "destination", "amount", "fee", "lock_time", "status", "cancelable")
         tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=12, style="Card.Treeview")
         self.schedule_tree = tree
         tree.heading("schedule", text="Schedule ID")
         tree.heading("destination", text="Destination")
         tree.heading("amount", text="Amount (BLINE)")
+        tree.heading("fee", text="Fee (BLINE)")
         tree.heading("lock_time", text="Scheduled Time")
         tree.heading("status", text="Status")
         tree.heading("cancelable", text="Cancelable")
-        tree.column("schedule", width=190)
-        tree.column("destination", width=220)
-        tree.column("amount", width=110, anchor="e")
-        tree.column("lock_time", width=120, anchor="center")
-        tree.column("status", width=100, anchor="center")
-        tree.column("cancelable", width=60, anchor="center")
+        tree.column("schedule", width=190, minwidth=160, stretch=False)
+        tree.column("destination", width=200, minwidth=160, stretch=True)
+        tree.column("amount", width=110, minwidth=90, anchor="e", stretch=False)
+        tree.column("fee", width=95, minwidth=80, anchor="e", stretch=False)
+        tree.column("lock_time", width=120, minwidth=90, anchor="center", stretch=False)
+        tree.column("status", width=100, minwidth=80, anchor="center", stretch=False)
+        tree.column("cancelable", width=60, minwidth=60, anchor="center", stretch=False)
         odd_color = lighten(PALETTE["accent"], 0.35)
         tree.tag_configure("even", background=PALETTE["panel"], foreground=PALETTE["text"])
         tree.tag_configure("odd", background=odd_color, foreground=PALETTE["text"])
@@ -400,35 +496,51 @@ class LayoutMixin:
         card.pack(fill="x")
         card.columnconfigure(0, weight=1)
         card.columnconfigure(1, weight=1)
-        ttk.Label(card, text="Destination Address", style="SectionHeading.TLabel").grid(
-            row=0, column=0, columnspan=2, sticky="w"
+        ttk.Label(card, text="From Address", style="SectionHeading.TLabel").grid(row=0, column=0, columnspan=2, sticky="w")
+        self.schedule_from_combo = ttk.Combobox(
+            card,
+            textvariable=self.schedule_from_var,
+            state="readonly",
+            style="Form.TCombobox",
         )
-        ttk.Entry(card, textvariable=self.schedule_dest_var, style="Form.TEntry").grid(
-            row=1, column=0, columnspan=2, sticky="ew", pady=(4, 6)
+        self.schedule_from_combo.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 2))
+        self.schedule_from_combo.bind("<<ComboboxSelected>>", self._update_schedule_from_balance)
+        ttk.Label(card, textvariable=self.schedule_from_balance_var, style="MonoLabel.TLabel").grid(
+            row=2,
+            column=0,
+            columnspan=2,
+            sticky="w",
         )
 
-        ttk.Label(card, text="Amount (BLINE)", style="SectionHeading.TLabel").grid(row=2, column=0, sticky="w")
-        ttk.Entry(card, textvariable=self.schedule_amount_var, style="Form.TEntry").grid(
-            row=3, column=0, sticky="ew", pady=(4, 6)
+        ttk.Separator(card).grid(row=3, column=0, columnspan=2, sticky="ew", pady=(8, 12))
+
+        ttk.Label(card, text="Destination Address", style="SectionHeading.TLabel").grid(row=4, column=0, columnspan=2, sticky="w")
+        ttk.Entry(card, textvariable=self.schedule_dest_var, style="Form.TEntry").grid(
+            row=5, column=0, columnspan=2, sticky="ew", pady=(4, 6)
         )
+
+        ttk.Label(card, text="Amount (BLINE)", style="SectionHeading.TLabel").grid(row=6, column=0, sticky="w")
+        ttk.Label(card, text="Fee Rate (BLINE/KB)", style="SectionHeading.TLabel").grid(row=6, column=1, sticky="w")
+        ttk.Entry(card, textvariable=self.schedule_amount_var, style="Form.TEntry").grid(row=7, column=0, sticky="ew", pady=(4, 6))
+        ttk.Entry(card, textvariable=self.schedule_fee_var, style="Form.TEntry").grid(row=7, column=1, sticky="ew", pady=(4, 6))
         ttk.Label(card, text="Scheduled Date (UTC) or block height", style="SectionHeading.TLabel").grid(
-            row=2, column=1, sticky="w"
+            row=8, column=0, columnspan=2, sticky="w"
         )
         ttk.Entry(card, textvariable=self.schedule_lock_var, style="Form.TEntry").grid(
-            row=3, column=1, sticky="ew", pady=(4, 6)
+            row=9, column=0, columnspan=2, sticky="ew", pady=(4, 6)
         )
         ttk.Checkbutton(
             card,
             text="Cancelable (allows refund before scheduled time)",
             variable=self.schedule_cancelable_var,
             style="ScheduledCheck.TCheckbutton",
-        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 4))
+        ).grid(row=10, column=0, columnspan=2, sticky="w", pady=(4, 4))
         ttk.Button(
             card,
             text="Schedule Payment",
             command=self._create_scheduled_transaction,
             style="Primary.TButton",
-        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ).grid(row=11, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
     def _show_address_notice(self, message: str, duration: int = 2000) -> None:
         if self._address_notice_after:
@@ -501,7 +613,7 @@ class LayoutMixin:
         )
 
         ttk.Label(card, text="Amount (BLINE)", style="SectionHeading.TLabel").grid(row=6, column=0, sticky="w")
-        ttk.Label(card, text="Fee (BLINE)", style="SectionHeading.TLabel").grid(row=6, column=1, sticky="w")
+        ttk.Label(card, text="Fee Rate (BLINE/KB)", style="SectionHeading.TLabel").grid(row=6, column=1, sticky="w")
         ttk.Entry(card, textvariable=self.send_amount_var, style="Form.TEntry").grid(row=7, column=0, sticky="ew", pady=(2, 6))
         ttk.Entry(card, textvariable=self.send_fee_var, style="Form.TEntry").grid(row=7, column=1, sticky="ew", pady=(2, 6), padx=(12, 0))
 

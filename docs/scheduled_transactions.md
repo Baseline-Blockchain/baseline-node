@@ -8,5 +8,3 @@ Key behaviors:
 - **Cancelable schedules**: If you need to reclaim funds, call `cancelscheduledtx`; the wallet drops the original mempool entry, builds a refund (paying the normal `required_fee`), and rebroadcasts it so funds return to the sender before the lock-time.
 - **RPC surface**: `createscheduledtx`, `listscheduledtx`, `getschedule`, and `cancelscheduledtx` expose the state plus raw tx data so light clients can verify the pending transfer. Every entry returns `lock_time`, `raw_tx`, cancelable flag, and optionally `scheduled_at` (UTC timestamp derived from the friendly GUI field).
 - **Mempool impact**: Scheduled Tx entries pay the standard relay fee (`MIN_RELAY_FEE_RATE`) and obey the existing mempool limits/eviction policies (`baseline/mempool.py`). Cancelable schedules only linger until they are canceled or mined; non-cancelable ones remain pending until confirmed or evicted just like any other transaction.
-
-The GUI’s Scheduled Send tab simply reconnects to these RPCs so you always see the same state every node/client can inspect.

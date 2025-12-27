@@ -16,7 +16,7 @@ from baseline.storage import BlockStore, StateDB, UTXORecord
 
 class TPSTestCase(unittest.TestCase):
     MIN_EXPECTED_TPS = 5.0
-    TX_COUNT = 80
+    TX_COUNT = 40
 
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()

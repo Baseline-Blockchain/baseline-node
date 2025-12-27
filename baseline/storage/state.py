@@ -944,6 +944,33 @@ class StateDB:
             status=row["status"],
         )
 
+    def get_headers_range(self, start_height: int, end_height: int) -> list[HeaderData]:
+        """Get headers for main chain heights [start_height, end_height] inclusive."""
+        self._ensure_open()
+        if end_height < start_height:
+            return []
+        conn = self._reader_conn()
+        rows = conn.execute(
+            "SELECT hash, prev_hash, height, bits, nonce, timestamp, merkle_root, chainwork, version, status "
+            "FROM headers WHERE height BETWEEN ? AND ? AND status=0 ORDER BY height ASC",
+            (start_height, end_height),
+        ).fetchall()
+        return [
+            HeaderData(
+                hash=row["hash"],
+                prev_hash=row["prev_hash"],
+                height=row["height"],
+                bits=row["bits"],
+                nonce=row["nonce"],
+                timestamp=row["timestamp"],
+                merkle_root=row["merkle_root"],
+                chainwork=row["chainwork"],
+                version=row["version"],
+                status=row["status"],
+            )
+            for row in rows
+        ]
+
     def get_max_header_height(self) -> int:
         self._ensure_open()
         conn = self._reader_conn()

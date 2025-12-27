@@ -42,6 +42,8 @@ class WalletRPCMixin:
             "importaddress": self.importaddress,
             "walletinfo": self.walletinfo,
             "importprivkey": self.importprivkey,
+            "exportseed": self.exportseed,
+            "importseed": self.importseed,
         }
 
     def _require_wallet(self) -> WalletManager:
@@ -95,14 +97,19 @@ class WalletRPCMixin:
         from_addresses = opts.get("fromaddresses")
         change_address = opts.get("changeaddress")
         fee_override = opts.get("fee")
+        feerate_override = opts.get("feerate")
         fee_liners = None
         if fee_override is not None:
             fee_liners = coins_to_liners(fee_override)
+        fee_rate_liners = None
+        if feerate_override is not None:
+            fee_rate_liners = coins_to_liners(feerate_override)
         return self._wallet_call(
             lambda w: w.send_to_address(
                 address,
                 amount,
-                fee=fee_liners if fee_liners is not None else MIN_RELAY_FEE_RATE,
+                fee=fee_liners,
+                fee_rate=fee_rate_liners if fee_rate_liners is not None else MIN_RELAY_FEE_RATE,
                 from_addresses=from_addresses,
                 change_address=change_address,
                 comment=comment,
@@ -122,10 +129,9 @@ class WalletRPCMixin:
         from_addresses = opts.get("fromaddresses")
         change_address = opts.get("changeaddress")
         fee_override = opts.get("fee")
-        if fee_override is not None:
-            fee_liners = coins_to_liners(fee_override)
-        else:
-            fee_liners = MIN_RELAY_FEE_RATE
+        feerate_override = opts.get("feerate")
+        fee_liners = coins_to_liners(fee_override) if fee_override is not None else None
+        fee_rate_liners = coins_to_liners(feerate_override) if feerate_override is not None else MIN_RELAY_FEE_RATE
         return self._wallet_call(
             lambda w: w.create_scheduled_transaction(
                 address,
@@ -133,6 +139,7 @@ class WalletRPCMixin:
                 lock_time=int(lock_time),
                 cancelable=bool(cancelable),
                 fee=fee_liners,
+                fee_rate=fee_rate_liners,
                 from_addresses=from_addresses,
                 change_address=change_address,
             )
@@ -201,3 +208,10 @@ class WalletRPCMixin:
     def importprivkey(self, privkey: str, label: str | None = None, rescan: bool = True) -> str:
         self._wallet_call(lambda w: w.import_private_key(privkey, label, bool(rescan)))
         return "key imported"
+
+    def exportseed(self) -> str:
+        return self._wallet_call(lambda w: w.export_seed(), sync=False)
+
+    def importseed(self, seed: str, wipe_existing: bool = True) -> str:
+        self._wallet_call(lambda w: w.import_seed(seed, wipe_existing=bool(wipe_existing)), sync=False)
+        return "seed imported"

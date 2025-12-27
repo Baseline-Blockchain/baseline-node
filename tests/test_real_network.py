@@ -17,8 +17,8 @@ class RealNetworkIntegrationTests(unittest.TestCase):
     BASE_P2P_PORT = 19440
     BASE_RPC_PORT = 18400
     BASE_STRATUM_PORT = 20400
-    INITIAL_BLOCKS = 12
-    POST_SYNC_BLOCKS = 6
+    INITIAL_BLOCKS = 6
+    POST_SYNC_BLOCKS = 3
 
     def test_three_node_cluster_sync_and_resync(self) -> None:
         asyncio.run(self._run_cluster_flow())

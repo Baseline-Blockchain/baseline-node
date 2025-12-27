@@ -57,7 +57,7 @@ These commands behave like their Bitcoin Core counterparts:
   - `getnewaddress` – allocate deposit and change addresses.
   - `listunspent` – build withdrawal inputs.
   - `sendtoaddress` / `sendmany` (via wallet CLI) – broadcast withdrawals; they accept the same parameters and error codes you use on Bitcoin.
-  - `walletpassphrase`, `walletlock` – optional hardware security; the wallet uses PBKDF2-encrypted seeds.
+  - `walletpassphrase`, `walletlock` - unlock/lock the wallet; the wallet uses PBKDF2-encrypted seeds with integrity checks.
   - `dumpwallet`, `importwallet`, `importprivkey` – cold/offline backups and recovery.
 
 - **Operations**
@@ -112,6 +112,6 @@ If you bring your own signing stack, you can disable the built-in wallet and rel
 
 - Transaction format, scripts, sighash rules, and RPC behaviors match Bitcoin unless explicitly documented in [`docs/spec.md`](spec.md). Standard P2PKH only: no segwit or taproot yet.
 - Currency units: **BLINE** is the coin; 1 BLINE = 100,000,000 liners (just like satoshis). RPC returns liner amounts in both integer and float form where applicable.
-- Consensus parameters: 20-second blocks, 20-block retargets, smooth exponential subsidy. Exchanges mostly need to be aware of the fast block cadence so confirmation counting aligns with risk appetite.
+- Consensus parameters: 20-second blocks, per-block LWMA difficulty retarget, smooth exponential subsidy. Exchanges mostly need to be aware of the fast block cadence so confirmation counting aligns with risk appetite.
 
 If your integration stack already supports Bitcoin-like coins, reusing those adapters should be straightforward—point them at Baseline’s RPC endpoint, ensure address formats (`N...` P2PKH) are accepted, and adjust confirmation defaults. For deeper protocol questions, consult `docs/spec.md` or reach out via the project issue tracker.

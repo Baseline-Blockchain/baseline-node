@@ -5,6 +5,7 @@ Simple wallet manager with address derivation, balance tracking, and RPC helpers
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import secrets
 import threading
@@ -49,8 +50,22 @@ def _xor_bytes(left: bytes, right: bytes) -> bytes:
     return bytes(a ^ b for a, b in zip(left, right))
 
 
-def _derive_key(passphrase: str, salt: bytes) -> bytes:
-    return hashlib.pbkdf2_hmac("sha256", passphrase.encode("utf-8"), salt, 200_000, dklen=32)
+def _hmac_sha256(key: bytes, payload: bytes) -> bytes:
+    return hmac.new(key, payload, hashlib.sha256).digest()
+
+
+def _derive_keys(passphrase: str, salt: bytes) -> tuple[bytes, bytes]:
+    """Derive independent encryption and authentication keys.
+
+    The first 32 bytes are compatible with the previous dklen=32 derivation.
+    """
+
+    material = hashlib.pbkdf2_hmac("sha256", passphrase.encode("utf-8"), salt, 200_000, dklen=64)
+    return material[:32], material[32:]
+
+
+def _keystream(key: bytes, context: bytes) -> bytes:
+    return _hmac_sha256(key, b"baseline-wallet-keystream:" + context)
 
 
 @dataclass
@@ -77,6 +92,7 @@ class WalletManager:
         self._unlocked_seed: bytes | None = None
         self._unlock_until: float | None = None
         self._active_key: bytes | None = None
+        self._active_mac_key: bytes | None = None
         self.data: dict[str, object] = {}
         self._sync_event = threading.Event()
         self._sync_stop = threading.Event()
@@ -113,7 +129,9 @@ class WalletManager:
         self.data.setdefault("processed_height", -1)
         self.data.setdefault("encrypted", False)
         self.data.setdefault("seed_encrypted", None)
+        self.data.setdefault("seed_mac", None)
         self.data.setdefault("salt", None)
+        self.data.setdefault("enc_version", 1)
         self.data.setdefault("schedules", {})
         addresses = self.data.setdefault("addresses", {})
         for entry in addresses.values():
@@ -185,12 +203,23 @@ class WalletManager:
         if self.is_encrypted():
             if not self._active_key:
                 raise WalletLockedError("Unlock wallet before importing keys")
-            encrypted = _xor_bytes(priv_bytes, self._active_key)
+            enc_version = int(self.data.get("enc_version") or 1)
+            if enc_version >= 2:
+                address = entry.get("address")
+                if not isinstance(address, str) or not address:
+                    raise WalletError("Missing address for encrypted key")
+                encrypted = _xor_bytes(priv_bytes, _keystream(self._active_key, b"privkey:" + address.encode("utf-8")))
+            else:
+                encrypted = _xor_bytes(priv_bytes, self._active_key)
             entry["privkey_encrypted"] = encrypted.hex()
+            if self._active_mac_key:
+                prefix = b"privkey-v2:" if enc_version >= 2 else b"privkey-v1:"
+                entry["privkey_mac"] = _hmac_sha256(self._active_mac_key, prefix + bytes.fromhex(entry["privkey_encrypted"])).hex()
             entry.pop("privkey", None)
         else:
             entry["privkey"] = priv_bytes.hex()
             entry.pop("privkey_encrypted", None)
+            entry.pop("privkey_mac", None)
 
     def _load_external_privkey(self, entry: dict[str, object]) -> int | None:
         priv_hex = entry.get("privkey")
@@ -200,7 +229,23 @@ class WalletManager:
         if priv_enc:
             if not self._active_key:
                 raise WalletLockedError("Wallet locked")
-            priv_bytes = _xor_bytes(bytes.fromhex(priv_enc), self._active_key)
+            enc_version = int(self.data.get("enc_version") or 1)
+            mac_hex = entry.get("privkey_mac")
+            if mac_hex and self._active_mac_key:
+                prefix = b"privkey-v2:" if enc_version >= 2 else b"privkey-v1:"
+                expected = _hmac_sha256(self._active_mac_key, prefix + bytes.fromhex(priv_enc)).hex()
+                if not hmac.compare_digest(expected, str(mac_hex)):
+                    raise WalletError("Corrupted encrypted private key")
+            if enc_version >= 2:
+                address = entry.get("address")
+                if not isinstance(address, str) or not address:
+                    raise WalletError("Missing address for encrypted key")
+                priv_bytes = _xor_bytes(
+                    bytes.fromhex(priv_enc),
+                    _keystream(self._active_key, b"privkey:" + address.encode("utf-8")),
+                )
+            else:
+                priv_bytes = _xor_bytes(bytes.fromhex(priv_enc), self._active_key)
             return int.from_bytes(priv_bytes, "big")
         return None
 
@@ -258,6 +303,7 @@ class WalletManager:
                     "vout": utxo.vout,
                     "address": addr,
                     "amount": liners_to_coins(utxo.amount),
+                    "amount_liners": utxo.amount,
                     "confirmations": confirmations,
                     "scriptPubKey": utxo.script_pubkey.hex(),
                     "height": utxo.height,
@@ -268,7 +314,7 @@ class WalletManager:
 
     def get_balance(self, min_conf: int = 1) -> float:
         unspent = self.list_unspent(min_conf=min_conf)
-        total = sum(coins_to_liners(entry["amount"]) for entry in unspent)
+        total = sum(int(entry.get("amount_liners") or coins_to_liners(entry["amount"])) for entry in unspent)
         return liners_to_coins(total)
 
     def _lookup_privkey(self, address: str) -> int:
@@ -302,7 +348,8 @@ class WalletManager:
         dest_address: str,
         amount: Decimal | float | str | int,
         *,
-        fee: int = MIN_RELAY_FEE_RATE,
+        fee: int | None = None,
+        fee_rate: int = MIN_RELAY_FEE_RATE,
         from_addresses: Sequence[str] | None = None,
         change_address: str | None = None,
         comment: str | None = None,
@@ -311,6 +358,10 @@ class WalletManager:
         amount_liners = coins_to_liners(amount)
         if amount_liners <= 0:
             raise ValueError("Amount must be positive")
+        if fee is not None and fee < 0:
+            raise ValueError("Fee must be >= 0")
+        if fee_rate <= 0:
+            raise ValueError("fee_rate must be > 0")
         unspent = self.list_unspent()
         entries = self.data.get("addresses", {})
         allowed_set: set[str] | None = None
@@ -337,19 +388,12 @@ class WalletManager:
             spendable.append(entry)
         if not spendable:
             raise ValueError("No spendable inputs")
-        selected = []
+        selected: list[dict[str, object]] = []
         total = 0
-        for entry in spendable:
-            selected.append(entry)
-            total += coins_to_liners(entry["amount"])
-            if total >= amount_liners + fee:
-                break
-        if total < amount_liners + fee:
-            raise ValueError("Insufficient funds")
-        inputs = [TxInput(prev_txid=entry["txid"], prev_vout=entry["vout"], script_sig=b"", sequence=0xFFFFFFFF) for entry in selected]
-        outputs = [TxOutput(value=amount_liners, script_pubkey=script_from_address(dest_address))]
-        change = total - amount_liners - fee
-        chosen_change = change_address or selected[0]["address"]
+        spend_index = 0
+        chosen_change = change_address
+        if not chosen_change and spendable:
+            chosen_change = str(spendable[0]["address"])
         if not chosen_change:
             for addr, meta in entries.items():
                 if not meta.get("watch_only"):
@@ -357,10 +401,91 @@ class WalletManager:
                     break
         if not chosen_change:
             raise ValueError("No address available for change output")
-        if change > 0:
-            outputs.append(TxOutput(value=change, script_pubkey=script_from_address(chosen_change)))
-        tx = Transaction(version=1, inputs=inputs, outputs=outputs, lock_time=0)
-        self._sign_transaction(tx, selected)
+
+        def _build_signed_tx(*, include_change: bool, absolute_fee: int) -> Transaction:
+            inputs = [
+                TxInput(
+                    prev_txid=entry["txid"],
+                    prev_vout=entry["vout"],
+                    script_sig=b"",
+                    sequence=0xFFFFFFFF,
+                )
+                for entry in selected
+            ]
+            outputs = [TxOutput(value=amount_liners, script_pubkey=script_from_address(dest_address))]
+            if include_change:
+                change_value = total - amount_liners - absolute_fee
+                if change_value > 0:
+                    outputs.append(TxOutput(value=change_value, script_pubkey=script_from_address(chosen_change)))
+            tx = Transaction(version=1, inputs=inputs, outputs=outputs, lock_time=0)
+            self._sign_transaction(tx, selected)
+            return tx
+
+        if fee is not None:
+            fee_guess = fee
+            while total < amount_liners + fee_guess:
+                if spend_index >= len(spendable):
+                    raise ValueError("Insufficient funds")
+                entry = spendable[spend_index]
+                spend_index += 1
+                selected.append(entry)
+                total += int(entry.get("amount_liners") or coins_to_liners(entry["amount"]))
+            tx = _build_signed_tx(include_change=True, absolute_fee=fee_guess)
+            final_fee = fee_guess
+        else:
+            max_fee_iters = 10
+            while True:
+                if spend_index >= len(spendable) and not selected:
+                    raise ValueError("No spendable inputs")
+                if not selected:
+                    entry = spendable[spend_index]
+                    spend_index += 1
+                    selected.append(entry)
+                    total += int(entry.get("amount_liners") or coins_to_liners(entry["amount"]))
+
+                tx_no = _build_signed_tx(include_change=False, absolute_fee=0)
+                fee_required_no = required_fee(len(tx_no.serialize()), fee_rate)
+                if total < amount_liners + fee_required_no:
+                    if spend_index >= len(spendable):
+                        raise ValueError("Insufficient funds")
+                    entry = spendable[spend_index]
+                    spend_index += 1
+                    selected.append(entry)
+                    total += int(entry.get("amount_liners") or coins_to_liners(entry["amount"]))
+                    continue
+
+                fee_guess = fee_required_no
+                tx_with_change: Transaction | None = None
+                for _ in range(max_fee_iters):
+                    change_value = total - amount_liners - fee_guess
+                    if change_value <= 0:
+                        tx_with_change = None
+                        break
+                    candidate = _build_signed_tx(include_change=True, absolute_fee=fee_guess)
+                    fee_needed = required_fee(len(candidate.serialize()), fee_rate)
+                    if fee_needed <= fee_guess:
+                        tx_with_change = candidate
+                        break
+                    fee_guess = fee_needed
+
+                if tx_with_change is not None:
+                    tx = tx_with_change
+                    final_fee = fee_guess
+                    break
+
+                fee_available = total - amount_liners
+                if fee_available >= fee_required_no and spend_index >= len(spendable):
+                    # Can't make a change output; fall back to burning the remainder as fee.
+                    tx = tx_no
+                    final_fee = fee_available
+                    break
+
+                if spend_index >= len(spendable):
+                    raise ValueError("Insufficient funds")
+                entry = spendable[spend_index]
+                spend_index += 1
+                selected.append(entry)
+                total += int(entry.get("amount_liners") or coins_to_liners(entry["amount"]))
         try:
             self.mempool.accept_transaction(tx, peer_id="wallet")
         except MempoolError as exc:
@@ -372,7 +497,7 @@ class WalletManager:
             addresses=[dest_address],
             blockhash=None,
             height=None,
-            fee=fee,
+            fee=final_fee,
             comment=comment,
             comment_to=comment_to,
         )
@@ -394,7 +519,8 @@ class WalletManager:
         *,
         lock_time: int,
         cancelable: bool = False,
-        fee: int = MIN_RELAY_FEE_RATE,
+        fee: int | None = None,
+        fee_rate: int = MIN_RELAY_FEE_RATE,
         from_addresses: Sequence[str] | None = None,
         change_address: str | None = None,
     ) -> dict[str, object]:
@@ -404,6 +530,10 @@ class WalletManager:
         lock_time = int(lock_time)
         if lock_time < 0 or lock_time > 0xFFFFFFFF:
             raise ValueError("lock_time must be between 0 and 2^32-1")
+        if fee is not None and fee < 0:
+            raise ValueError("Fee must be >= 0")
+        if fee_rate <= 0:
+            raise ValueError("fee_rate must be > 0")
         unspent = self.list_unspent()
         entries = self.data.get("addresses", {})
         allowed_set: set[str] | None = None
@@ -430,19 +560,12 @@ class WalletManager:
             spendable.append(entry)
         if not spendable:
             raise ValueError("No spendable inputs")
-        selected = []
+        selected: list[dict[str, object]] = []
         total = 0
-        for entry in spendable:
-            selected.append(entry)
-            total += coins_to_liners(entry["amount"])
-            if total >= amount_liners + fee:
-                break
-        if total < amount_liners + fee:
-            raise ValueError("Insufficient funds")
-        inputs = [TxInput(prev_txid=entry["txid"], prev_vout=entry["vout"], script_sig=b"", sequence=0xFFFFFFFF) for entry in selected]
-        outputs = [TxOutput(value=amount_liners, script_pubkey=script_from_address(dest_address))]
-        change = total - amount_liners - fee
-        chosen_change = change_address or selected[0]["address"]
+        spend_index = 0
+        chosen_change = change_address
+        if not chosen_change and spendable:
+            chosen_change = str(spendable[0]["address"])
         if not chosen_change:
             for addr, meta in entries.items():
                 if not meta.get("watch_only"):
@@ -450,10 +573,90 @@ class WalletManager:
                     break
         if not chosen_change:
             raise ValueError("No address available for change output")
-        if change > 0:
-            outputs.append(TxOutput(value=change, script_pubkey=script_from_address(chosen_change)))
-        tx = Transaction(version=1, inputs=inputs, outputs=outputs, lock_time=lock_time)
-        self._sign_transaction(tx, selected)
+
+        def _build_signed_schedule_tx(*, include_change: bool, absolute_fee: int) -> Transaction:
+            inputs = [
+                TxInput(
+                    prev_txid=entry["txid"],
+                    prev_vout=entry["vout"],
+                    script_sig=b"",
+                    sequence=0xFFFFFFFF,
+                )
+                for entry in selected
+            ]
+            outputs = [TxOutput(value=amount_liners, script_pubkey=script_from_address(dest_address))]
+            if include_change:
+                change_value = total - amount_liners - absolute_fee
+                if change_value > 0:
+                    outputs.append(TxOutput(value=change_value, script_pubkey=script_from_address(chosen_change)))
+            tx = Transaction(version=1, inputs=inputs, outputs=outputs, lock_time=lock_time)
+            self._sign_transaction(tx, selected)
+            return tx
+
+        if fee is not None:
+            fee_guess = fee
+            while total < amount_liners + fee_guess:
+                if spend_index >= len(spendable):
+                    raise ValueError("Insufficient funds")
+                entry = spendable[spend_index]
+                spend_index += 1
+                selected.append(entry)
+                total += int(entry.get("amount_liners") or coins_to_liners(entry["amount"]))
+            tx = _build_signed_schedule_tx(include_change=True, absolute_fee=fee_guess)
+            final_fee = fee_guess
+        else:
+            max_fee_iters = 10
+            while True:
+                if not selected:
+                    if spend_index >= len(spendable):
+                        raise ValueError("No spendable inputs")
+                    entry = spendable[spend_index]
+                    spend_index += 1
+                    selected.append(entry)
+                    total += int(entry.get("amount_liners") or coins_to_liners(entry["amount"]))
+
+                tx_no = _build_signed_schedule_tx(include_change=False, absolute_fee=0)
+                fee_required_no = required_fee(len(tx_no.serialize()), fee_rate)
+                if total < amount_liners + fee_required_no:
+                    if spend_index >= len(spendable):
+                        raise ValueError("Insufficient funds")
+                    entry = spendable[spend_index]
+                    spend_index += 1
+                    selected.append(entry)
+                    total += int(entry.get("amount_liners") or coins_to_liners(entry["amount"]))
+                    continue
+
+                fee_guess = fee_required_no
+                tx_with_change: Transaction | None = None
+                for _ in range(max_fee_iters):
+                    change_value = total - amount_liners - fee_guess
+                    if change_value <= 0:
+                        tx_with_change = None
+                        break
+                    candidate = _build_signed_schedule_tx(include_change=True, absolute_fee=fee_guess)
+                    fee_needed = required_fee(len(candidate.serialize()), fee_rate)
+                    if fee_needed <= fee_guess:
+                        tx_with_change = candidate
+                        break
+                    fee_guess = fee_needed
+
+                if tx_with_change is not None:
+                    tx = tx_with_change
+                    final_fee = fee_guess
+                    break
+
+                fee_available = total - amount_liners
+                if fee_available >= fee_required_no and spend_index >= len(spendable):
+                    tx = tx_no
+                    final_fee = fee_available
+                    break
+
+                if spend_index >= len(spendable):
+                    raise ValueError("Insufficient funds")
+                entry = spendable[spend_index]
+                spend_index += 1
+                selected.append(entry)
+                total += int(entry.get("amount_liners") or coins_to_liners(entry["amount"]))
         try:
             self.mempool.accept_transaction(tx, peer_id="scheduled")
         except MempoolError as exc:
@@ -463,7 +666,7 @@ class WalletManager:
                 "txid": entry["txid"],
                 "vout": entry["vout"],
                 "address": entry["address"],
-                "amount": coins_to_liners(entry["amount"]),
+                "amount": int(entry.get("amount_liners") or coins_to_liners(entry["amount"])),
             }
             for entry in selected
         ]
@@ -476,7 +679,7 @@ class WalletManager:
             "raw_tx": raw_tx,
             "dest_address": dest_address,
             "amount_liners": amount_liners,
-            "fee_liners": fee,
+            "fee_liners": final_fee,
             "lock_time": lock_time,
             "cancelable": cancelable,
             "status": "pending",
@@ -497,7 +700,7 @@ class WalletManager:
             addresses=[dest_address],
             blockhash=None,
             height=None,
-            fee=fee,
+            fee=final_fee,
         )
         return self._serialize_schedule_entry(schedule_entry)
 
@@ -864,7 +1067,7 @@ class WalletManager:
             addr = entry.get("address")
             if not addr:
                 continue
-            totals[addr] = totals.get(addr, 0) + coins_to_liners(entry["amount"])
+            totals[addr] = totals.get(addr, 0) + int(entry.get("amount_liners") or coins_to_liners(entry["amount"]))
         result: list[dict[str, object]] = []
         for addr, meta in self.data.get("addresses", {}).items():
             liners = totals.get(addr, 0)
@@ -885,6 +1088,7 @@ class WalletManager:
         pubkey = crypto.generate_pubkey(priv_int, compressed=compressed)
         address = crypto.address_from_pubkey(pubkey)
         entry = {
+            "address": address,
             "index": None,
             "label": label or "",
             "created": time.time(),
@@ -910,6 +1114,38 @@ class WalletManager:
             return False
         return self._unlocked_seed is None
 
+    def _derive_address_for_seed(self, seed: bytes, index: int) -> str:
+        index_bytes = index.to_bytes(4, "big")
+        digest = hashlib.sha256(seed + index_bytes).digest()
+        priv = int.from_bytes(digest, "big") % (crypto.SECP_N - 1)
+        priv += 1
+        pub = crypto.generate_pubkey(priv)
+        return crypto.address_from_pubkey(pub)
+
+    def _seed_matches_wallet(self, seed: bytes) -> bool:
+        addresses = self.data.get("addresses", {})
+        if not isinstance(addresses, dict) or not addresses:
+            return True
+        best_index: int | None = None
+        best_address: str | None = None
+        for address, meta in addresses.items():
+            if not isinstance(address, str):
+                continue
+            if not isinstance(meta, dict):
+                continue
+            if bool(meta.get("watch_only")):
+                continue
+            index = meta.get("index")
+            if not isinstance(index, int):
+                continue
+            if best_index is None or index < best_index:
+                best_index = index
+                best_address = address
+        if best_index is None or best_address is None:
+            return True
+        derived = self._derive_address_for_seed(seed, best_index)
+        return derived == best_address
+
     def encrypt_wallet(self, passphrase: str) -> None:
         if self.is_encrypted():
             raise WalletError("Wallet already encrypted")
@@ -920,19 +1156,25 @@ class WalletManager:
             raise WalletError("Seed missing")
         seed = bytes.fromhex(seed_hex)
         salt = secrets.token_bytes(16)
-        key = _derive_key(passphrase, salt)
-        encrypted = _xor_bytes(seed, key)
+        enc_key, mac_key = _derive_keys(passphrase, salt)
+        encrypted = _xor_bytes(seed, _keystream(enc_key, b"seed"))
+        seed_mac = _hmac_sha256(mac_key, b"seed-v2:" + encrypted).hex()
         self.data["seed"] = None
         self.data["seed_encrypted"] = encrypted.hex()
+        self.data["seed_mac"] = seed_mac
         self.data["salt"] = salt.hex()
         self.data["encrypted"] = True
-        for entry in self.data.get("addresses", {}).values():
+        self.data["enc_version"] = 2
+        for address, entry in self.data.get("addresses", {}).items():
             priv_hex = entry.pop("privkey", None)
             if priv_hex:
-                cipher = _xor_bytes(bytes.fromhex(priv_hex), key)
+                entry["address"] = address
+                cipher = _xor_bytes(bytes.fromhex(priv_hex), _keystream(enc_key, b"privkey:" + address.encode("utf-8")))
                 entry["privkey_encrypted"] = cipher.hex()
+                entry["privkey_mac"] = _hmac_sha256(mac_key, b"privkey-v2:" + cipher).hex()
         self._unlocked_seed = None
         self._active_key = None
+        self._active_mac_key = None
         self._unlock_until = None
         self._save()
 
@@ -947,16 +1189,39 @@ class WalletManager:
             raise WalletError("Corrupted encrypted seed")
         salt = bytes.fromhex(salt_hex)
         encrypted = bytes.fromhex(encrypted_hex)
-        key = _derive_key(passphrase, salt)
-        seed = _xor_bytes(encrypted, key)
+        enc_key, mac_key = _derive_keys(passphrase, salt)
+        enc_version = int(self.data.get("enc_version") or 1)
+        seed_mac_hex = self.data.get("seed_mac")
+        if seed_mac_hex:
+            prefix = b"seed-v2:" if enc_version >= 2 else b"seed-v1:"
+            expected = _hmac_sha256(mac_key, prefix + encrypted).hex()
+            if not hmac.compare_digest(expected, str(seed_mac_hex)):
+                raise WalletError("Incorrect passphrase or corrupted wallet")
+        if enc_version >= 2:
+            seed = _xor_bytes(encrypted, _keystream(enc_key, b"seed"))
+        else:
+            seed = _xor_bytes(encrypted, enc_key)
+            if not self._seed_matches_wallet(seed):
+                raise WalletError("Incorrect passphrase or corrupted wallet")
+            if not seed_mac_hex:
+                self.data["seed_mac"] = _hmac_sha256(mac_key, b"seed-v1:" + encrypted).hex()
+                for _address, entry in self.data.get("addresses", {}).items():
+                    if not isinstance(entry, dict):
+                        continue
+                    enc = entry.get("privkey_encrypted")
+                    if isinstance(enc, str) and enc and not entry.get("privkey_mac"):
+                        entry["privkey_mac"] = _hmac_sha256(mac_key, b"privkey-v1:" + bytes.fromhex(enc)).hex()
+                self._save()
         self._unlocked_seed = seed
-        self._active_key = key
+        self._active_key = enc_key
+        self._active_mac_key = mac_key
         timeout = max(1, int(timeout))
         self._unlock_until = time.time() + timeout
 
     def lock_wallet(self) -> None:
         self._unlocked_seed = None
         self._active_key = None
+        self._active_mac_key = None
         self._unlock_until = None
 
     def tick(self) -> None:
@@ -982,8 +1247,17 @@ class WalletManager:
             if self.is_encrypted():
                 if not self._active_key:
                     raise WalletLockedError("Unlock wallet before importing seed")
-                encrypted = _xor_bytes(seed_bytes, self._active_key)
-                self.data["seed_encrypted"] = encrypted.hex()
+                enc_version = int(self.data.get("enc_version") or 1)
+                if enc_version >= 2:
+                    encrypted = _xor_bytes(seed_bytes, _keystream(self._active_key, b"seed"))
+                    self.data["seed_encrypted"] = encrypted.hex()
+                    if self._active_mac_key:
+                        self.data["seed_mac"] = _hmac_sha256(self._active_mac_key, b"seed-v2:" + encrypted).hex()
+                else:
+                    encrypted = _xor_bytes(seed_bytes, self._active_key)
+                    self.data["seed_encrypted"] = encrypted.hex()
+                    if self._active_mac_key:
+                        self.data["seed_mac"] = _hmac_sha256(self._active_mac_key, b"seed-v1:" + encrypted).hex()
             else:
                 self.data["seed"] = seed_hex
             if wipe_existing:

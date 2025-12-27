@@ -28,12 +28,20 @@ class MenuMixin:
         self._menu_idx_new_addr = wm.index("end")
 
         wm.add_separator()
-        wm.add_command(label="Dump Wallet...", command=self._handle_dump_wallet)
+        wm.add_command(label="Export Wallet File...", command=self._handle_dump_wallet)
         self._menu_idx_dump = wm.index("end")
 
-        wm.add_command(label="Import Wallet...", command=self._handle_import_wallet)
+        wm.add_command(label="Import Wallet File...", command=self._handle_import_wallet)
         self._menu_idx_import_wallet = wm.index("end")
 
+        wm.add_separator()
+        wm.add_command(label="Show Seed...", command=self._handle_show_seed)
+        self._menu_idx_show_seed = wm.index("end")
+
+        wm.add_command(label="Import Seed...", command=self._handle_import_seed)
+        self._menu_idx_import_seed = wm.index("end")
+
+        wm.add_separator()
         wm.add_command(label="Encrypt Wallet...", command=self._handle_encrypt_wallet)
         self._menu_idx_encrypt = wm.index("end")
 
@@ -61,6 +69,8 @@ class MenuMixin:
         for idx in (
             self._menu_idx_new_addr,
             self._menu_idx_dump,
+            self._menu_idx_show_seed,
+            self._menu_idx_import_seed,
             self._menu_idx_import_wallet,
             self._menu_idx_import_privkey,
             self._menu_idx_rescan,
@@ -76,6 +86,11 @@ class MenuMixin:
         addr = self.send_from_var.get().strip()
         balance = self._lookup_balance(addr)
         self.send_from_balance_var.set(f"Balance: {balance:.8f} BLINE")
+
+    def _update_schedule_from_balance(self, *_: object) -> None:
+        addr = self.schedule_from_var.get().strip()
+        balance = self._lookup_balance(addr)
+        self.schedule_from_balance_var.set(f"Balance: {balance:.8f} BLINE")
 
     def _lookup_balance(self, address: str) -> float:
         for record in self.address_records:

@@ -7,18 +7,18 @@ Baseline is a minimalist Bitcoin-style payments chain — but it ships with the 
 - **Turnkey mining + pool ops**: built-in Stratum v1 server (vardiff, sessions) + automatic payout tracking/ledger + payout tx builder (run a community pool without extra daemons).
 - **Scheduled Send capability**: Reserve future payments with cancelable and non-cancelable options - just like scheduling a transaction on traditional finance platforms.
 - **Explorer-ready out of the box**: native address index (UTXOs + tx history) exposed via RPC (getaddressutxos, getaddressbalance, getaddresstxids) — no external indexer needed.
-- **Fast confirmations, stable cadence**: 20s blocks + short retarget window designed to stay responsive without wild oscillation.
+- **Fast confirmations, stable cadence**: 20s blocks + per-block LWMA difficulty retarget designed to stay responsive without wild oscillation.
 - **Predictable emission (no drama)**: Bitcoin-style JSON-RPC surface for easier exchange/wallet/explorer integration, plus a built-in status panel.
 - **Minimal by design**: Python 3.12+, stdlib only, compact codebase, formal spec, strict linting + tests.
 
 ## Network Parameters
 
-- **Consensus**: SHA256d proof-of-work, 32-byte block hashes, 0x207fffff genesis target (roughly Bitcoin regtest difficulty, the difficulty retarget is immediate and hardened).
-- **Timing**: 20-second block target, retarget every 20 blocks (≈6.7 minutes) with a tighter 2× clamp for the first 10,000 blocks and 4× thereafter to stay responsive without oscillations.
+- **Consensus**: SHA256d proof-of-work, 32-byte block hashes, PoW limit 0x1e08637b (used for genesis), height 1 starts at 0x1d0225c1, then difficulty adjusts per-block via LWMA.
+- **Timing**: 20-second block target, per-block LWMA difficulty retarget using a 60-block window to stay responsive without oscillations.
 - **Difficulty** is the target hash threshold miners must beat; lower targets = harder work. Baseline encodes this exactly like Bitcoin in the header `bits` field.
-Every **20 blocks** (~6.7 minutes) the node compares the actual elapsed time with the expected `20 * 20s = 400s`. If blocks arrive too fast, the target tightens; too slow and it loosens.
-Adjustments are clamped to 2× faster/slower for the first 10,000 blocks, then 4× after the warm-up so that hash-rate spikes do not cause whiplash while the 20-second cadence stays smooth.
-- **Premine**: No premine. **1%** block subsidy dev fund (on-chain).
+Every block, the node recomputes a new target from recent block times using a linearly weighted moving average (LWMA). If blocks arrive too fast, the target tightens; too slow and it loosens.
+- **Premine**: No premine. Mainnet genesis coinbase pays **0** (verified via hardcoded genesis).
+- **Dev fund**: **1%** of the block *subsidy* (not fees) is paid in the coinbase to the consensus-critical foundation address.
 - **Rewards**: 50 BLINE base subsidy decays smoothly every block using an exponential curve with a 4,158,884-block half-life (~2.64 years). Transaction fees are added to the subsidy.
 - **Coinbase maturity**: 20 blocks before mined funds can be spent.
 - **Fees**: Minimum relay fee is 5,000 liners per kB; non-standard scripts are rejected, so typical P2PKH transactions should pay at least ~0.0000125 BLINE for a 250-byte tx.
@@ -61,7 +61,7 @@ No extra packages are required; the stdlib is enough.
   A starter `config.json` lives at the repo root with reasonable defaults. Before launching your node, make these important changes:
 
 - Pick RPC creds: Modify `rpc.username` and `rpc.password` in `config.json` and keep them secret.
-- Set peers: In `network.seeds`, add reachable Baseline nodes as a list to help your node find peers or **leave it empty** to start a private testnet. The current starter config.json has a seed node for the public Baseline testnet.
+- Set peers: In `network.seeds`, add reachable Baseline nodes as a list to help your node find peers or **leave it empty** to start a private testnet. The current starter config.json has a seed node for the public Baseline mainnet.
 
 ### 4. Launch the node
    ```bash
@@ -106,20 +106,29 @@ baseline-wallet --config config.json --help
 1. Launch the node with your configured payout key. The Stratum listener will come up automatically whenever that key is present.
 2. Point miners:
    ```bash
-   bfgminer -o stratum+tcp://127.0.0.1:3333 -u YOURRECEIVERADDRESS.worker1 -p x --set-device bitcoin:clock=500
+   # Local Solo Miner
+   bfgminer -o stratum+tcp://127.0.0.1:3333 -u YOURRECEIVERADDRESS.worker1 -p x
+
+   # Public pool (replace pool.example.org, open TCP/3333, ensure config.json has stratum.host = 0.0.0.0)
+   bfgminer -o stratum+tcp://pool.example.org:3333 -u YOURRECEIVERADDRESS.worker1 -p x
    ```
    Workers are tracked by username for payouts; shares accrue until coinbase rewards mature (20 blocks), then the payout tracker crafts and broadcasts the payment transaction..
 
 - Yes, you can already have community mining pools! Just point miners with proper addresses at a Baseline node with Stratum enabled and the payouts will flow automatically.
+
+**Pool operator knobs (config.json):**
+- `mining.pool_fee_percent`: percent taken from mined subsidy before distributing to workers.
+- `mining.min_payout`: minimum worker balance (in liners) before including them in a payout tx.
+- `stratum.*`: vardiff/session tuning; see `docs/mining-and-payouts.md` and monitor `data_dir/payouts/ledger.json`.
 
 ## How It Works (High-Level)
 
 - **Consensus**: Full UTXO validation with deterministic difficulty transitions, script execution, and chain selection stored in SQLite. Undo data enables safe reorgs and fast rescan.
 - **P2P**: Header-first initial block download with watchdog retries, strict message framing (length + checksum), peer scoring/banning, addr/inv relay, and persisted address books.
 - **Persistence**: Append-only block files plus fsyncs; headers, UTXOs, and metadata are transactional via SQLite with periodic sanity checks.
-- **Consensus safeguards**: Subsidy, maturity, and retarget parameters are hard-locked; nodes refuse to start if `config.json` deviates (unless explicitly overriding for testnets), preventing accidental forks.
+- **Consensus safeguards**: Subsidy, maturity, and difficulty parameters are hard-locked; nodes refuse to start if `config.json` deviates (unless explicitly overriding for testnets), preventing accidental forks.
 - **Address index**: SQLite maintains per-address UTXOs and history so explorers/wallets can query `getaddress*` RPCs without extra indexers.
-- **Wallet security**: PBKDF2-HMAC-SHA256 creates an XOR pad for the seed. Locked wallets never hold plaintext on disk; unlock state stays only in RAM and expires automatically.
+- **Wallet security**: PBKDF2-HMAC-SHA256 passphrase encryption with integrity checks. Locked wallets never hold plaintext on disk; unlock state stays only in RAM and expires automatically.
 - **JSON-RPC & Stratum**: Bitcoin-style error codes, request size limits, and Basic Auth keep RPC friendly for exchanges and explorers. Stratum tracks vardiff, session heartbeats, and bans misbehaving miners to avoid DoS.
 - **Upgrades**: `docs/governance.md` outlines the Baseline Improvement Proposal process and version-bit activation flow; no upgrades are active by default.
 

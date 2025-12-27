@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from typing import Any
 
 from ..client import RPCClient
 from ..helpers import fetch_wallet_info
 from .styles import human_bytes, shorten
+
+log = logging.getLogger(__name__)
 
 
 class RPCMixin:
@@ -33,17 +36,27 @@ class RPCMixin:
         self._update_fee_estimate()
 
     def _refresh_from_combo(self) -> None:
-        if not self.from_combo:
-            return
         spendable = [record["address"] for record in self.address_records if record.get("spendable", True)]
-        current = self.send_from_var.get()
-        self.from_combo["values"] = spendable
-        if spendable:
-            if current not in spendable:
-                self.send_from_var.set(spendable[0])
-        else:
-            self.send_from_var.set("")
-        self._update_from_balance()
+        if self.from_combo:
+            current = self.send_from_var.get()
+            self.from_combo["values"] = spendable
+            if spendable:
+                if current not in spendable:
+                    self.send_from_var.set(spendable[0])
+            else:
+                self.send_from_var.set("")
+            self._update_from_balance()
+
+        schedule_combo = getattr(self, "schedule_from_combo", None)
+        if schedule_combo:
+            current = self.schedule_from_var.get()
+            schedule_combo["values"] = spendable
+            if spendable:
+                if current not in spendable:
+                    self.schedule_from_var.set(spendable[0])
+            else:
+                self.schedule_from_var.set("")
+            self._update_schedule_from_balance()
 
     def _refresh_status(self) -> None:
         try:
@@ -71,7 +84,10 @@ class RPCMixin:
             self.chain_difficulty_var.set("n/a")
             self.chain_hash_var.set("n/a")
             self.chain_time_var.set("n/a")
+            self.chain_genesis_var.set("n/a")
+            self.wallet_height_var.set("n/a")
             self.peer_count_var.set("0 peers")
+            self.network_name_var.set("n/a")
             self.network_version_var.set("n/a")
             self.network_fee_var.set("n/a")
             self.mempool_usage_var.set("0 / 0 B")
@@ -84,14 +100,14 @@ class RPCMixin:
         self.balance_var.set(f"{wallet_balance:,.8f}")
         processed_height = info.get("processed_height", info.get("height", "0"))
         if isinstance(processed_height, int):
+            self.wallet_height_var.set(f"{processed_height:,}")
             self.height_var.set(f"{processed_height:,}")
         else:
+            self.wallet_height_var.set(str(processed_height))
             self.height_var.set(str(processed_height))
+        wallet_height_int = int(processed_height) if isinstance(processed_height, int) else 0
 
-        if not info.get("encrypted"):
-            self._update_wallet_tip("Wallet is not encrypted. Use Wallet → Encrypt Wallet to protect it.")
-        else:
-            self._update_wallet_tip(None)
+        self._update_wallet_tip(None)
 
         mempool_info = self._get_mempool_info(client)
         if mempool_info:
@@ -110,10 +126,12 @@ class RPCMixin:
             self.mempool_usage_var.set("n/a")
             self.mempool_minfee_var.set("n/a")
 
+        chain_height_int = 0
         if chain_info:
             blocks = chain_info.get("blocks")
             if isinstance(blocks, int):
                 self.height_var.set(f"{blocks:,}")
+                chain_height_int = blocks
             progress = chain_info.get("verificationprogress")
             if isinstance(progress, (int, float)):
                 self.chain_progress_var.set(f"{progress * 100:.2f}% synced")
@@ -130,11 +148,27 @@ class RPCMixin:
             else:
                 self.chain_time_var.set("n/a")
             self.chain_hash_var.set(shorten(chain_info.get("bestblockhash")))
+            try:
+                genesis = client.call("getblockhash", [0])
+            except Exception:
+                genesis = None
+            self.chain_genesis_var.set(shorten(genesis))
+            self.network_name_var.set("unknown")
+            if isinstance(genesis, str):
+                try:
+                    from baseline.core.chain import MAINNET_GENESIS_HASH
+
+                    if genesis == MAINNET_GENESIS_HASH:
+                        self.network_name_var.set("mainnet")
+                except Exception as exc:  # noqa: BLE001
+                    log.debug("Failed to compare genesis hash for network name: %s", exc)
         else:
             self.chain_progress_var.set("n/a")
             self.chain_difficulty_var.set("n/a")
             self.chain_time_var.set("n/a")
             self.chain_hash_var.set("n/a")
+            self.chain_genesis_var.set("n/a")
+            self.network_name_var.set("n/a")
 
         if network_info:
             peers = network_info.get("connections", 0)
@@ -153,12 +187,27 @@ class RPCMixin:
             self.network_version_var.set("n/a")
             self.network_fee_var.set("n/a")
 
-        if info.get("address_count", 0) == 0:
-            if not self._setup_skipped:
-                self._launch_initial_setup(info)
-        else:
-            self._setup_skipped = False
-            self._close_setup_window()
+        tips: list[str] = []
+        if chain_info and bool(chain_info.get("initialblockdownload")):
+            headers_height = chain_info.get("headers", 0)
+            headers_height_int = headers_height if isinstance(headers_height, int) else 0
+            peers_hint = 0
+            if network_info:
+                peers_raw = network_info.get("connections", 0)
+                peers_hint = peers_raw if isinstance(peers_raw, int) else 0
+            if chain_height_int == 0 and headers_height_int == 0 and peers_hint == 0:
+                tips.append("Node is at genesis and has no peers yet (no headers downloaded).")
+            elif peers_hint == 0:
+                tips.append("Node has no peers; it cannot sync beyond local blocks.")
+            else:
+                tips.append("Initial block download in progress: balances may be incomplete.")
+        if chain_height_int and wallet_height_int < chain_height_int:
+            tips.append(f"Wallet is syncing: {wallet_height_int:,} / {chain_height_int:,}.")
+        if info.get("syncing"):
+            tips.append("Wallet background sync is running.")
+        if not info.get("encrypted"):
+            tips.append("Wallet is not encrypted. Use Wallet → Encrypt Wallet to protect it.")
+        self._update_wallet_tip(" ".join(tips) if tips else None)
 
     def _refresh_addresses(self) -> None:
         if not self.address_tree:
@@ -226,7 +275,7 @@ class RPCMixin:
         self.schedule_row_map.clear()
         self.schedule_records = []
         if not self.rpc_online:
-            tree.insert("", "end", values=("RPC offline", "", "", "", "", ""), tags=("offline",))
+            tree.insert("", "end", values=("RPC offline", "", "", "", "", "", ""), tags=("offline",))
             self._update_schedule_cancel_button_state()
             return
         try:
@@ -236,7 +285,7 @@ class RPCMixin:
             tree.insert(
                 "",
                 "end",
-                values=("unable to load schedules", str(exc), "", "", "", ""),
+                values=("unable to load schedules", str(exc), "", "", "", "", ""),
                 tags=("offline",),
             )
             self._update_schedule_cancel_button_state()
@@ -254,6 +303,7 @@ class RPCMixin:
                     shorten(schedule_id, 14),
                     entry.get("dest_address", ""),
                     f"{entry.get('amount', 0.0):.8f}",
+                    f"{entry.get('fee', 0.0):.8f}",
                     self._format_schedule_time(entry.get("lock_time")),
                     entry.get("status", ""),
                     "✓" if entry.get("cancelable") else "✕",
@@ -313,6 +363,12 @@ class RPCMixin:
                 fee_str = f"{feerate:.8f}"
                 self.send_fee_var.set(fee_str)
                 self._auto_fee_value = fee_str
+                schedule_current = self.schedule_fee_var.get().strip()
+                if (not schedule_current) or (
+                    self._auto_schedule_fee_value and schedule_current == self._auto_schedule_fee_value
+                ):
+                    self.schedule_fee_var.set(fee_str)
+                    self._auto_schedule_fee_value = fee_str
         except Exception as exc:
             print(f"[wallet-gui] Unable to estimate fee: {exc}")
 

@@ -38,18 +38,32 @@ This document captures the normative behavior implemented by the current Baselin
 
 - Header fields: `version (int32)`, `prev_hash (32 B)`, `merkle_root (32 B)`, `timestamp (uint32)`, `bits (uint32 compact)`, `nonce (uint32)`.
 - Block weight limit: `4_000_000` (no witness, so weight ≈ serialized size * 4 ⇒ 1 MB max).
+- Mainnet genesis (consensus-critical):
+  - `timestamp`: `1766880000` (2025-12-28T00:00:00Z)
+  - `bits`: `0x1e08637b` (PoW limit / easiest allowed)
+  - `nonce`: `3972321`
+  - `merkle_root`: `1c633c7361f56181e314720e41068f7ce4dab2ddd2393e33e6ecc22f8ff3458e`
+  - `hash`: `0296e442a941422e74cf874cae8ea4c0bf3d654fb819c1a37891e853d6060000`
+- Mainnet starting difficulty (height 1): `initial_bits = 0x1d0225c1`.
 - Timestamp constraints:
   - Must be strictly greater than the median of the previous 11 blocks (`median_time_past`).
 - Must not exceed `synchronized_time + 3 minutes`.
 - Proof-of-work: header hash interpreted as uint256 must be ≤ target encoded by `bits`.
-- Difficulty adjusts every `retarget_interval` (=20) blocks relative to the most recent ancestor 19 blocks prior:
+- Difficulty adjusts every block using a linearly weighted moving average (LWMA) window over prior blocks:
 
 ```
-actual_span = parent.timestamp - ancestor.timestamp
-target_span = block_interval_target * retarget_interval = 20 s * 20 = 400 s
-If height ≤ 10,000, actual_span is clamped to [target_span/2, target_span*2]; afterwards it clamps to [target_span/4, target_span*4]
-new_target = prev_target * actual_span / target_span
-new_target ≤ max_target (set by genesis bits 0x207fffff)
+Given:
+  T = block_interval_target (20 seconds)
+  N = LWMA window (60 blocks)
+
+For each new block at height h:
+  window = min(N, h-1)
+  use the last (window+1) timestamps ending at the parent
+  solvetime_i = clamp(parent_i.timestamp - parent_{i-1}.timestamp, 1, 6*T)
+  LWMA = sum_{i=1..window}(solvetime_i * i) / (window*(window+1)/2)
+  avg_target = average(target(bits_i)) over the last `window` blocks
+  new_target = avg_target * LWMA / T
+  new_target ≤ max_target (set by genesis bits 0x1e08637b)
 ```
 
 - Coinbase reward limit: sum of coinbase outputs ≤ subsidy(height) + total fees from non-coinbase txs.
@@ -60,13 +74,15 @@ new_target ≤ max_target (set by genesis bits 0x207fffff)
 ## 5. Proof-of-Work Parameters
 
 - Algorithm: SHA256d, same as Bitcoin.
-- Initial target: 0x207fffff (regtest-like).
+- PoW limit (easiest): 0x1e08637b.
+- Start difficulty (height 1): 0x1d0225c1.
 - Block interval target: 20 seconds (configurable but default consensus).
 - Maximum future drift accepted: +3 minutes relative to synchronized node time.
 
 ## 6. Network & Messaging
 
 - Default ports: P2P 9333, RPC 8832, Stratum 3333.
+- Mainnet network identifier (handshake `version.network`): `baseline-mainnet-2025-12-28`.
 - Handshake: custom header-based protocol defined in `baseline/net/protocol.py` with length + checksum framing.
 - Peer discovery: manual seeds + DNS seeds filtered to public IP ranges. Address gossip limited to 32 entries per message.
 - Connection limits: default 64 peers (8 outbound target). Idle peers dropped after 90 seconds of silence.
@@ -91,7 +107,7 @@ new_target ≤ max_target (set by genesis bits 0x207fffff)
 
 ## 8. Wallet, Address Index & RPC
 
-- Deterministic HD wallet with PBKDF2 + XOR encryption for seeds.
+- Deterministic HD wallet with PBKDF2-encrypted seeds plus integrity checks.
 - Built-in address index tracks per-address UTXOs and transaction history so RPC methods such as `getaddressutxos`, `getaddressbalance`, and `getaddresstxids` require no external indexer.
 - RPC surface mirrors Bitcoin Core for core methods (`getblockchaininfo`, `sendtoaddress`, etc.) plus Baseline-specific endpoints like `gettimesyncinfo`.
 - Scheduled Send (wallet-level): clients can pre-sign a transaction with a future lock_time and track it in wallet state; cancelable schedules can be refunded before the lock_time via a refund transaction.
@@ -114,7 +130,7 @@ new_target ≤ max_target (set by genesis bits 0x207fffff)
 
 ## 11. Deviations from Bitcoin
 
-- Faster block target (20 s) and short retarget window (20 blocks) with a 2× clamp for the first 10,000 blocks, then 4× afterwards.
+- Faster block target (20 s) with per-block LWMA difficulty retarget (60-block window).
 - Enforced standardness: only P2PKH outputs are acceptable to mempool/miners.
 - Append-only block store implemented in `baseline/storage/blockstore.py`.
 - No SegWit, no scripts beyond legacy P2PKH, no compact blocks, no BIP37, etc.

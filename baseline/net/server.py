@@ -26,6 +26,8 @@ from .discovery import PeerDiscovery
 from .peer import Peer
 from .security import P2PSecurity
 
+MAINNET_NETWORK_ID = "baseline-mainnet-2025-12-28"
+
 
 class P2PServer:
     def __init__(self, config: NodeConfig, chain: Chain, mempool: Mempool):
@@ -38,7 +40,11 @@ class P2PServer:
         self.max_peers = config.network.max_peers
         self.target_outbound = config.network.target_outbound
         self.services = 1
-        self.network_id = "simple-main"
+        self.network_id = (
+            MAINNET_NETWORK_ID
+            if not self.config.mining.allow_consensus_overrides
+            else f"baseline-dev-{self.chain.genesis_hash[:8]}"
+        )
         self.handshake_timeout = config.network.handshake_timeout
         self.idle_timeout = config.network.idle_timeout
 

@@ -131,7 +131,11 @@ class MiningConfig:
     coinbase_maturity: int = 20
     block_interval_target: int = 20  # seconds
     retarget_interval: int = 20  # blocks
-    initial_bits: int = 0x207fffff
+    # PoW limit (easiest allowed). This is also used for the genesis block bits field.
+    pow_limit_bits: int = 0x1E08637B
+    # Starting difficulty for height 1, before LWMA has a meaningful window.
+    # Chosen for a conservative launch difficulty (height 1).
+    initial_bits: int = 0x1D0225C1
     subsidy_halving_interval: int = 4_158_884
     pool_fee_percent: float = 1.0
     pool_private_key: str | None = None
@@ -144,6 +148,10 @@ class MiningConfig:
             raise ConfigError("coinbase_maturity must be > 0")
         if self.block_interval_target <= 0:
             raise ConfigError("block_interval_target must be > 0")
+        if self.pow_limit_bits <= 0:
+            raise ConfigError("pow_limit_bits must be > 0")
+        if self.initial_bits <= 0:
+            raise ConfigError("initial_bits must be > 0")
         if not (0 < self.pool_fee_percent < 100):
             raise ConfigError("pool_fee_percent must be between 0 and 100")
         if self.min_payout <= 0:
