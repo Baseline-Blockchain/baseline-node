@@ -1016,6 +1016,114 @@ class StateDB:
         conn = self._reader_conn()
         row = conn.execute("SELECT 1 FROM headers WHERE height > 0 LIMIT 1").fetchone()
         return row is not None
+
+    def has_main_chain_gap(self) -> bool:
+        """Detect if main-chain headers are missing for any height up to the max."""
+        self._ensure_open()
+        conn = self._reader_conn()
+        row = conn.execute(
+            "SELECT MAX(height) AS max_height, COUNT(*) AS cnt FROM headers WHERE status=0"
+        ).fetchone()
+        if row is None or row["max_height"] is None:
+            return False
+        max_height = int(row["max_height"])
+        count = int(row["cnt"])
+        return count != max_height + 1
+
+    def rebuild_main_headers_from_blocks(self, block_store) -> int:
+        """
+        Rebuild missing main-chain headers using block_metrics + block_store.
+
+        Returns the number of headers inserted.
+        """
+        from ..core import difficulty  # imported here to avoid cycles
+        from ..core.block import Block
+
+        self._ensure_open()
+        repaired = 0
+        with self.transaction() as conn:
+            row = conn.execute("SELECT MAX(height) AS max_height FROM block_metrics").fetchone()
+            max_height = int(row["max_height"] or 0)
+            for height in range(0, max_height + 1):
+                existing = conn.execute(
+                    "SELECT 1 FROM headers WHERE height=? AND status=0 LIMIT 1", (height,)
+                ).fetchone()
+                if existing:
+                    continue
+                metrics = conn.execute(
+                    "SELECT hash FROM block_metrics WHERE height=? LIMIT 1", (height,)
+                ).fetchone()
+                if not metrics:
+                    break
+                block_hash = metrics["hash"]
+                raw = block_store.get_block(block_hash)
+                block = Block.parse(raw)
+                if block.block_hash() != block_hash:
+                    continue
+                if height == 0:
+                    prev_hash = None
+                    chainwork_int = difficulty.block_work(block.header.bits)
+                else:
+                    parent = conn.execute(
+                        "SELECT chainwork, height FROM headers WHERE hash=? AND status=0",
+                        (block.header.prev_hash,),
+                    ).fetchone()
+                    if not parent or int(parent["height"]) != height - 1:
+                        break
+                    chainwork_int = int(parent["chainwork"]) + difficulty.block_work(block.header.bits)
+                    prev_hash = block.header.prev_hash
+                conn.execute(
+                    """
+                    INSERT INTO headers(hash, prev_hash, height, bits, nonce, timestamp, merkle_root, chainwork, version, status)
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                    ON CONFLICT(hash) DO UPDATE SET
+                        prev_hash=excluded.prev_hash,
+                        height=excluded.height,
+                        bits=excluded.bits,
+                        nonce=excluded.nonce,
+                        timestamp=excluded.timestamp,
+                        merkle_root=excluded.merkle_root,
+                        chainwork=excluded.chainwork,
+                        version=excluded.version,
+                        status=excluded.status
+                    """,
+                    (
+                        block_hash,
+                        prev_hash,
+                        height,
+                        block.header.bits,
+                        block.header.nonce,
+                        block.header.timestamp,
+                        block.header.merkle_root,
+                        str(chainwork_int),
+                        block.header.version,
+                    ),
+                )
+                repaired += 1
+        return repaired
+
+    def get_highest_main_header(self) -> HeaderData | None:
+        """Return the highest main-chain header (status=0)."""
+        self._ensure_open()
+        conn = self._reader_conn()
+        row = conn.execute(
+            "SELECT hash, prev_hash, height, bits, nonce, timestamp, merkle_root, chainwork, version, status "
+            "FROM headers WHERE status=0 ORDER BY height DESC LIMIT 1"
+        ).fetchone()
+        if not row:
+            return None
+        return HeaderData(
+            hash=row["hash"],
+            prev_hash=row["prev_hash"],
+            height=row["height"],
+            bits=row["bits"],
+            nonce=row["nonce"],
+            timestamp=row["timestamp"],
+            merkle_root=row["merkle_root"],
+            chainwork=row["chainwork"],
+            version=row["version"],
+            status=row["status"],
+        )
     def _enqueue_write(self, fn: Callable[[sqlite3.Connection], Any]) -> None:
         if self._closed:
             raise StateDBError("StateDB connection is closed")

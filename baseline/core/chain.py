@@ -143,6 +143,19 @@ class Chain:
                 self.state_db.reset_headers_to_genesis(self.genesis_hash)
             best = self.state_db.get_best_tip()
 
+        # Heal missing main-chain headers from the block store if gaps are detected.
+        if self.state_db.has_main_chain_gap():
+            repaired = self.state_db.rebuild_main_headers_from_blocks(self.block_store)
+            if repaired:
+                self.log.warning("Rebuilt %s missing main-chain headers from block store", repaired)
+            # Refresh best tip metadata if the rebuilt headers extend it.
+            highest = self.state_db.get_highest_main_header()
+            if highest and (best is None or highest.height > best[1]):
+                self.state_db.set_best_tip(highest.hash, highest.height)
+                self.state_db.set_meta("best_work", highest.chainwork)
+                self.state_db.upsert_chain_tip(highest.hash, highest.height, highest.chainwork)
+                best = self.state_db.get_best_tip()
+
         self.log.info("Current block height %s", self.state_db.get_best_tip()[1] if self.state_db.get_best_tip() else 0)
 
     def _build_genesis_block(self) -> Block:
