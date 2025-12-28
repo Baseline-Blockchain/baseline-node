@@ -509,29 +509,36 @@ class Chain:
         if window < 2:
             return parent_header.bits
 
-        end_height = parent_header.height
-        start_height = max(0, end_height - window)
-        headers = self.state_db.get_headers_range(start_height, end_height)
-        if len(headers) < (end_height - start_height + 1):
-            return parent_header.bits
-        if len(headers) < window + 1:
+        # Walk back along the ancestor path (not by height index) to gather the last window+1 headers.
+        path: list[HeaderData] = []
+        current = parent_header
+        for _ in range(window + 1):
+            if current is None:
+                break
+            path.append(current)
+            if current.prev_hash is None:
+                break
+            current = self.state_db.get_header(current.prev_hash)
+
+        if len(path) < window + 1:
             return parent_header.bits
 
+        # Oldest -> newest
+        path.reverse()
+        actual_window = len(path) - 1
         sum_targets = 0
         sum_weighted_solvetime = 0
         max_solvetime = LWMA_SOLVETIME_CLAMP_FACTOR * target_spacing
-        actual_window = len(headers) - 1
         weight_sum = actual_window * (actual_window + 1) // 2
 
         for i in range(1, actual_window + 1):
-            solvetime = headers[i].timestamp - headers[i - 1].timestamp
+            prev = path[i - 1]
+            curr = path[i]
+            solvetime = curr.timestamp - prev.timestamp
             solvetime = max(1, min(max_solvetime, solvetime))
             sum_weighted_solvetime += solvetime * i
-            sum_targets += difficulty.compact_to_target(headers[i].bits)
+            sum_targets += difficulty.compact_to_target(curr.bits)
 
-        # next_target = avg_target * (lwma_solvetime / target_spacing)
-        # where lwma_solvetime = sum_weighted_solvetime / weight_sum
-        # => next_target = sum_targets * sum_weighted_solvetime / (actual_window * weight_sum * target_spacing)
         denom = actual_window * weight_sum * target_spacing
         next_target = (sum_targets * sum_weighted_solvetime) // max(1, denom)
         next_target = max(1, min(self.max_target, next_target))
