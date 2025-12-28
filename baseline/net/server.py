@@ -444,6 +444,13 @@ class P2PServer:
             return
         try:
             result = await asyncio.to_thread(self.chain.add_block, block, block_bytes)
+        except BlockStoreError as exc:
+            # Parent block data missing in the local store; request it again.
+            self.log.warning("Block store miss for %s from %s: %s", block.block_hash(), peer.peer_id, exc)
+            # Ask for the missing parent to heal the gap.
+            missing = [{"type": "block", "hash": block.header.prev_hash}]
+            await peer.send_message(protocol.getdata_payload(missing))
+            return
         except ChainError as exc:
             self.log.debug("Block rejected: %s", exc)
             return

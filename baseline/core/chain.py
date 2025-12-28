@@ -328,6 +328,8 @@ class Chain:
         parent_header = self.state_db.get_header(prev_hash)
         if parent_header is None:
             raise ChainError("Unknown parent block")
+        if not self.block_store.has_block(prev_hash):
+            raise ChainError("Parent block data missing")
         height = parent_header.height + 1
         view = self._build_view_for_parent(prev_hash)
         validation = self._validate_block(block, height, parent_header, view)
