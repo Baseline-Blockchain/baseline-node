@@ -33,8 +33,8 @@ MAX_FUTURE_BLOCK_TIME = 3 * 60  # 3 minutes
 # Mainnet genesis (2025-12-28T00:00:00Z). This is consensus-critical.
 MAINNET_GENESIS_TIMESTAMP = 1_766_880_000
 MAINNET_GENESIS_MERKLE_ROOT = "1c633c7361f56181e314720e41068f7ce4dab2ddd2393e33e6ecc22f8ff3458e"
-MAINNET_GENESIS_NONCE = 3_972_321
-MAINNET_GENESIS_HASH = "0296e442a941422e74cf874cae8ea4c0bf3d654fb819c1a37891e853d6060000"
+MAINNET_GENESIS_NONCE = 2
+MAINNET_GENESIS_HASH = "8bce8b135b38c83a93d0366dee26c45f051bf0bcebbc4f4ad4a4067070939907"
 
 # Private devnets (allow_consensus_overrides=true) use a deterministic genesis timestamp
 # that stays comfortably in the past for test suites.
@@ -52,9 +52,9 @@ CONSENSUS_DEFAULTS = {
     "coinbase_maturity": 20,
     "block_interval_target": 20,
     # "PoW limit" (easiest difficulty) used as the maximum target in LWMA and in the genesis bits field.
-    "pow_limit_bits": 0x1E08637B,
+    "pow_limit_bits": 0x207FFFFF,
     # Launch difficulty (height 1), before LWMA has a meaningful window.
-    "initial_bits": 0x1D0225C1,
+    "initial_bits": 0x207FFFFF,
     "subsidy_halving_interval": 4_158_884,
     "foundation_address": "NMUrmCNAH5VUrjLSvM4ULu7eNtD1i8qcyK",
 }

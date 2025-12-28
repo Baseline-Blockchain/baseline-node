@@ -132,10 +132,10 @@ class MiningConfig:
     block_interval_target: int = 20  # seconds
     retarget_interval: int = 20  # blocks
     # PoW limit (easiest allowed). This is also used for the genesis block bits field.
-    pow_limit_bits: int = 0x1E08637B
+    pow_limit_bits: int = 0x207FFFFF
     # Starting difficulty for height 1, before LWMA has a meaningful window.
     # Chosen for a conservative launch difficulty (height 1).
-    initial_bits: int = 0x1D0225C1
+    initial_bits: int = 0x207FFFFF
     subsidy_halving_interval: int = 4_158_884
     pool_fee_percent: float = 1.0
     pool_private_key: str | None = None

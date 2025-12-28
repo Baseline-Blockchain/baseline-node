@@ -13,7 +13,7 @@ Baseline is a minimalist Bitcoin-style payments chain — but it ships with the 
 
 ## Network Parameters
 
-- **Consensus**: SHA256d proof-of-work, 32-byte block hashes, PoW limit 0x1e08637b (used for genesis), height 1 starts at 0x1d0225c1, then difficulty adjusts per-block via LWMA.
+- **Consensus**: SHA256d proof-of-work, 32-byte block hashes, PoW limit 0x207fffff (used for genesis and height 1), then difficulty adjusts per-block via LWMA.
 - **Timing**: 20-second block target, per-block LWMA difficulty retarget using a 60-block window to stay responsive without oscillations.
 - **Difficulty** is the target hash threshold miners must beat; lower targets = harder work. Baseline encodes this exactly like Bitcoin in the header `bits` field.
 Every block, the node recomputes a new target from recent block times using a linearly weighted moving average (LWMA). If blocks arrive too fast, the target tightens; too slow and it loosens.

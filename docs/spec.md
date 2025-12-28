@@ -40,11 +40,11 @@ This document captures the normative behavior implemented by the current Baselin
 - Block weight limit: `4_000_000` (no witness, so weight ≈ serialized size * 4 ⇒ 1 MB max).
 - Mainnet genesis (consensus-critical):
   - `timestamp`: `1766880000` (2025-12-28T00:00:00Z)
-  - `bits`: `0x1e08637b` (PoW limit / easiest allowed)
-  - `nonce`: `3972321`
+  - `bits`: `0x207fffff` (PoW limit / easiest allowed)
+  - `nonce`: `2`
   - `merkle_root`: `1c633c7361f56181e314720e41068f7ce4dab2ddd2393e33e6ecc22f8ff3458e`
-  - `hash`: `0296e442a941422e74cf874cae8ea4c0bf3d654fb819c1a37891e853d6060000`
-- Mainnet starting difficulty (height 1): `initial_bits = 0x1d0225c1`.
+  - `hash`: `8bce8b135b38c83a93d0366dee26c45f051bf0bcebbc4f4ad4a4067070939907`
+- Mainnet starting difficulty (height 1): `initial_bits = 0x207fffff`.
 - Timestamp constraints:
   - Must be strictly greater than the median of the previous 11 blocks (`median_time_past`).
 - Must not exceed `synchronized_time + 3 minutes`.
@@ -63,7 +63,7 @@ For each new block at height h:
   LWMA = sum_{i=1..window}(solvetime_i * i) / (window*(window+1)/2)
   avg_target = average(target(bits_i)) over the last `window` blocks
   new_target = avg_target * LWMA / T
-  new_target ≤ max_target (set by genesis bits 0x1e08637b)
+  new_target ≤ max_target (set by genesis bits 0x207fffff)
 ```
 
 - Coinbase reward limit: sum of coinbase outputs ≤ subsidy(height) + total fees from non-coinbase txs.
@@ -74,8 +74,8 @@ For each new block at height h:
 ## 5. Proof-of-Work Parameters
 
 - Algorithm: SHA256d, same as Bitcoin.
-- PoW limit (easiest): 0x1e08637b.
-- Start difficulty (height 1): 0x1d0225c1.
+- PoW limit (easiest): 0x207fffff.
+- Start difficulty (height 1): 0x207fffff.
 - Block interval target: 20 seconds (configurable but default consensus).
 - Maximum future drift accepted: +3 minutes relative to synchronized node time.
 

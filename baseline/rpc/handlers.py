@@ -990,8 +990,10 @@ class RPCHandlers(WalletRPCMixin):
 
     def _difficulty_from_bits(self, bits: int) -> float:
         target = difficulty.compact_to_target(bits)
-        max_target = difficulty.compact_to_target(self.chain.config.mining.initial_bits)
-        return max_target / target if target > 0 else 1.0
+        if target <= 0:
+            return 1.0
+        max_target = max(1, difficulty.compact_to_target(self.chain.config.mining.pow_limit_bits))
+        return max_target / target
 
     def _compute_block_stats(self, block: Block, header: HeaderData) -> dict[str, Any]:
         block_bytes = block.serialize()
