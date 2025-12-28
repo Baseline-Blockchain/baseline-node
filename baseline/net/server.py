@@ -541,7 +541,13 @@ class P2PServer:
                 return
             parent = self.chain.state_db.get_header(header.prev_hash)
             if parent is None:
-                self.log.debug("Header parent %s unknown", header.prev_hash)
+                self.log.warning(
+                    "Header parent unknown from %s: header=%s prev=%s (genesis=%s)",
+                    peer.peer_id,
+                    header.hash(),
+                    header.prev_hash,
+                    self.chain.genesis_hash,
+                )
                 return
             height = parent.height + 1
             expected_bits = self.chain._expected_bits(height, parent)
@@ -712,6 +718,9 @@ class P2PServer:
         if peer.closed:
             return
         locator = self._build_block_locator()
+        # If we have no chain yet, add a zero-hash sentinel to encourage peers to start from genesis.
+        if len(locator) == 1 and locator[0] == self.chain.genesis_hash:
+            locator.append("00" * 32)
         await peer.send_message(protocol.getheaders_payload(locator))
 
     def _handle_sync_inv(self, peer: Peer, items: list[dict[str, str]]) -> None:
