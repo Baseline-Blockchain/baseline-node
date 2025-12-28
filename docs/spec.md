@@ -82,7 +82,7 @@ For each new block at height h:
 ## 6. Network & Messaging
 
 - Default ports: P2P 9333, RPC 8832, Stratum 3333.
-- Mainnet network identifier (handshake `version.network`): `baseline-mainnet-2025-12-28`.
+- Mainnet network identifier (handshake `version.network`): `baseline-mainnet-2025-12-28-r1`.
 - Handshake: custom header-based protocol defined in `baseline/net/protocol.py` with length + checksum framing.
 - Peer discovery: manual seeds + DNS seeds filtered to public IP ranges. Address gossip limited to 32 entries per message.
 - Connection limits: default 64 peers (8 outbound target). Idle peers dropped after 90 seconds of silence.

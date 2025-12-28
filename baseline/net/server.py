@@ -26,7 +26,7 @@ from .discovery import PeerDiscovery
 from .peer import Peer
 from .security import P2PSecurity
 
-MAINNET_NETWORK_ID = "baseline-mainnet-2025-12-28"
+MAINNET_NETWORK_ID = "baseline-mainnet-2025-12-28-r1"
 
 
 class P2PServer:
