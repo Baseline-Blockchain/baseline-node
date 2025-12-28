@@ -338,6 +338,37 @@ class StateDB:
             )
         self._enqueue_write(_update)
 
+    def reset_headers_to_genesis(self, genesis_hash: str) -> None:
+        """Drop cached headers beyond genesis and reset tip metadata."""
+        self._ensure_open()
+        with self.transaction() as conn:
+            # Keep the genesis header, drop everything else.
+            conn.execute("DELETE FROM headers WHERE hash != ?", (genesis_hash,))
+            conn.execute("DELETE FROM chain_tips WHERE hash != ?", (genesis_hash,))
+
+            # Re-anchor metadata to genesis.
+            row = conn.execute(
+                "SELECT height, chainwork FROM headers WHERE hash=?",
+                (genesis_hash,),
+            ).fetchone()
+            height = int(row["height"]) if row else 0
+            chainwork = str(row["chainwork"]) if row else "0"
+            conn.execute(
+                "INSERT INTO meta(key, value) VALUES('best_hash', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (genesis_hash,),
+            )
+            conn.execute(
+                "INSERT INTO meta(key, value) VALUES('best_height', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (str(height),),
+            )
+            conn.execute(
+                "INSERT INTO meta(key, value) VALUES('best_work', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (chainwork,),
+            )
+
     def get_best_tip(self) -> tuple[str, int] | None:
         self._ensure_open()
         best_hash = self.get_meta("best_hash")

@@ -548,6 +548,16 @@ class P2PServer:
                     header.prev_hash,
                     self.chain.genesis_hash,
                 )
+                # If we are still effectively at genesis, clear any cached headers
+                # so we can restart cleanly rather than getting stuck on orphans.
+                best = self.chain.state_db.get_best_tip()
+                if not best or best[1] == 0:
+                    self.log.info("Resetting cached headers to genesis and restarting header sync")
+                    with contextlib.suppress(Exception):
+                        self.chain.state_db.reset_headers_to_genesis(self.chain.genesis_hash)
+                    self.header_sync_active = False
+                    self.header_peer = None
+                    self._try_start_header_sync()
                 return
             height = parent.height + 1
             expected_bits = self.chain._expected_bits(height, parent)
