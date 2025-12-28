@@ -546,7 +546,14 @@ class P2PServer:
             height = parent.height + 1
             expected_bits = self.chain._expected_bits(height, parent)
             if header.bits != expected_bits:
-                self.log.debug("Header bits mismatch at height %s", height)
+                self.log.warning(
+                    "Header bits mismatch at height %s from %s: got=%s expected=%s prev=%s",
+                    height,
+                    peer.peer_id,
+                    header.bits,
+                    expected_bits,
+                    header.prev_hash,
+                )
                 return
             if not difficulty.check_proof_of_work(header.hash(), header.bits):
                 self.log.debug("Invalid POW for header %s", header.hash())

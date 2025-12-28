@@ -952,7 +952,7 @@ class StateDB:
         conn = self._reader_conn()
         rows = conn.execute(
             "SELECT hash, prev_hash, height, bits, nonce, timestamp, merkle_root, chainwork, version, status "
-            "FROM headers WHERE height BETWEEN ? AND ? AND status=0 ORDER BY height ASC",
+            "FROM headers WHERE height BETWEEN ? AND ? ORDER BY height ASC",
             (start_height, end_height),
         ).fetchall()
         return [
