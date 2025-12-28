@@ -4,6 +4,7 @@ Blockchain management for Baseline.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import math
 from collections.abc import Sequence
@@ -133,6 +134,15 @@ class Chain:
             if self.config.mining.initial_bits == CONSENSUS_DEFAULTS["initial_bits"]:
                 self.config.mining.initial_bits = self.config.mining.pow_limit_bits
         self._ensure_genesis()
+
+        # If metadata says we're at genesis but stray headers remain, prune them.
+        best = self.state_db.get_best_tip()
+        if best and best[1] == 0 and self.state_db.has_headers_beyond_genesis():
+            self.log.warning("Found stray headers beyond genesis with no tip; pruning to genesis")
+            with contextlib.suppress(Exception):
+                self.state_db.reset_headers_to_genesis(self.genesis_hash)
+            best = self.state_db.get_best_tip()
+
         self.log.info("Current block height %s", self.state_db.get_best_tip()[1] if self.state_db.get_best_tip() else 0)
 
     def _build_genesis_block(self) -> Block:

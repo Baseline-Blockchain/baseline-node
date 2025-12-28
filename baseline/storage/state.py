@@ -1009,6 +1009,13 @@ class StateDB:
         if row is None or row["max_height"] is None:
             return 0
         return int(row["max_height"])
+
+    def has_headers_beyond_genesis(self) -> bool:
+        """Return True if any header with height > 0 exists."""
+        self._ensure_open()
+        conn = self._reader_conn()
+        row = conn.execute("SELECT 1 FROM headers WHERE height > 0 LIMIT 1").fetchone()
+        return row is not None
     def _enqueue_write(self, fn: Callable[[sqlite3.Connection], Any]) -> None:
         if self._closed:
             raise StateDBError("StateDB connection is closed")
