@@ -1124,6 +1124,89 @@ class StateDB:
             version=row["version"],
             status=row["status"],
         )
+
+    def get_highest_chainwork_header(self) -> HeaderData | None:
+        """Return the header with the highest chainwork (any status)."""
+        self._ensure_open()
+        conn = self._reader_conn()
+        row = conn.execute(
+            "SELECT hash, prev_hash, height, bits, nonce, timestamp, merkle_root, chainwork, version, status "
+            "FROM headers ORDER BY CAST(chainwork AS INTEGER) DESC, height DESC LIMIT 1"
+        ).fetchone()
+        if not row:
+            return None
+        return HeaderData(
+            hash=row["hash"],
+            prev_hash=row["prev_hash"],
+            height=row["height"],
+            bits=row["bits"],
+            nonce=row["nonce"],
+            timestamp=row["timestamp"],
+            merkle_root=row["merkle_root"],
+            chainwork=row["chainwork"],
+            version=row["version"],
+            status=row["status"],
+        )
+
+    def reanchor_main_chain(self, tip_hash: str | None = None) -> tuple[int, int]:
+        """
+        Rebuild the main chain (status=0) by walking parents from the given tip.
+
+        Returns (path_length, final_height).
+        """
+        self._ensure_open()
+        tip = self.get_header(tip_hash) if tip_hash else self.get_highest_chainwork_header()
+        if tip is None:
+            return 0, 0
+        path: list[HeaderData] = []
+        current = tip
+        while current:
+            path.append(current)
+            if current.prev_hash is None:
+                break
+            parent = self.get_header(current.prev_hash)
+            if parent is None:
+                break
+            current = parent
+        # Ensure we reached genesis
+        if not path or path[-1].prev_hash is not None:
+            return 0, 0
+        path.reverse()  # Genesis first
+        with self.transaction() as conn:
+            conn.execute("UPDATE headers SET status=1")
+            for idx, hdr in enumerate(path):
+                conn.execute(
+                    """
+                    UPDATE headers
+                    SET status=0, height=?
+                    WHERE hash=?
+                    """,
+                    (idx, hdr.hash),
+                )
+            # Reset chain tips to this path tip
+            tip_hdr = path[-1]
+            conn.execute("DELETE FROM chain_tips")
+            conn.execute(
+                "INSERT INTO chain_tips(hash, height, work) VALUES(?, ?, ?)",
+                (tip_hdr.hash, tip_hdr.height, tip_hdr.chainwork),
+            )
+            # Update metadata
+            conn.execute(
+                "INSERT INTO meta(key, value) VALUES('best_hash', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (tip_hdr.hash,),
+            )
+            conn.execute(
+                "INSERT INTO meta(key, value) VALUES('best_height', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (str(tip_hdr.height),),
+            )
+            conn.execute(
+                "INSERT INTO meta(key, value) VALUES('best_work', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (tip_hdr.chainwork,),
+            )
+        return len(path), path[-1].height
     def _enqueue_write(self, fn: Callable[[sqlite3.Connection], Any]) -> None:
         if self._closed:
             raise StateDBError("StateDB connection is closed")

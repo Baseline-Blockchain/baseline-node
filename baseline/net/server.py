@@ -480,15 +480,56 @@ class P2PServer:
         best = self.chain.state_db.get_best_tip()
         if not best:
             return
+        # Ensure our main chain view is coherent before serving headers.
+        try:
+            if self.chain.state_db.has_main_chain_gap():
+                repaired = self.chain.state_db.rebuild_main_headers_from_blocks(self.chain.block_store)
+                if repaired:
+                    self.log.warning("Rebuilt %s missing headers before responding to getheaders", repaired)
+            # If continuity is broken, re-anchor from the highest chainwork tip.
+            highest = self.chain.state_db.get_highest_main_header()
+            if highest is None or highest.height < best[1]:
+                path_len, final_height = self.chain.state_db.reanchor_main_chain()
+                if path_len:
+                    self.log.warning(
+                        "Re-anchored main chain before getheaders; path=%s final_height=%s",
+                        path_len,
+                        final_height,
+                    )
+        except Exception as exc:  # noqa: BLE001
+            self.log.warning("Failed to repair headers before getheaders: %s", exc)
         start_height = self._find_locator_height(locator)
         stop_hash = message.get("stop")
         headers: list[dict[str, int]] = []
         height = start_height + 1
+        prev_hash: str | None = None
+        if start_height >= 0:
+            prev = self.chain.state_db.get_main_header_at_height(start_height)
+            prev_hash = prev.hash if prev else None
         while height <= best[1] and len(headers) < self.sync_header_batch:
             header = self.chain.state_db.get_main_header_at_height(height)
             if header is None:
-                break
+                # Try once to re-anchor and retry the fetch at this height.
+                repaired = self.chain.state_db.reanchor_main_chain()
+                if repaired[0] > 0:
+                    self.log.warning("Re-anchored main chain during getheaders; path=%s height=%s", *repaired)
+                    header = self.chain.state_db.get_main_header_at_height(height)
+                if header is None:
+                    break
+            if prev_hash and header.prev_hash != prev_hash:
+                self.log.warning(
+                    "Detected header continuity break at height %s (prev=%s actual=%s); re-anchoring",
+                    height,
+                    prev_hash,
+                    header.prev_hash,
+                )
+                repaired = self.chain.state_db.reanchor_main_chain()
+                if repaired[0] > 0:
+                    header = self.chain.state_db.get_main_header_at_height(height)
+                if header is None or (prev_hash and header.prev_hash != prev_hash):
+                    break
             headers.append(self._header_to_dict(header))
+            prev_hash = header.hash
             if stop_hash and header.hash == stop_hash:
                 break
             height += 1
