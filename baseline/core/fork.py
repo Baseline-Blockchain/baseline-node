@@ -47,9 +47,16 @@ class OrphanBlockManager:
         # Check per-peer limit
         peer_orphans = self.orphans_by_peer.get(peer_id, set())
         if len(peer_orphans) >= self.max_per_peer:
-            self.log.warning("Peer %s exceeded orphan limit (%d), rejecting block %s",
-                           peer_id, self.max_per_peer, block_hash[:16])
-            return False
+            # Evict one orphan from this peer to make room (avoid hard reject during sync)
+            evict_hash = next(iter(peer_orphans))
+            self.remove_orphan(evict_hash)
+            self.log.debug(
+                "Peer %s exceeded orphan limit (%d), evicting %s to add %s",
+                peer_id,
+                self.max_per_peer,
+                evict_hash[:16],
+                block_hash[:16],
+            )
 
         # Enforce global size limit
         if len(self.orphans) >= self.max_orphans:
