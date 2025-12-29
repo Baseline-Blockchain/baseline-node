@@ -452,7 +452,20 @@ class P2PServer:
             await peer.send_message(protocol.getdata_payload(missing))
             return
         except ChainError as exc:
-            self.log.debug("Block rejected: %s", exc)
+            msg = str(exc)
+            if "Unknown parent block" in msg:
+                # Treat as an out-of-order block; keep it as an orphan and fetch the parent.
+                orphan_hash = block.block_hash()
+                self.log.debug(
+                    "Orphan block %s from %s (missing parent %s)",
+                    orphan_hash,
+                    peer.peer_id,
+                    block.header.prev_hash,
+                )
+                self.chain.fork_manager.detector.orphan_manager.add_orphan(block, peer.peer_id)
+                await self._request_missing_parent(peer, block.header.prev_hash)
+            else:
+                self.log.debug("Block rejected: %s", exc)
             return
         status = result.get("status")
         block_hash = block.block_hash()
@@ -467,6 +480,50 @@ class P2PServer:
             if isinstance(height, int):
                 self._on_block_connected(height)
             await self.broadcast_inv("block", block_hash, exclude={peer.peer_id})
+            await self._process_orphans(block_hash, peer)
+
+    async def _request_missing_parent(self, peer: Peer, parent_hash: str) -> None:
+        """Ask the peer for a missing parent block when we see an orphan."""
+        if peer.closed:
+            return
+        payload = protocol.getdata_payload([{"type": "block", "hash": parent_hash}])
+        await peer.send_message(payload)
+
+    async def _process_orphans(self, parent_hash: str, source_peer: Peer | None = None) -> None:
+        """Try to connect any orphans that now have their parent."""
+        orphans = self.chain.fork_manager.detector.process_orphans(parent_hash)
+        if not orphans:
+            return
+        self.log.debug("Processing %d orphan blocks linking to %s", len(orphans), parent_hash)
+        for orphan in orphans:
+            orphan_hash = orphan.block_hash()
+            try:
+                result = await asyncio.to_thread(self.chain.add_block, orphan)
+            except ChainError as exc:
+                msg = str(exc)
+                if "Unknown parent block" in msg:
+                    # Still missing a parent further back; keep it as an orphan and try to fetch again.
+                    self.chain.fork_manager.detector.orphan_manager.add_orphan(
+                        orphan, getattr(source_peer, "peer_id", "unknown")
+                    )
+                    if source_peer:
+                        await self._request_missing_parent(source_peer, orphan.header.prev_hash)
+                else:
+                    self.log.debug("Orphan block %s rejected: %s", orphan_hash, exc)
+                continue
+
+            status = result.get("status")
+            if status in {"connected", "reorganized"}:
+                if self.mempool:
+                    try:
+                        self.mempool.remove_confirmed(orphan.transactions)
+                    except Exception as exc:
+                        self.log.debug("Failed to prune mempool for orphan %s: %s", orphan_hash, exc)
+                height = result.get("height")
+                if isinstance(height, int):
+                    self._on_block_connected(height)
+                exclude = {source_peer.peer_id} if source_peer else None
+                await self.broadcast_inv("block", orphan_hash, exclude=exclude)
 
     async def handle_addr(self, _peer: Peer, message: dict[str, Any]) -> None:
         peers = message.get("peers", [])

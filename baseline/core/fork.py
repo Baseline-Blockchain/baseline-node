@@ -38,7 +38,7 @@ class OrphanBlockManager:
 
     def add_orphan(self, block: Block, peer_id: str = "unknown") -> bool:
         """Add an orphan block. Returns True if added, False if rejected."""
-        block_hash = block.hash()
+        block_hash = block.block_hash()
 
         # Don't add if already exists
         if block_hash in self.orphans:
@@ -258,7 +258,7 @@ class ForkDetector:
         # Check if any orphans can now connect
         orphans = self.orphan_manager.get_orphans_by_prev(new_tip_hash)
         for orphan in orphans:
-            orphan_hash = orphan.hash()
+            orphan_hash = orphan.block_hash()
             self.orphan_manager.remove_orphan(orphan_hash)
             connected_blocks.append(orphan)
 
