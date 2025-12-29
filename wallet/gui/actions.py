@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import threading
 import tkinter as tk
 from datetime import datetime
 from decimal import ROUND_DOWN, Decimal
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any
+
+from ..client import RPCClient, RPCResponseError
 
 from ..client import RPCClient
 from ..helpers import fetch_wallet_info
@@ -50,6 +53,52 @@ def parse_schedule_target(raw: str) -> int:
 
 class ActionMixin:
     """Mixin for user actions and dialog flows."""
+
+    def _set_send_busy(self, busy: bool, status: str | None = None) -> None:
+        """Toggle send button state and optionally update status text."""
+        self._send_inflight = bool(busy)
+        btn = getattr(self, "send_button", None)
+        if btn:
+            try:
+                btn.state(["disabled"] if busy else ["!disabled"])
+            except Exception:
+                with contextlib.suppress(Exception):
+                    btn.configure(state="disabled" if busy else "normal")
+        if status:
+            try:
+                self.status_var.set(status)
+            except Exception:
+                pass
+
+    def _run_in_background(
+        self,
+        task,
+        *,
+        on_success=None,
+        on_error=None,
+        status_msg: str | None = None,
+    ) -> None:
+        """Run a blocking task in a thread and marshal callbacks to the UI thread."""
+
+        def _worker():
+            try:
+                result = task()
+            except Exception as exc:  # noqa: BLE001
+                if on_error:
+                    self.after(0, lambda exc=exc: on_error(exc))
+                else:
+                    self.after(0, lambda exc=exc: messagebox.showerror("RPC Error", str(exc)))
+                return
+            if on_success:
+                self.after(0, lambda result=result: on_success(result))
+
+        if status_msg:
+            try:
+                self.status_var.set(status_msg)
+            except Exception:
+                pass
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
 
     def _warn_if_no_peers(self) -> bool:
         try:
@@ -530,6 +579,10 @@ class ActionMixin:
         ):
             return
 
+        if getattr(self, "_send_inflight", False):
+            messagebox.showinfo("Send Pending", "A payment is already being sent. Please wait.")
+            return
+
         client = self._build_client()
         unlocked = self._ensure_unlocked(client)
         if unlocked is None:
@@ -546,26 +599,52 @@ class ActionMixin:
             if options:
                 params.append(options)
 
-        try:
+        def _do_send() -> str:
             txid = client.call("sendtoaddress", params)
-        except SystemExit as exc:
-            messagebox.showerror("Send Failed", str(exc))
-            return
-        except Exception as exc:
-            messagebox.showerror("Send Failed", str(exc))
-            return
-        finally:
             if unlocked:
-                try:
+                with contextlib.suppress(Exception):
                     client.call("walletlock", [])
-                except Exception as exc:
-                    self.status_var.set(f"RPC status: warning (walletlock failed: {exc})")
-        messagebox.showinfo("Transaction Sent", f"Broadcasted transaction:\n{txid}")
-        self.refresh_all()
-        self.send_address_var.set("")
-        self.send_amount_var.set("")
-        self.send_memo_var.set("")
-        self.send_memo_to_var.set("")
+            return txid
+
+        def _on_success(txid: str) -> None:
+            messagebox.showinfo("Transaction Sent", f"Broadcasted transaction:\n{txid}")
+            self.refresh_all()
+            self.send_address_var.set("")
+            self.send_amount_var.set("")
+            self.send_memo_var.set("")
+            self.send_memo_to_var.set("")
+            try:
+                self.status_var.set("RPC status: connected")
+            except Exception:
+                pass
+            self._set_send_busy(False, status="RPC status: connected")
+
+        def _on_error(exc: Exception) -> None:
+            if unlocked:
+                with contextlib.suppress(Exception):
+                    client.call("walletlock", [])
+            hint = ""
+            if isinstance(exc, RPCResponseError) and exc.code == -32603:
+                hint = (
+                    "\nThe node reported a timeout, but the transaction may still have been broadcast.\n"
+                    "Check the History tab or mempool to confirm."
+                )
+            messagebox.showerror("Send Failed", f"{exc}{hint}")
+            try:
+                self.status_var.set("RPC status: error during send")
+            except Exception:
+                pass
+            self._set_send_busy(False)
+            # Refresh to surface any tx that may have been accepted despite the timeout.
+            self.refresh_all()
+
+        self._set_send_busy(True, status="Sending transaction...")
+        self._run_in_background(
+            _do_send,
+            on_success=_on_success,
+            on_error=_on_error,
+            status_msg="Sending transaction...",
+        )
 
     def _ensure_unlocked(self, client: RPCClient) -> bool | None:
         try:

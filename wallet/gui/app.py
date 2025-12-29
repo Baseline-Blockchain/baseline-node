@@ -49,8 +49,10 @@ class WalletLauncher(
             "port": 8832,
             "username": "rpcuser",
             "password": "rpcpass",
-            "timeout": 15.0,
+            # Allow slower nodes or busy networks to respond without freezing the UI.
+            "timeout": 30.0,
         }
+        self._send_inflight = False
         self.wallet_info: dict[str, Any] = {}
         self.rpc_online = False
 

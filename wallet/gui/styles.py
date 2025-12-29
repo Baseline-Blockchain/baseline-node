@@ -14,6 +14,7 @@ PALETTE = {
     "text": "#111827",
     "muted": "#6b7280",
     "button": "#2563eb",
+    "button_disabled": "#9bb7f8",
 }
 
 ASSET_DIR = Path(__file__).resolve().parent.parent

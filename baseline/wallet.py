@@ -1101,7 +1101,8 @@ class WalletManager:
             self.data.setdefault("addresses", {})[address] = entry
             self._save()
         if rescan:
-            self.sync_chain()
+            # Full rescan so historical transactions for this key appear in history.
+            self.rescan_wallet()
         return address
 
     # Wallet security helpers --------------------------------------------------
@@ -1340,7 +1341,8 @@ class WalletManager:
                 self.data["next_index"] = owned_max + 1 if owned_max >= 0 else 0
             self._save()
         if rescan:
-            self.sync_chain()
+            # Reset scan height to include historical activity for imported keys.
+            self.rescan_wallet()
 
     def import_address(self, address: str, label: str | None = None, rescan: bool = True) -> None:
         script_from_address(address)  # raises if invalid
@@ -1354,7 +1356,8 @@ class WalletManager:
             }
             self._save()
         if rescan:
-            self.sync_chain()
+            # Rescan to pick up historical UTXOs for the watch-only address.
+            self.rescan_wallet()
 
     def _sync_worker(self) -> None:
         while not self._sync_stop.is_set():

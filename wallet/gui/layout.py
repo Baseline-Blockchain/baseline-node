@@ -140,8 +140,11 @@ class LayoutMixin:
         )
         style.map(
             "Primary.TButton",
-            background=[("active", lighten(PALETTE["button"]))],
-            foreground=[("disabled", PALETTE["muted"])],
+            background=[
+                ("active", lighten(PALETTE["button"])),
+                ("disabled", PALETTE["button_disabled"]),
+            ],
+            foreground=[("disabled", PALETTE["text"])],
         )
         style.configure(
             "Secondary.TButton",
@@ -631,9 +634,8 @@ class LayoutMixin:
             row=11, column=0, columnspan=2, sticky="ew", pady=(2, 10)
         )
 
-        ttk.Button(card, text="Send Payment", command=self._send_payment, style="Primary.TButton").grid(
-            row=12, column=0, pady=(8, 0), sticky="w"
-        )
+        self.send_button = ttk.Button(card, text="Send Payment", command=self._send_payment, style="Primary.TButton")
+        self.send_button.grid(row=12, column=0, pady=(8, 0), sticky="w")
 
     def _build_mempool_tab(self, frame: ttk.Frame) -> None:
         self.mempool_box = tk.Text(
