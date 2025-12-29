@@ -95,7 +95,9 @@ class Peer:
         )
         if not should_accept:
             self.log.warning("Message rejected: %s", error_reason)
-            self.manager.security.record_violation(self.peer_id)
+            # Do not penalize peers for rate limiting; just drop the message.
+            if "rate limit exceeded" not in error_reason.lower():
+                self.manager.security.record_violation(self.peer_id)
             return
 
         if msg_type == "version":

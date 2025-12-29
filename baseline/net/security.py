@@ -436,10 +436,10 @@ class P2PSecurity:
 
         # Global rate limiters
         self.global_connection_limiter = (
-            RateLimiter(max_tokens=10, refill_rate=1.0) if enable_rate_limit else None
+            RateLimiter(max_tokens=100, refill_rate=10.0) if enable_rate_limit else None
         )
         self.global_message_limiter = (
-            RateLimiter(max_tokens=1000, refill_rate=100.0) if enable_rate_limit else None
+            RateLimiter(max_tokens=10000, refill_rate=500.0) if enable_rate_limit else None
         )
 
     def can_accept_connection(self, ip: str) -> bool:
@@ -467,7 +467,8 @@ class P2PSecurity:
         # Initialize peer reputation and rate limiter
         self.peer_reputations[peer_id] = PeerReputation()
         if self.enable_rate_limit:
-            self.rate_limiters[peer_id] = RateLimiter(max_tokens=50, refill_rate=10.0)  # 50 messages per 5 seconds
+            # Allow higher burst for initial sync; refill fast enough for steady flow.
+            self.rate_limiters[peer_id] = RateLimiter(max_tokens=300, refill_rate=120.0)
 
         return True
 
