@@ -464,6 +464,11 @@ class P2PServer:
                 )
                 self.chain.fork_manager.detector.orphan_manager.add_orphan(block, peer.peer_id)
                 await self._request_missing_parent(peer, block.header.prev_hash)
+                # Kick sync to get ordered blocks instead of a long orphan chain.
+                if not self.header_sync_active:
+                    self._maybe_start_header_sync(peer)
+                if not self.sync_active:
+                    asyncio.create_task(self._send_getblocks(peer))
             else:
                 self.log.debug("Block rejected: %s", exc)
             return
