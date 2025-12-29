@@ -438,9 +438,8 @@ class P2PSecurity:
         self.global_connection_limiter = (
             RateLimiter(max_tokens=100, refill_rate=10.0) if enable_rate_limit else None
         )
-        self.global_message_limiter = (
-            RateLimiter(max_tokens=10000, refill_rate=500.0) if enable_rate_limit else None
-        )
+        # Disable global message limiter; rely on per-peer buckets to avoid false positives during sync.
+        self.global_message_limiter = None
 
     def can_accept_connection(self, ip: str) -> bool:
         """Check if connection from IP should be accepted."""
@@ -467,8 +466,8 @@ class P2PSecurity:
         # Initialize peer reputation and rate limiter
         self.peer_reputations[peer_id] = PeerReputation()
         if self.enable_rate_limit:
-            # Allow higher burst for initial sync; refill fast enough for steady flow.
-            self.rate_limiters[peer_id] = RateLimiter(max_tokens=300, refill_rate=120.0)
+            # Allow large bursts for initial sync; refill fast enough for steady flow.
+            self.rate_limiters[peer_id] = RateLimiter(max_tokens=2000, refill_rate=800.0)
 
         return True
 
