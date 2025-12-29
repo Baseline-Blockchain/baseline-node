@@ -430,7 +430,7 @@ class P2PSecurity:
         self.connection_limiter = ConnectionLimiter()
         self.ban_manager = BanManager()
         self.peer_reputations: dict[str, PeerReputation] = {}
-        self.rate_limiters: dict[str, RateLimiter] = {}  # per-peer rate limiters
+        self.rate_limiters: dict[str, RateLimiter] = {}  # per-peer rate limiters (unused when disabled)
         self.metrics = SecurityMetrics()
         # Keep connection limits but disable message rate limits for sync stability.
         self.enable_rate_limit = enable_rate_limit
@@ -467,9 +467,7 @@ class P2PSecurity:
 
         # Initialize peer reputation and rate limiter
         self.peer_reputations[peer_id] = PeerReputation()
-        if self.enable_message_rate_limit:
-            # Allow large bursts for initial sync; refill fast enough for steady flow.
-            self.rate_limiters[peer_id] = RateLimiter(max_tokens=2000, refill_rate=800.0)
+        # No per-peer message rate limiter when disabled.
 
         return True
 
@@ -489,17 +487,10 @@ class P2PSecurity:
         skip_rate_limit: bool = False,
     ) -> tuple[bool, str]:
         """Check if message from peer should be accepted."""
-        if self.enable_message_rate_limit and not skip_rate_limit:
-            # Check global rate limit
-            if self.global_message_limiter and not self.global_message_limiter.consume():
-                self.metrics.rate_limit_violations += 1
-                return False, "Global rate limit exceeded"
-
-            # Check peer-specific rate limit
-            rate_limiter = self.rate_limiters.get(peer_id)
-            if rate_limiter and not rate_limiter.consume():
-                self.metrics.rate_limit_violations += 1
-                return False, "Peer rate limit exceeded"
+        # Message rate limiting disabled: ignore rate buckets entirely and clear stale bans from prior limiter hits.
+        if not self.enable_message_rate_limit:
+            if self.ban_manager.banned_peers:
+                self.ban_manager.banned_peers.clear()
 
         # Check if peer is banned
         if self.ban_manager.is_peer_banned(peer_id):
