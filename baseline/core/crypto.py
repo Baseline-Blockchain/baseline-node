@@ -44,7 +44,19 @@ def sha256d(data: bytes) -> bytes:
 
 
 def ripemd160(data: bytes) -> bytes:
-    return hashlib.new("ripemd160", data).digest()
+    try:
+        return hashlib.new("ripemd160", data).digest()
+    except ValueError:
+        # OpenSSL 3.0+ requires legacy provider for RIPEMD160
+        import subprocess
+        # Fallback: use openssl command
+        result = subprocess.run(
+            ['openssl', 'dgst', '-ripemd160', '-binary'],
+            input=data,
+            capture_output=True,
+            check=True
+        )
+        return result.stdout
 
 
 def hash160(data: bytes) -> bytes:
