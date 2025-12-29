@@ -6,7 +6,7 @@ import contextlib
 import logging
 import threading
 import tkinter as tk
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import ROUND_DOWN, Decimal
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any
@@ -48,6 +48,11 @@ def parse_schedule_target(raw: str) -> int:
                 continue
     if dt is None:
         raise ValueError("Scheduled date must be YYYY-MM-DD[ HH:MM[:SS]] or a block height.")
+    # Treat all parsed datetimes as UTC (even if the system local time differs).
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
     return int(dt.replace(microsecond=0).timestamp())
 
 
@@ -702,11 +707,17 @@ class ActionMixin:
         if not self._warn_if_no_peers():
             return
 
+        if getattr(self, "_schedule_inflight", False):
+            messagebox.showinfo("Schedule Pending", "A scheduled send is already being created. Please wait.")
+            return
+
         client = self._build_client()
         unlocked = self._ensure_unlocked(client)
         if unlocked is None:
             return
-        try:
+        self._schedule_inflight = True
+
+        def _do_create() -> dict[str, Any]:
             options: dict[str, Any] = {}
             if from_addr:
                 options["fromaddresses"] = [from_addr]
@@ -716,28 +727,43 @@ class ActionMixin:
             if options:
                 args.append(options)
             result = client.call("createscheduledtx", args)
-        except Exception as exc:
-            messagebox.showerror("Schedule Failed", str(exc))
-            return
-        finally:
             if unlocked:
                 with contextlib.suppress(Exception):
                     client.call("walletlock", [])
-        schedule_id = result.get("schedule_id", "n/a")
-        fee_value = result.get("fee")
-        fee_display = f"{fee_value:.8f} BLINE" if isinstance(fee_value, (int, float)) else "n/a"
-        messagebox.showinfo(
-            "Scheduled Transaction Created",
-            f"Schedule {schedule_id} created for {amount:.8f} BLINE.\n"
-            f"Lock time: {lock_time}\n"
-            f"Fee: {fee_display}",
+            return result
+
+        def _on_success(result: dict[str, Any]) -> None:
+            schedule_id = result.get("schedule_id", "n/a")
+            fee_value = result.get("fee")
+            fee_display = f"{fee_value:.8f} BLINE" if isinstance(fee_value, (int, float)) else "n/a"
+            messagebox.showinfo(
+                "Scheduled Transaction Created",
+                f"Schedule {schedule_id} created for {amount:.8f} BLINE.\n"
+                f"Lock time: {lock_time}\n"
+                f"Fee: {fee_display}",
+            )
+            self.schedule_dest_var.set("")
+            self.schedule_amount_var.set("")
+            default_time = self._default_schedule_time() if hasattr(self, "_default_schedule_time") else ""
+            self.schedule_lock_var.set(default_time)
+            self.schedule_cancelable_var.set(True)
+            self.refresh_all()
+            self._schedule_inflight = False
+
+        def _on_error(exc: Exception) -> None:
+            if unlocked:
+                with contextlib.suppress(Exception):
+                    client.call("walletlock", [])
+            messagebox.showerror("Schedule Failed", str(exc))
+            self._schedule_inflight = False
+            self.refresh_all()
+
+        self._run_in_background(
+            _do_create,
+            on_success=_on_success,
+            on_error=_on_error,
+            status_msg="Creating scheduled transaction...",
         )
-        self.schedule_dest_var.set("")
-        self.schedule_amount_var.set("")
-        default_time = self._default_schedule_time() if hasattr(self, "_default_schedule_time") else ""
-        self.schedule_lock_var.set(default_time)
-        self.schedule_cancelable_var.set(True)
-        self.refresh_all()
 
     def _cancel_selected_schedule(self) -> None:
         tree = self.schedule_tree
