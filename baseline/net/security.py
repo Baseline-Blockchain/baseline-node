@@ -487,10 +487,11 @@ class P2PSecurity:
         skip_rate_limit: bool = False,
     ) -> tuple[bool, str]:
         """Check if message from peer should be accepted."""
-        # Message rate limiting disabled: ignore rate buckets entirely and clear stale bans from prior limiter hits.
+        # Message rate limiting disabled: accept immediately and clear stale peer bans.
         if not self.enable_message_rate_limit:
             if self.ban_manager.banned_peers:
                 self.ban_manager.banned_peers.clear()
+            return True, ""
 
         # Check if peer is banned
         if self.ban_manager.is_peer_banned(peer_id):
