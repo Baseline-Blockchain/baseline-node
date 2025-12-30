@@ -171,6 +171,18 @@ class PayoutTracker:
             if not payees or not self.matured_utxos:
                 return None
             total_out = sum(amount for _, _, amount in payees)
+            # Gather spendable matured UTXOs; keep missing ones for future attempts.
+            spendable: list[tuple[UTXORecord, dict[str, object]]] = []
+            for utxo_info in self.matured_utxos:
+                vout = int(utxo_info.get("vout", 0))
+                record = state_db.get_utxo(utxo_info["txid"], vout)
+                if record is None:
+                    continue
+                spendable.append((record, utxo_info))
+
+            if not spendable:
+                return None
+
             inputs: list[UTXORecord] = []
             consumed: list[dict[str, object]] = []
             input_sum = 0
@@ -180,16 +192,9 @@ class PayoutTracker:
             change = 0
             while True:
                 while input_sum < total_out + fee:
-                    if cursor >= len(self.matured_utxos):
+                    if cursor >= len(spendable):
                         return None
-                    utxo_info = self.matured_utxos[cursor]
-                    vout = int(utxo_info.get("vout", 0))
-                    record = state_db.get_utxo(utxo_info["txid"], vout)
-                    if record is None:
-                        # UTXO not yet spendable (e.g., fork not connected yet);
-                        # skip for now but keep it for a future attempt.
-                        cursor += 1
-                        continue
+                    record, utxo_info = spendable[cursor]
                     inputs.append(record)
                     consumed.append(utxo_info)
                     input_sum += record.amount
