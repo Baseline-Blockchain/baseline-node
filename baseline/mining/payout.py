@@ -186,7 +186,9 @@ class PayoutTracker:
                     vout = int(utxo_info.get("vout", 0))
                     record = state_db.get_utxo(utxo_info["txid"], vout)
                     if record is None:
-                        self.matured_utxos.pop(cursor)
+                        # UTXO not yet spendable (e.g., fork not connected yet);
+                        # skip for now but keep it for a future attempt.
+                        cursor += 1
                         continue
                     inputs.append(record)
                     consumed.append(utxo_info)
