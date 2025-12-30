@@ -354,7 +354,7 @@ class Chain:
         self.state_db.store_header(header)
 
         # Handle fork detection and reorganization
-        block_accepted, reorganization_occurred = self.fork_manager.handle_new_block(block)
+        block_accepted, reorganization_occurred, reorg_deferred = self.fork_manager.handle_new_block(block)
 
         if not block_accepted:
             # Block was rejected by fork manager
@@ -367,6 +367,8 @@ class Chain:
         # Continue with normal processing
         self.state_db.upsert_chain_tip(block_hash, height, header.chainwork)
         self.state_db.remove_chain_tip(prev_hash)
+        if reorg_deferred:
+            return {"status": "deferred", "hash": block_hash, "height": height}
         best = self.state_db.get_best_tip()
         best_work = int(self.state_db.get_meta("best_work") or "0")
         extends_best = best and prev_hash == best[0]
@@ -415,6 +417,9 @@ class Chain:
             raise ChainError("Unexpected difficulty bits")
         if not difficulty.check_proof_of_work(block.block_hash(), block.header.bits):
             raise ChainError("Invalid proof of work")
+        merkle = merkle_root_hash(block.transactions)
+        if block.header.merkle_root != merkle:
+            raise ChainError("Merkle root mismatch")
         median_time = self._median_time_past(parent_header.hash)
         if block.header.timestamp <= median_time:
             raise ChainError("Block timestamp too early")

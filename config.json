@@ -19,7 +19,7 @@
     "max_jobs": 8
   },
   "mining": {
-    "pool_private_key": "6ba5fb59052b5f59e5b8d3cb648357e6e790bca6e66113d953997cfe032d311a",
+    "pool_private_key": null,
     "min_payout": 100000000,
     "pool_fee_percent": 1.0
   }

@@ -353,19 +353,24 @@ class ForkManager:
         self.detector = ForkDetector(chain.block_store, chain.state_db)
         self.reorganizer = ChainReorganizer(chain, self.detector)
         self.log = logging.getLogger("baseline.fork_manager")
+        # Track the best fork tip that could not be adopted immediately due to rate limiting.
+        self.pending_reorg_tip: str | None = None
 
-    def handle_new_block(self, block: Block) -> tuple[bool, bool]:
+    def handle_new_block(self, block: Block) -> tuple[bool, bool, bool]:
         """
         Handle a new block and check for forks.
-        Returns (block_accepted, reorganization_occurred).
+        Returns (block_accepted, reorganization_occurred, reorg_deferred).
         """
+        # First, see if a previously deferred fork can now be activated.
+        self._maybe_reorganize_pending()
+
         try:
             # Detect if this creates a fork
             fork_info = self.detector.detect_fork(block)
 
             if fork_info is None:
                 # No fork detected, normal block processing
-                return True, False
+                return True, False, False
 
             has_more_work = fork_info.fork_chain_work > fork_info.main_chain_work
             if not has_more_work:
@@ -375,7 +380,7 @@ class ForkManager:
                     fork_info.fork_chain_work,
                     fork_info.main_chain_work,
                 )
-                return False, False
+                return True, False, False
 
             self.log.info(
                 "Fork detected: height=%d, main_work=%d, fork_work=%d",
@@ -392,16 +397,18 @@ class ForkManager:
                     orphans = self.detector.process_orphans(fork_info.fork_chain_tip)
                     if orphans:
                         self.log.info("Connected %d orphan blocks after reorganization", len(orphans))
-                    return True, True
+                    self.pending_reorg_tip = None
+                    return True, True, False
                 else:
                     self.log.error("Failed to reorganize to fork chain")
                     # Attempt recovery
                     self._attempt_recovery()
-                    return False, False
+                    return True, False, False
             else:
                 # Fork has more work but reorganization is currently not allowed (rate limiting, etc.)
-                self.log.info("Fork has more work but reorganization is currently not allowed")
-                return False, False
+                self.log.info("Fork has more work but reorganization is currently not allowed; deferring")
+                self.pending_reorg_tip = fork_info.fork_chain_tip
+                return True, False, True
 
         except Exception as exc:
             self.log.error("Error handling new block: %s", exc, exc_info=True)
@@ -410,7 +417,61 @@ class ForkManager:
                 self._attempt_recovery()
             except Exception as recovery_exc:
                 self.log.critical("Recovery failed: %s", recovery_exc, exc_info=True)
-            return False, False
+            return False, False, False
+
+    def _maybe_reorganize_pending(self) -> bool:
+        """Attempt to reorganize to a previously deferred fork if limits allow."""
+        if not self.pending_reorg_tip:
+            return False
+
+        pending_tip = self.pending_reorg_tip
+        if not self.detector._can_reorganize():
+            return False
+
+        current_tip_info = self.chain.state_db.get_best_tip()
+        if not current_tip_info:
+            return False
+        current_tip = current_tip_info[0]
+        if current_tip == pending_tip:
+            self.pending_reorg_tip = None
+            return False
+
+        fork_height = self.detector._find_fork_point(pending_tip, current_tip)
+        if fork_height is None:
+            self.pending_reorg_tip = None
+            return False
+
+        current_tip_header = self.chain.state_db.get_header(current_tip)
+        pending_tip_header = self.chain.state_db.get_header(pending_tip)
+        if current_tip_header is None or pending_tip_header is None:
+            self.pending_reorg_tip = None
+            return False
+
+        main_work = self.detector._calculate_chain_work_from_height(current_tip, fork_height)
+        fork_work = self.detector._calculate_chain_work_from_height(pending_tip, fork_height)
+        if fork_work <= main_work:
+            self.pending_reorg_tip = None
+            return False
+
+        fork_info = ForkInfo(
+            fork_height=fork_height,
+            main_chain_tip=current_tip,
+            fork_chain_tip=pending_tip,
+            fork_length=current_tip_header.height - fork_height,
+            main_chain_work=main_work,
+            fork_chain_work=fork_work,
+            should_reorganize=True,
+        )
+        success = self.reorganizer.reorganize_to_fork(fork_info)
+        if success:
+            orphans = self.detector.process_orphans(pending_tip)
+            if orphans:
+                self.log.info("Connected %d orphan blocks after deferred reorganization", len(orphans))
+            self.pending_reorg_tip = None
+            return True
+
+        self.pending_reorg_tip = None
+        return False
 
     def _attempt_recovery(self) -> None:
         """Attempt to recover from fork handling errors."""
