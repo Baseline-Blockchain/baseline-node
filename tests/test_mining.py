@@ -210,3 +210,37 @@ class PayoutTrackerTests(unittest.TestCase):
         self.assertEqual(self.tracker.workers[self.worker_id].balance, 0)
         self.assertEqual(self.tracker.workers["worker-2"].balance, 0)
         self.assertEqual(len(self.tracker.matured_utxos), 0)
+
+    def test_missing_utxo_is_retained_for_future_payout(self) -> None:
+        subsidy = 50 * COIN
+        foundation = (subsidy + 99) // 100
+        reward = subsidy - foundation
+        txid = "ef" * 32
+        # Accumulate balance and mature a block
+        self.tracker.record_share(self.worker_id, self.worker_address, difficulty=1.0)
+        self.tracker.record_block(height=5, coinbase_txid=txid, reward=reward)
+        self.tracker.process_maturity(best_height=7)
+        balance_before = self.tracker.workers[self.worker_id].balance
+        self.assertGreater(balance_before, 0)
+        # First attempt: state DB does not yet have the UTXO (e.g., deferred reorg); payout should defer.
+        missing_state = DummyState({})
+        payout_tx = self.tracker.create_payout_transaction(missing_state)
+        self.assertIsNone(payout_tx)
+        # Ensure the matured UTXO is still tracked for the next attempt.
+        self.assertEqual(len(self.tracker.matured_utxos), 1)
+        self.assertEqual(self.tracker.workers[self.worker_id].balance, balance_before)
+        # Second attempt: UTXO becomes available; payout should succeed and clear pending state.
+        utxo = UTXORecord(
+            txid=txid,
+            vout=0,
+            amount=reward,
+            script_pubkey=self.pool_script,
+            height=5,
+            coinbase=True,
+        )
+        available_state = DummyState({(txid, 0): utxo})
+        payout_tx = self.tracker.create_payout_transaction(available_state)
+        self.assertIsNotNone(payout_tx)
+        assert payout_tx is not None
+        self.assertEqual(self.tracker.workers[self.worker_id].balance, 0)
+        self.assertEqual(len(self.tracker.matured_utxos), 0)

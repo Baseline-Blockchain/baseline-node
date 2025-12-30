@@ -487,24 +487,29 @@ class P2PSecurity:
         skip_rate_limit: bool = False,
     ) -> tuple[bool, str]:
         """Check if message from peer should be accepted."""
-        # Message rate limiting disabled: accept immediately and clear stale peer bans.
-        if not self.enable_message_rate_limit:
-            if self.ban_manager.banned_peers:
-                self.ban_manager.banned_peers.clear()
-            return True, ""
-
-        # Check if peer is banned
+        # Even when message rate limiting is disabled, still validate message structure.
         if self.ban_manager.is_peer_banned(peer_id):
             return False, "Peer is banned"
 
-        # Validate message format and content
         is_valid, error = MessageValidator.validate_message(message)
         if not is_valid:
             self.metrics.invalid_messages += 1
             reputation = self.peer_reputations.get(peer_id)
             if reputation:
                 reputation.record_invalid_message()
+                if reputation.is_banned():
+                    ban_duration = reputation.ban_duration()
+                    self.ban_manager.ban_peer(peer_id, ban_duration)
+                    self.metrics.peers_banned += 1
             return False, f"Invalid message: {error}"
+
+        # Skip rate-limit token consumption when disabled but allow good messages.
+        if not self.enable_message_rate_limit:
+            return True, ""
+
+        # Check if peer is banned
+        if self.ban_manager.is_peer_banned(peer_id):
+            return False, "Peer is banned"
 
         # Record valid message
         reputation = self.peer_reputations.get(peer_id)

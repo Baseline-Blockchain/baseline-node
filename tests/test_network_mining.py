@@ -403,4 +403,6 @@ class PayoutTrackerReorgTests(unittest.TestCase):
 
         payout_tx = tracker.create_payout_transaction(self.primary.state_db)
         self.assertIsNone(payout_tx)
-        self.assertFalse(tracker.matured_utxos)
+        # The matured UTXO should remain tracked so a future attempt can pay it
+        # once the input becomes available again.
+        self.assertTrue(tracker.matured_utxos)

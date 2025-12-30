@@ -81,7 +81,12 @@ class StratumSession:
                     await self.send_error(None, -1, "message too large")
                     break
                 try:
-                    message = json.loads(line.decode("utf-8"))
+                    decoded = line.decode("utf-8")
+                except UnicodeDecodeError:
+                    await self.send_error(None, -32700, "invalid encoding")
+                    continue
+                try:
+                    message = json.loads(decoded)
                 except json.JSONDecodeError:
                     await self.send_error(None, -32700, "invalid json")
                     continue

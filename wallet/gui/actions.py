@@ -48,12 +48,12 @@ def parse_schedule_target(raw: str) -> int:
                 continue
     if dt is None:
         raise ValueError("Scheduled date must be YYYY-MM-DD[ HH:MM[:SS]] or a block height.")
-    # Treat all parsed datetimes as UTC (even if the system local time differs).
+    # If timezone not provided, treat the value as local time for backward compatibility
+    # with existing schedules. If tzinfo is present, normalize to UTC before computing
+    # the lock_time timestamp.
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    else:
-        dt = dt.astimezone(timezone.utc)
-    return int(dt.replace(microsecond=0).timestamp())
+        return int(dt.replace(microsecond=0).timestamp())
+    return int(dt.astimezone(timezone.utc).replace(microsecond=0).timestamp())
 
 
 class ActionMixin:
