@@ -515,8 +515,11 @@ class StratumServer:
 
         result = await asyncio.to_thread(_add_block)
         status = result.get("status")
-        if status in {"connected", "reorganized"}:
-            if self.mempool:
+        accepted = {"connected", "reorganized", "deferred"}
+        if status in accepted:
+            # "deferred" is returned when fork reorgs are rate-limited; still
+            # count the block for payouts so miner rewards are not lost.
+            if status != "deferred" and self.mempool:
                 try:
                     self.mempool.remove_confirmed(block.transactions)
                 except Exception as exc:
@@ -528,7 +531,9 @@ class StratumServer:
             )
             if self.network:
                 self.network.announce_block(block.block_hash())
-            self.log.info("Block found at height %s hash=%s", job.template.height, block.block_hash())
+            self.log.info(
+                "Block found at height %s hash=%s (%s)", job.template.height, block.block_hash(), status
+            )
         elif status in {"rejected", "duplicate", "side"}:
             self.log.debug("Submitted block %s rejected (%s)", block.block_hash(), status)
         else:
