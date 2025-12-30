@@ -233,6 +233,15 @@ class RPCHandlers(WalletRPCMixin):
         confirmations = 0
         if best and height is not None:
             confirmations = max(0, best[1] - height + 1)
+        timestamp = int(time.time())
+        if height is not None:
+            header = None
+            if block_hash:
+                header = self.state_db.get_header(block_hash)
+            if header is None:
+                header = self.state_db.get_main_header_at_height(height)
+            if header:
+                timestamp = header.timestamp
         vin_entries: list[dict[str, Any]] = []
         for vin in tx.inputs:
             if vin.prev_txid == "00" * 32 and vin.prev_vout == 0xFFFFFFFF:
@@ -257,7 +266,7 @@ class RPCHandlers(WalletRPCMixin):
             "confirmations": confirmations,
             "fee": fee_liners / COIN,
             "fee_liners": fee_liners,
-            "time": int(time.time()),
+            "time": timestamp,
             "vin": vin_entries,
             "vout": [
                 {"n": idx, "value": txout.value, "scriptPubKey": txout.script_pubkey.hex()}
