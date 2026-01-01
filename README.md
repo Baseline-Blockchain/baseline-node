@@ -48,7 +48,7 @@ python -m venv .venv
 pip install --upgrade pip
 ```
 
-No extra packages are required; the stdlib is enough.
+No extra pip packages are required; the stdlib is enough. The GUI uses Tkinter (bundled with official Windows/macOS installers); on Linux install your distro's Tk bindings if missing (e.g., `sudo apt-get install python3-tk` or `sudo dnf install python3-tkinter`) before running `baseline-wallet-gui`.
 
 ### 2. Install Baseline
    ```bash
