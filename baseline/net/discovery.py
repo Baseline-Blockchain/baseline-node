@@ -475,11 +475,30 @@ class PeerDiscovery:
             except ValueError as exc:
                 self.log.warning("Invalid manual seed %s: %s", seed, exc)
 
-    async def discover_peers(self, count: int) -> list[tuple[str, int]]:
+    async def discover_peers(self, count: int, *, seeds_only: bool = False) -> list[tuple[str, int]]:
         """Discover peer addresses for connection."""
         try:
             picks: list[tuple[str, int]] = []
             seen: set[tuple[str, int]] = set()
+
+            # Seed-only mode: return manual seeds and stop (no duplicates).
+            if seeds_only and self.manual_seeds:
+                for seed in self.manual_seeds:
+                    try:
+                        if ":" in seed:
+                            host, port_str = seed.rsplit(":", 1)
+                            port = int(port_str)
+                        else:
+                            host = seed
+                            port = 9333
+                        key = (host, port)
+                        if key not in seen:
+                            picks.append(key)
+                            seen.add(key)
+                    except ValueError:
+                        continue
+                random.shuffle(picks)
+                return picks[:count]
 
             # Seed-first: try manual seeds before address book/DNS
             for seed in self.manual_seeds:

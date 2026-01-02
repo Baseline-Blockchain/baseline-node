@@ -81,6 +81,8 @@ class P2PServer:
         self.bytes_received = 0
         self._local_addresses: set[tuple[str, int]] = set()
         self._header_peer_cooldowns: dict[str, float] = {}
+        self._allow_non_seed_outbound = False
+        self._pending_outbound: set[tuple[str, int]] = set()
         self._init_local_addresses()
         self._load_known_addresses()
         self.mempool.register_listener(self._on_local_tx)
@@ -228,9 +230,10 @@ class P2PServer:
         needed = self.target_outbound - self.outbound_count()
         if needed <= 0:
             return
+        seeds_only = not self._allow_non_seed_outbound
 
         # Use enhanced peer discovery
-        candidates = await self.discovery.discover_peers(needed)
+        candidates = await self.discovery.discover_peers(needed, seeds_only=seeds_only)
         for host, port in candidates:
             await self._connect_outbound(host, port)
 
@@ -247,6 +250,8 @@ class P2PServer:
             if self._stop_event.is_set():
                 return
             key = (tgt_host, tgt_port)
+            if key in self._pending_outbound:
+                continue
             if key in self.active_addresses():
                 # Allow an outbound even if we already have only inbound connections
                 existing = [peer for peer in self.peers.values() if peer.address == key]
@@ -258,6 +263,7 @@ class P2PServer:
                 continue
 
             self.discovery.record_connection_attempt(tgt_host, tgt_port)
+            self._pending_outbound.add(key)
 
             try:
                 reader, writer = await asyncio.wait_for(
@@ -266,6 +272,7 @@ class P2PServer:
             except (TimeoutError, OSError) as exc:
                 self.log.debug("Failed to dial %s:%s: %s", tgt_host, tgt_port, exc)
                 self.discovery.record_connection_failure(tgt_host, tgt_port)
+                self._pending_outbound.discard(key)
                 continue
 
             peer = self._build_peer(reader, writer, (tgt_host, tgt_port), outbound=True)
@@ -274,10 +281,12 @@ class P2PServer:
                 self.log.debug("Rejected outbound connection to %s:%s (connection limit)", tgt_host, tgt_port)
                 writer.close()
                 self.discovery.record_connection_failure(tgt_host, tgt_port)
+                self._pending_outbound.discard(key)
                 continue
 
             self.discovery.record_connection_success(tgt_host, tgt_port)
             self._run_peer(peer)
+            self._pending_outbound.discard(key)
             return
 
     def outbound_count(self) -> int:
@@ -882,11 +891,15 @@ class P2PServer:
             self.log.info("Block download caught up height=%s", height)
             self.sync_active = False
             self.sync_peer = None
+            self._allow_non_seed_outbound = True
 
     def _complete_header_sync(self, peer: Peer) -> None:
         self.header_sync_active = False
         self.header_peer = None
         self._start_block_sync(peer)
+        if not self.sync_active:
+            # No block sync needed; consider ourselves caught up for outbound expansion.
+            self._allow_non_seed_outbound = True
 
     def _start_block_sync(self, peer: Peer) -> None:
         if self.sync_active:
