@@ -372,7 +372,7 @@ class PeerExchange:
 
         # Rate limiting for addr messages
         self.peer_addr_timestamps: dict[str, float] = {}
-        self.min_addr_interval = 2.0  # 5 minutes between addr messages per peer
+        self.min_addr_interval = 300.0  # seconds between addr messages per peer
         self.max_addresses_per_message = 1000
 
     def create_addr_message(self, max_addresses: int = 1000) -> dict[str, Any]:
@@ -404,8 +404,8 @@ class PeerExchange:
 
         # Check rate limiting
         last_addr_time = self.peer_addr_timestamps.get(peer_id, 0)
-        if current_time - last_addr_time < self.min_addr_interval:
-            self.log.warning("Rate limiting addr message from peer %s", peer_id)
+        if last_addr_time > 0 and current_time - last_addr_time < self.min_addr_interval:
+            self.log.debug("Rate limiting addr message from peer %s", peer_id)
             return False
 
         addresses = message.get("peers")
