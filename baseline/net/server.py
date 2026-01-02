@@ -339,6 +339,7 @@ class P2PServer:
         self.known_addresses[addr.key()] = addr
         self.log.info("Peer %s connected (%s:%s)", peer.peer_id, *peer.address)
         await self._send_addr(peer)
+        await self._request_addr(peer)
         self._maybe_start_header_sync(peer)
 
     async def on_peer_closed(self, peer: Peer) -> None:
@@ -365,6 +366,9 @@ class P2PServer:
     async def _send_addr(self, peer: Peer) -> None:
         peers = list(self.known_addresses.values())[:32]
         await peer.send_message(protocol.addr_payload([asdict(addr) for addr in peers]))
+
+    async def _request_addr(self, peer: Peer) -> None:
+        await peer.send_message(protocol.getaddr_payload())
 
     async def handle_inv(self, peer: Peer, message: dict[str, Any]) -> None:
         items = message.get("items", [])

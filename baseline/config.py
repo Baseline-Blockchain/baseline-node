@@ -32,6 +32,7 @@ class P2PConfig:
     host: str = "0.0.0.0"
     port: int = 9333
     seeds: tuple[str, ...] = ()
+    dns_seeds: tuple[str, ...] = ()
     max_peers: int = 64
     min_peers: int = 8
     target_outbound: int = 8
@@ -43,6 +44,9 @@ class P2PConfig:
             raise ConfigError(f"Invalid P2P port {self.port}")
         if self.max_peers < self.min_peers:
             raise ConfigError("max_peers must be >= min_peers")
+        for seed in self.dns_seeds:
+            if not isinstance(seed, str) or not seed.strip():
+                raise ConfigError("dns_seeds entries must be non-empty strings")
 
 
 @dataclass(slots=True)

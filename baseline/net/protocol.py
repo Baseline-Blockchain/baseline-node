@@ -138,6 +138,10 @@ def addr_payload(peers: list[dict[str, Any]]) -> dict[str, Any]:
     return {"type": "addr", "peers": peers}
 
 
+def getaddr_payload() -> dict[str, Any]:
+    return {"type": "getaddr"}
+
+
 def getblocks_payload(locator: list[str], stop: str | None = None) -> dict[str, Any]:
     payload: dict[str, Any] = {"type": "getblocks", "locator": locator}
     if stop:

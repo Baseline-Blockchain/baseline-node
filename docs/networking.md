@@ -15,7 +15,8 @@ Bind addresses accept IPv4/IPv6. If you bind to `0.0.0.0`, keep a firewall in fr
 The node keeps a persistent address book at `data_dir/peers/known_peers.json`. On first boot it uses two sources:
 
 1. **Manual seeds** (`network.seeds`): list of `"host:port"` strings. Specify at least one reachable peer for predictable startup.
-2. **DNS seeds**: read from `config.network.dns_seeds` (populated by env overrides or future releases). The resolver ignores localhost, RFC1918, link-local, or reserved prefixes, so lab clusters must rely on manual seeds.
+2. **DNS seeds**: read from `config.network.dns_seeds`. The resolver ignores localhost, RFC1918, link-local, or reserved prefixes, so lab clusters must rely on manual seeds.
+3. **Peer address gossip**: nodes request `getaddr` on new connections and cache any routable responses for outbound dialing.
 
 You can hot-add peers by editing `config.json` and restarting or by exposing new `addnode`-style RPC endpoints (planned). For now, keep static lists for test networks.
 
