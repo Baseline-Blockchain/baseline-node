@@ -155,8 +155,32 @@ class AddressBook:
             with self.path.open("r", encoding="utf-8") as f:
                 data = json.load(f)
 
-            for addr_data in data.get("addresses", []):
+            raw_addresses = data.get("addresses", [])
+            deduped: dict[str, PeerAddress] = {}
+
+            def _is_better(new: PeerAddress, existing: PeerAddress) -> bool:
+                # Prefer peers with successes, then fewer failures, then non-inbound,
+                # then the default port, then most recent last_seen.
+                if new.success_count != existing.success_count:
+                    return new.success_count > existing.success_count
+                if new.failure_count != existing.failure_count:
+                    return new.failure_count < existing.failure_count
+                if (new.source == "inbound") != (existing.source == "inbound"):
+                    return existing.source == "inbound"
+                if (new.port == 9333) != (existing.port == 9333):
+                    return new.port == 9333
+                return new.last_seen > existing.last_seen
+
+            for addr_data in raw_addresses:
                 addr = PeerAddress(**addr_data)
+                # Drop inbound-only addresses that never succeeded (likely ephemeral ports).
+                if addr.source == "inbound" and addr.success_count == 0:
+                    continue
+                current = deduped.get(addr.host)
+                if current is None or _is_better(addr, current):
+                    deduped[addr.host] = addr
+
+            for addr in deduped.values():
                 self.addresses[addr.key()] = addr
 
             self.log.info("Loaded %d addresses from address book", len(self.addresses))
@@ -168,10 +192,17 @@ class AddressBook:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
 
+            persisted = []
+            for addr in self.addresses.values():
+                # Do not persist inbound-only addresses that have never succeeded outbound.
+                if addr.source == "inbound" and addr.success_count == 0:
+                    continue
+                persisted.append(asdict(addr))
+
             data = {
                 "version": 1,
                 "timestamp": time.time(),
-                "addresses": [asdict(addr) for addr in self.addresses.values()]
+                "addresses": persisted
             }
 
             with self.path.open("w", encoding="utf-8") as f:

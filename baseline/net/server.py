@@ -190,6 +190,18 @@ class P2PServer:
             peer_id=peer_id,
         )
 
+    def _canonical_remote_address(self, peer: Peer) -> tuple[str, int]:
+        """Prefer the advertised listening port over the ephemeral socket port."""
+        host, port = peer.address
+        if peer.remote_version:
+            try:
+                advertised = int(peer.remote_version.get("port", port))
+                if 1 <= advertised <= 65535:
+                    port = advertised
+            except (TypeError, ValueError):
+                pass
+        return host, port
+
     def _run_peer(self, peer: Peer) -> None:
         task = asyncio.create_task(peer.run(), name=f"peer-{peer.peer_id}")
         self.peer_tasks.add(task)
@@ -358,11 +370,34 @@ class P2PServer:
             await peer.close()
             return
         self.peers[peer.peer_id] = peer
-        addr = PeerAddress(host=peer.address[0], port=peer.address[1], last_seen=time.time(), source="peer")
+        host, port = self._canonical_remote_address(peer)
+        services = 1
+        if peer.remote_version:
+            try:
+                services = int(peer.remote_version.get("services", services))
+            except (TypeError, ValueError):
+                services = 1
+        addr = PeerAddress(
+            host=host,
+            port=port,
+            last_seen=time.time(),
+            services=services,
+            source="outbound" if peer.outbound else "inbound",
+        )
+
+        # Preserve existing attempt/health counters when refreshing an address.
+        existing = self.discovery.address_book.addresses.get(addr.key())
+        if existing:
+            addr.attempts = existing.attempts
+            addr.last_attempt = existing.last_attempt
+            addr.success_count = existing.success_count
+            addr.failure_count = existing.failure_count
+
         self.discovery.address_book.add_address(addr)
-        if not peer.outbound:
+        if peer.outbound:
             self.discovery.address_book.record_success(addr.host, addr.port)
-        self.log.info("Peer %s connected (%s:%s)", peer.peer_id, *peer.address)
+
+        self.log.info("Peer %s connected (addr=%s:%s outbound=%s)", peer.peer_id, host, port, peer.outbound)
         await self._send_addr(peer)
         await self._request_addr(peer)
         self._maybe_start_header_sync(peer)
