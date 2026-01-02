@@ -238,7 +238,10 @@ class P2PServer:
             return
         key = (host, port)
         if key in self.active_addresses():
-            return
+            # Allow an outbound even if we already have only inbound connections
+            existing = [peer for peer in self.peers.values() if peer.address == key]
+            if any(peer.outbound for peer in existing):
+                return
         # Prevent self-connection
         if self.is_local_address(host, port):
             self.log.debug("Skipping self-connection to %s:%s", host, port)

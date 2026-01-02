@@ -1,6 +1,7 @@
 import tempfile
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from baseline.config import NodeConfig
@@ -155,3 +156,33 @@ class SyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn((host, port), self.server.known_addresses)
         discovered = await self.server.discovery.discover_peers(1)
         self.assertIn((host, port), discovered)
+
+    async def test_outbound_allowed_when_already_inbound(self) -> None:
+        inbound = DummyPeer()
+        inbound.outbound = False
+        inbound.address = ("203.0.113.9", 9333)
+        self.server.peers["inbound"] = inbound
+        captured: list[tuple[str, int]] = []
+        spawned: list[Peer] = []
+
+        class DummyReader:
+            pass
+
+        class DummyWriter:
+            def close(self):  # pragma: no cover - noop
+                pass
+
+            async def wait_closed(self):  # pragma: no cover - noop
+                pass
+
+        async def fake_open_connection(host: str, port: int, **_):
+            captured.append((host, port))
+            return DummyReader(), DummyWriter()
+
+        self.server._run_peer = lambda peer: spawned.append(peer)
+        with mock.patch("baseline.net.server.asyncio.open_connection", fake_open_connection):
+            await self.server._connect_outbound(*inbound.address)
+
+        self.assertIn(inbound.address, captured)
+        self.assertEqual(len(spawned), 1)
+        self.assertTrue(spawned[0].outbound)
