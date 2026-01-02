@@ -27,6 +27,9 @@ class PeerAddress:
 
     def is_stale(self, max_age: float = 86400 * 7) -> bool:
         """True if we have not seen the peer in max_age seconds."""
+        # Treat zero as "unknown" so bootstrap files with last_seen=0 are dialed.
+        if self.last_seen <= 0:
+            return False
         return time.time() - self.last_seen > max_age
 
     def should_retry(self, min_retry_delay: float = 30) -> bool:

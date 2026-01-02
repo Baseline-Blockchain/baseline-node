@@ -237,16 +237,22 @@ class AddressBook:
         """Get addresses for connection attempts."""
         exclude = exclude or set()
 
-        # Filter addresses
-        candidates = []
-        for addr in self.addresses.values():
-            if addr.key() in exclude:
-                continue
-            if addr.is_stale():
-                continue
-            if not addr.should_retry():
-                continue
-            candidates.append(addr)
+        def _filtered(include_stale: bool) -> list[PeerAddress]:
+            results = []
+            for addr in self.addresses.values():
+                if addr.key() in exclude:
+                    continue
+                if not include_stale and addr.is_stale():
+                    continue
+                if not addr.should_retry():
+                    continue
+                results.append(addr)
+            return results
+
+        # Prefer fresh addresses; if none available, fall back to stale ones so seed files are used.
+        candidates = _filtered(include_stale=False)
+        if not candidates:
+            candidates = _filtered(include_stale=True)
 
         # Sort by reliability score (best first)
         candidates.sort(key=lambda a: a.reliability_score(), reverse=True)
