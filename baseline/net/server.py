@@ -61,9 +61,7 @@ class P2PServer:
         self._stop_event = asyncio.Event()
         self.server: asyncio.AbstractServer | None = None
         self.loop: asyncio.AbstractEventLoop | None = None
-        self.known_addresses: dict[tuple[str, int], PeerAddress] = {}
-        self.peer_file = config.data_dir / "peers" / "known_peers.json"
-        self.peer_file.parent.mkdir(parents=True, exist_ok=True)
+        self.known_addresses = self.discovery.address_book.addresses
         self._peer_seq = 0
         self._tasks: list[asyncio.Task] = []
         self.sync_peer: Peer | None = None
@@ -335,8 +333,10 @@ class P2PServer:
             await peer.close()
             return
         self.peers[peer.peer_id] = peer
-        addr = PeerAddress(host=peer.address[0], port=peer.address[1], last_seen=time.time())
-        self.known_addresses[addr.key()] = addr
+        addr = PeerAddress(host=peer.address[0], port=peer.address[1], last_seen=time.time(), source="peer")
+        self.discovery.address_book.add_address(addr)
+        if not peer.outbound:
+            self.discovery.address_book.record_success(addr.host, addr.port)
         self.log.info("Peer %s connected (%s:%s)", peer.peer_id, *peer.address)
         await self._send_addr(peer)
         await self._request_addr(peer)
@@ -534,20 +534,8 @@ class P2PServer:
                 exclude = {source_peer.peer_id} if source_peer else None
                 await self.broadcast_inv("block", orphan_hash, exclude=exclude)
 
-    async def handle_addr(self, _peer: Peer, message: dict[str, Any]) -> None:
-        peers = message.get("peers", [])
-        for entry in peers:
-            try:
-                host = entry["host"]
-                port = int(entry["port"])
-                last_seen = entry.get("last_seen")
-                if last_seen is None:
-                    last_seen = entry.get("timestamp", time.time())
-                last_seen = float(last_seen)
-            except (KeyError, ValueError, TypeError):
-                continue
-            addr = PeerAddress(host=host, port=port, last_seen=last_seen)
-            self.known_addresses[addr.key()] = addr
+    async def handle_addr(self, _peer: Peer, _message: dict[str, Any]) -> None:
+        return
 
     async def handle_getheaders(self, peer: Peer, message: dict[str, Any]) -> None:
         locator = message.get("locator")
@@ -745,33 +733,32 @@ class P2PServer:
         asyncio.run_coroutine_threadsafe(self.broadcast_inv("block", block_hash), self.loop)
 
     def _load_known_addresses(self) -> None:
-        if not self.peer_file.exists():
-            for host, port in self._seed_hosts():
-                addr = PeerAddress(host=host, port=port, last_seen=0)
-                self.known_addresses[addr.key()] = addr
+        legacy_path = self.config.data_dir / "peers" / "known_peers.json"
+        if not legacy_path.exists():
             return
         try:
-            data = json.loads(self.peer_file.read_text("utf-8"))
+            data = json.loads(legacy_path.read_text("utf-8"))
         except Exception:
-            self.log.warning("Failed to load peer store")
+            self.log.warning("Failed to load legacy peer store")
             return
+        added = 0
         for entry in data:
             try:
                 addr = PeerAddress(
                     host=entry["host"],
                     port=int(entry["port"]),
                     last_seen=float(entry.get("last_seen", 0)),
+                    source="legacy",
                 )
             except (KeyError, ValueError, TypeError):
                 continue
-            self.known_addresses[addr.key()] = addr
+            if self.discovery.address_book.add_address(addr):
+                added += 1
+        if added:
+            self.log.info("Imported %d legacy peer addresses", added)
 
     def _save_known_addresses(self) -> None:
-        try:
-            serialized = [asdict(addr) for addr in self.known_addresses.values()]
-            self.peer_file.write_text(json.dumps(serialized, indent=2), encoding="utf-8")
-        except Exception:
-            self.log.exception("Failed to store peer addresses")
+        self.discovery.save_address_book()
 
     def _build_block_locator(self, limit: int = 32) -> list[str]:
         tip = self.chain.state_db.get_best_tip()

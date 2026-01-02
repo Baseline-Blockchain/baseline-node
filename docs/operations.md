@@ -63,6 +63,6 @@ Always stop the node first. If you want to keep logs, copy them out before runni
 ## Maintenance Tasks
 
 - Rotate payout ledger by archiving old worker entries once balances hit zero.
-- Reset `known_peers.json` occasionally if you suspect stale addresses.
+- Reset `data_dir/peers.json` occasionally if you suspect stale addresses.
 - Use the wallet CLI’s `rescan` options after restoring from backup to rebuild balances.
 - Keep Python + OS security patches current; Baseline uses asyncio and sqlite so kernel bugs can manifest as hangs.

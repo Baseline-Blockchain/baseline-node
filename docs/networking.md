@@ -12,7 +12,7 @@ Bind addresses accept IPv4/IPv6. If you bind to `0.0.0.0`, keep a firewall in fr
 
 ## Bootstrapping Peers
 
-The node keeps a persistent address book at `data_dir/peers/known_peers.json`. On first boot it uses two sources:
+The node keeps a persistent address book at `data_dir/peers.json`. On first boot it uses two sources:
 
 1. **Manual seeds** (`network.seeds`): list of `"host:port"` strings. Specify at least one reachable peer for predictable startup.
 2. **DNS seeds**: read from `config.network.dns_seeds`. The resolver ignores localhost, RFC1918, link-local, or reserved prefixes, so lab clusters must rely on manual seeds.
@@ -32,19 +32,23 @@ Peers that idle for `idle_timeout` seconds or fail to respond to pings are dropp
 
 ## Address Sharing
 
-`addr`/`addrv2` equivalents advertise up to 32 entries per message. Baseline stores the union in `known_addresses`; you can pre-seed that file to accelerate bootstrap on air-gapped networks.
+`addr`/`addrv2` equivalents advertise up to 32 entries per message. Baseline stores the union in the address book at `data_dir/peers.json`; you can pre-seed that file to accelerate bootstrap on air-gapped networks.
 
 ```
-known_peers.json
-[
-  {"host": "seed1.baseline.org", "port": 9333, "last_seen": 0},
-  {"host": "203.0.113.15", "port": 9333, "last_seen": 1692124800}
-]
+peers.json
+{
+  "version": 1,
+  "timestamp": 1692124800,
+  "addresses": [
+    {"host": "seed1.baseline.org", "port": 9333, "last_seen": 0},
+    {"host": "203.0.113.15", "port": 9333, "last_seen": 1692124800}
+  ]
+}
 ```
 
 ## Local-Only Clusters
 
-Because the DNS seeder filters private ranges, you must explicitly list `127.0.0.1:<port>` or `192.168.x.x:<port>` entries in `network.seeds` (or copy the remote node’s `known_peers.json`) when running integration tests on a single host.
+Because the DNS seeder filters private ranges, you must explicitly list `127.0.0.1:<port>` or `192.168.x.x:<port>` entries in `network.seeds` (or copy the remote node’s `peers.json`) when running integration tests on a single host.
 
 ## Banning & Rate Limits
 

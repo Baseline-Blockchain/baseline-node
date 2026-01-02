@@ -1,4 +1,5 @@
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -140,3 +141,17 @@ class SyncTests(unittest.IsolatedAsyncioTestCase):
         await self.server.handle_headers(peer, payload)
         self.assertFalse(self.server.header_sync_active)
         self.assertTrue(self.server.sync_active)
+
+    async def test_addr_gossip_populates_discovery(self) -> None:
+        self.assertIs(self.server.known_addresses, self.server.discovery.address_book.addresses)
+        host = "203.0.113.5"
+        port = 9333
+        payload = {
+            "type": "addr",
+            "peers": [{"host": host, "port": port, "last_seen": int(time.time())}],
+        }
+        self.server.discovery.handle_addr_message(payload, "198.51.100.10")
+        self.assertIn((host, port), self.server.discovery.address_book.addresses)
+        self.assertIn((host, port), self.server.known_addresses)
+        discovered = await self.server.discovery.discover_peers(1)
+        self.assertIn((host, port), discovered)

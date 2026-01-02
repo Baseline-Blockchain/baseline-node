@@ -335,7 +335,7 @@ class PeerExchange:
 
         # Rate limiting for addr messages
         self.peer_addr_timestamps: dict[str, float] = {}
-        self.min_addr_interval = 300.0  # 5 minutes between addr messages per peer
+        self.min_addr_interval = 2.0  # 5 minutes between addr messages per peer
         self.max_addresses_per_message = 1000
 
     def create_addr_message(self, max_addresses: int = 1000) -> dict[str, Any]:
