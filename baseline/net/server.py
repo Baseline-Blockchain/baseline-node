@@ -80,6 +80,7 @@ class P2PServer:
         self.bytes_sent = 0
         self.bytes_received = 0
         self._local_addresses: set[tuple[str, int]] = set()
+        self._header_peer_cooldowns: dict[str, float] = {}
         self._init_local_addresses()
         self._load_known_addresses()
         self.mempool.register_listener(self._on_local_tx)
@@ -327,6 +328,8 @@ class P2PServer:
                 now = time.time()
                 if self.header_sync_active and now - self._header_last_time > self._header_timeout:
                     self.log.warning("Header sync stalled; restarting")
+                    if self.header_peer:
+                        self._header_peer_cooldowns[self.header_peer.peer_id] = now + 60.0
                     self.header_sync_active = False
                     if self.header_peer:
                         self.header_peer = None
@@ -811,6 +814,11 @@ class P2PServer:
             return
         if not peer.remote_version:
             return
+        cooldown_until = self._header_peer_cooldowns.get(peer.peer_id)
+        if cooldown_until:
+            if time.time() < cooldown_until:
+                return
+            self._header_peer_cooldowns.pop(peer.peer_id, None)
         remote_height = int(peer.remote_version.get("height", 0))
         local_height = self.best_height()
         if remote_height <= local_height:
@@ -830,7 +838,9 @@ class P2PServer:
     def _try_start_header_sync(self) -> None:
         if self.header_sync_active:
             return
-        for peer in list(self.peers.values()):
+        peers = list(self.peers.values())
+        random.shuffle(peers)
+        for peer in peers:
             self._maybe_start_header_sync(peer)
             if self.header_sync_active:
                 break

@@ -478,11 +478,36 @@ class PeerDiscovery:
     async def discover_peers(self, count: int) -> list[tuple[str, int]]:
         """Discover peer addresses for connection."""
         try:
-            # First try existing addresses
-            existing = self.address_book.get_addresses(count)
+            picks: list[tuple[str, int]] = []
+            seen: set[tuple[str, int]] = set()
 
-            # If we don't have enough, try DNS seeds
-            if len(existing) < count:
+            # Seed-first: try manual seeds before address book/DNS
+            for seed in self.manual_seeds:
+                try:
+                    if ":" in seed:
+                        host, port_str = seed.rsplit(":", 1)
+                        port = int(port_str)
+                    else:
+                        host = seed
+                        port = 9333
+                    key = (host, port)
+                    if key not in seen:
+                        picks.append(key)
+                        seen.add(key)
+                    if len(picks) >= count:
+                        return picks[:count]
+                except ValueError:
+                    continue
+
+            # Next pull from the address book, excluding already chosen seeds
+            remaining = max(0, count - len(picks))
+            if remaining:
+                existing = self.address_book.get_addresses(remaining, exclude=seen)
+                picks.extend([addr.key() for addr in existing if addr.key() not in seen])
+                seen.update(addr.key() for addr in existing)
+
+            # If still short, try DNS seeds then pull again
+            if len(picks) < count:
                 try:
                     dns_addresses = await self.dns_seeder.resolve_seeds()
                     if dns_addresses:
@@ -500,10 +525,12 @@ class PeerDiscovery:
                     self.log.warning("DNS seed discovery failed: %s", exc)
                     self._record_error()
 
-                # Get addresses again after adding DNS results
-                existing = self.address_book.get_addresses(count)
+                remaining = max(0, count - len(picks))
+                if remaining:
+                    existing = self.address_book.get_addresses(remaining, exclude=seen)
+                    picks.extend([addr.key() for addr in existing if addr.key() not in seen])
 
-            return [addr.key() for addr in existing]
+            return picks[:count]
 
         except Exception as exc:
             self.log.error("Peer discovery failed: %s", exc, exc_info=True)
