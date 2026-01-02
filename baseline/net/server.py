@@ -236,38 +236,48 @@ class P2PServer:
     async def _connect_outbound(self, host: str, port: int) -> None:
         if self._stop_event.is_set():
             return
-        key = (host, port)
-        if key in self.active_addresses():
-            # Allow an outbound even if we already have only inbound connections
-            existing = [peer for peer in self.peers.values() if peer.address == key]
-            if any(peer.outbound for peer in existing):
+        targets: list[tuple[str, int]] = [(host, port)]
+        if port != self.listen_port:
+            derived = (host, self.listen_port)
+            if derived not in targets:
+                targets.append(derived)
+
+        for tgt_host, tgt_port in targets:
+            if self._stop_event.is_set():
                 return
-        # Prevent self-connection
-        if self.is_local_address(host, port):
-            self.log.debug("Skipping self-connection to %s:%s", host, port)
+            key = (tgt_host, tgt_port)
+            if key in self.active_addresses():
+                # Allow an outbound even if we already have only inbound connections
+                existing = [peer for peer in self.peers.values() if peer.address == key]
+                if any(peer.outbound for peer in existing):
+                    continue
+            # Prevent self-connection
+            if self.is_local_address(tgt_host, tgt_port):
+                self.log.debug("Skipping self-connection to %s:%s", tgt_host, tgt_port)
+                continue
+
+            self.discovery.record_connection_attempt(tgt_host, tgt_port)
+
+            try:
+                reader, writer = await asyncio.wait_for(
+                    asyncio.open_connection(tgt_host, tgt_port), timeout=5
+                )
+            except (TimeoutError, OSError) as exc:
+                self.log.debug("Failed to dial %s:%s: %s", tgt_host, tgt_port, exc)
+                self.discovery.record_connection_failure(tgt_host, tgt_port)
+                continue
+
+            peer = self._build_peer(reader, writer, (tgt_host, tgt_port), outbound=True)
+
+            if not self.security.add_connection(tgt_host, peer.peer_id):
+                self.log.debug("Rejected outbound connection to %s:%s (connection limit)", tgt_host, tgt_port)
+                writer.close()
+                self.discovery.record_connection_failure(tgt_host, tgt_port)
+                continue
+
+            self.discovery.record_connection_success(tgt_host, tgt_port)
+            self._run_peer(peer)
             return
-
-        # Record connection attempt
-        self.discovery.record_connection_attempt(host, port)
-
-        try:
-            reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=5)
-        except (TimeoutError, OSError) as exc:
-            self.log.debug("Failed to dial %s:%s: %s", host, port, exc)
-            self.discovery.record_connection_failure(host, port)
-            return
-
-        peer = self._build_peer(reader, writer, (host, port), outbound=True)
-
-        # Add connection to security manager
-        if not self.security.add_connection(host, peer.peer_id):
-            self.log.debug("Rejected outbound connection to %s:%s (connection limit)", host, port)
-            writer.close()
-            self.discovery.record_connection_failure(host, port)
-            return
-
-        self.discovery.record_connection_success(host, port)
-        self._run_peer(peer)
 
     def outbound_count(self) -> int:
         return sum(1 for peer in self.peers.values() if peer.outbound)
