@@ -60,7 +60,8 @@ class RPCConfig:
     worker_threads: int = 8
     max_batch_size: int = 32
     max_batch_concurrency: int = 8
-    max_requests_per_minute: int = 120
+    # 0 disables rate limiting; wallets tend to burst calls, so keep this high by default.
+    max_requests_per_minute: int = 5000
     rate_limit_exempt_loopback: bool = True
 
     def validate(self) -> None:
