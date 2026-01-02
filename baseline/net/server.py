@@ -540,7 +540,10 @@ class P2PServer:
             try:
                 host = entry["host"]
                 port = int(entry["port"])
-                last_seen = float(entry.get("last_seen", time.time()))
+                last_seen = entry.get("last_seen")
+                if last_seen is None:
+                    last_seen = entry.get("timestamp", time.time())
+                last_seen = float(last_seen)
             except (KeyError, ValueError, TypeError):
                 continue
             addr = PeerAddress(host=host, port=port, last_seen=last_seen)

@@ -346,16 +346,18 @@ class PeerExchange:
         for addr in addresses:
             # Only share addresses we've successfully connected to
             if addr.success_count > 0:
-                addr_list.append({
-                    "host": addr.host,
-                    "port": addr.port,
-                    "services": addr.services,
-                    "timestamp": int(addr.last_seen),
-                })
+                addr_list.append(
+                    {
+                        "host": addr.host,
+                        "port": addr.port,
+                        "services": addr.services,
+                        "last_seen": int(addr.last_seen),
+                    }
+                )
 
         return {
             "type": "addr",
-            "addresses": addr_list,
+            "peers": addr_list,
         }
 
     def handle_addr_message(self, message: dict[str, Any], peer_id: str) -> bool:
@@ -369,7 +371,9 @@ class PeerExchange:
             self.log.warning("Rate limiting addr message from peer %s", peer_id)
             return False
 
-        addresses = message.get("addresses", [])
+        addresses = message.get("peers")
+        if addresses is None:
+            addresses = message.get("addresses", [])
 
         # Limit number of addresses per message
         if len(addresses) > self.max_addresses_per_message:
@@ -380,10 +384,13 @@ class PeerExchange:
         new_addresses = []
         for addr_data in addresses:
             try:
+                last_seen = addr_data.get("last_seen")
+                if last_seen is None:
+                    last_seen = addr_data.get("timestamp", time.time())
                 addr = PeerAddress(
                     host=addr_data["host"],
                     port=addr_data["port"],
-                    last_seen=addr_data.get("timestamp", time.time()),
+                    last_seen=last_seen,
                     services=addr_data.get("services", 1),
                     source="peer"
                 )
