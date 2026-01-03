@@ -210,6 +210,19 @@ class BaselineNode:
             min_payout=self.config.mining.min_payout,
             pool_fee_percent=self.config.mining.pool_fee_percent,
         )
+        try:
+            reconcile = self.payout_tracker.reconcile_balances(self.state_db, apply=True)
+            shortfall = reconcile.get("shortfall", 0)
+            if shortfall > 0:
+                self.log.warning(
+                    "Payout ledger reconciled at startup: spendable=%s, owed=%s, shortfall=%s, applied=%s",
+                    reconcile.get("spendable_total"),
+                    reconcile.get("owed_total"),
+                    shortfall,
+                    reconcile.get("applied"),
+                )
+        except Exception:
+            self.log.exception("Payout ledger reconciliation failed at startup")
         self.template_builder = TemplateBuilder(self.chain, self.mempool, pool_script)
         self.stratum = StratumServer(
             self.config,

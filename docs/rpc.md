@@ -12,6 +12,8 @@ Baseline exposes a Bitcoin-like JSON-RPC server over HTTP. The server listens on
 
 Performing a `GET /` against the RPC endpoint (e.g. `http://127.0.0.1:8832/`) returns a plain-text dashboard instead of JSON. The panel shows the current height, best block hash, peer counts, mempool size, sync status, uptime, wallet + NTP status, and other quick diagnostics. The wallet row reflects background sync state (`ready`, `syncing`, processed height) so you can tell at a glance whether wallet RPC results are current.
 
+When Stratum is enabled, `GET /pool` returns a pool dashboard (also plain text) summarizing pool fee/min payout, balance, pending/matured rewards, workers, Stratum sessions, and a payout preview. Optional query params: `worker=<id>` or `address=<payout_address>` to filter the worker list.
+
 ## Request Format
 
 ```bash

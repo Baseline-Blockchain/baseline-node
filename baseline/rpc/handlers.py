@@ -94,6 +94,7 @@ class RPCHandlers(WalletRPCMixin):
             "getpoolmatured": self.getpoolmatured,
             "getpoolpayoutpreview": self.getpoolpayoutpreview,
             "getstratumsessions": self.getstratumsessions,
+            "poolreconcile": self.poolreconcile,
         }
         if self.wallet:
             self._methods.update(self._wallet_method_map())
@@ -894,6 +895,10 @@ class RPCHandlers(WalletRPCMixin):
                 }
             )
         return {"count": len(sessions), "sessions": sessions}
+
+    def poolreconcile(self, apply: bool = False) -> dict[str, Any]:
+        tracker = self._require_pool_tracker()
+        return tracker.reconcile_balances(self.state_db, apply=bool(apply))
 
     def getblockstats(self, hash_or_height: Any, stats: list[str] | None = None) -> dict[str, Any]:
         if isinstance(hash_or_height, str):
