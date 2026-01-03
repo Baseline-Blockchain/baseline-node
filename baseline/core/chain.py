@@ -403,6 +403,12 @@ class Chain:
         if block.header.prev_hash:
             self.state_db.remove_chain_tip(block.header.prev_hash)
         self.log.info("Connected block %s height=%s txs=%s", block_hash, height, len(block.transactions))
+        mempool = getattr(self, "mempool", None)
+        if mempool is not None:
+            try:
+                mempool.handle_block_connected(block)
+            except Exception:
+                self.log.debug("Mempool notification failed for block %s", block_hash, exc_info=True)
 
     def _collect_utxo_changes(self, validation: ValidationResult) -> tuple[list[tuple[str, int]], list[UTXORecord]]:
         spent_keys = [(rec.txid, rec.vout) for rec in validation.spent]

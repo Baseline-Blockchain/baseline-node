@@ -202,6 +202,16 @@ class Mempool:
             with self.lock:
                 self._listeners[:] = saved
 
+    def handle_block_connected(self, block) -> None:
+        """
+        Called when a new block connects to the main chain so orphans that
+        depended on its transactions can be reconsidered.
+        """
+        if not block or not getattr(block, "transactions", None):
+            return
+        for tx in block.transactions[1:]:
+            self._process_new_outputs(tx.txid(), len(tx.outputs))
+
     def register_listener(self, callback: Callable[[Transaction], None]) -> None:
         self._listeners.append(callback)
 

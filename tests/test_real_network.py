@@ -7,7 +7,9 @@ import unittest
 from pathlib import Path
 
 from baseline.config import NodeConfig
-from baseline.core import difficulty
+from baseline.core import crypto, difficulty
+from baseline.core.address import script_from_address
+from baseline.core.tx import Transaction, TxInput, TxOutput
 from baseline.node import BaselineNode
 
 
@@ -25,6 +27,9 @@ class RealNetworkIntegrationTests(unittest.TestCase):
 
     def test_pool_payout_flow(self) -> None:
         asyncio.run(self._run_payout_flow())
+
+    def test_tx_propagation_across_peers(self) -> None:
+        asyncio.run(self._run_tx_propagation_flow())
 
     async def _run_cluster_flow(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -151,6 +156,88 @@ class RealNetworkIntegrationTests(unittest.TestCase):
                 self.assertEqual(worker_state.balance, 0)
             finally:
                 await self._stop_nodes([node])
+
+    async def _run_tx_propagation_flow(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base_dir = Path(tmpdir)
+            nodes: list[BaselineNode] = []
+            try:
+                seed = await self._start_node(self._build_config(base_dir, 0, ()))
+                nodes.append(seed)
+                follower = await self._start_node(self._build_config(base_dir, 1, (self._node_address(0),)))
+                nodes.append(follower)
+                # Wait for connectivity
+                await self._wait_for(lambda: len(seed.network.peers) >= 1, 10.0, "seed missing peers")
+                await self._wait_for(lambda: len(follower.network.peers) >= 1, 10.0, "follower missing peers")
+
+                # Mine two blocks to unlock a coinbase and ensure chain sync
+                await asyncio.to_thread(self._mine_single_block, seed)
+                _, height2 = await asyncio.to_thread(self._mine_single_block, seed)
+                await self._wait_for_height([follower], height2, 20.0)
+
+                self.assertIsNotNone(seed.payout_tracker, "Payout tracker missing")
+                assert seed.payout_tracker is not None
+                pool_script = seed.payout_tracker.pool_script
+                pool_priv = seed.payout_tracker.pool_privkey
+                spendable_utxos = seed.chain.state_db.get_utxos_by_scripts([pool_script])
+                self.assertTrue(spendable_utxos, "No spendable pool UTXOs found")
+                base_utxo = max(spendable_utxos, key=lambda record: record.height)
+
+                # First transaction: spend coinbase reward to a wallet address and mine it into a block
+                addr1 = seed.wallet.get_new_address("send-1") if seed.wallet else crypto.address_from_pubkey(crypto.generate_pubkey(3))
+                script1 = script_from_address(addr1)
+                tx1 = Transaction(
+                    version=1,
+                    inputs=[TxInput(prev_txid=base_utxo.txid, prev_vout=base_utxo.vout, script_sig=b"", sequence=0xFFFFFFFF)],
+                    outputs=[TxOutput(value=max(1, base_utxo.amount - 10_000), script_pubkey=script1)],
+                    lock_time=0,
+                )
+                sighash1 = tx1.signature_hash(0, base_utxo.script_pubkey, 0x01)
+                pub1 = crypto.generate_pubkey(pool_priv)
+                sig1 = crypto.sign(sighash1, pool_priv) + b"\x01"
+                tx1.inputs[0].script_sig = bytes([len(sig1)]) + sig1 + bytes([len(pub1)]) + pub1
+                tx1.validate_basic()
+                res1 = seed.mempool.accept_transaction(tx1, peer_id="local")
+                self.assertEqual(res1.get("status"), "accepted", f"seed mempool reject tx1: {res1}")
+                block_with_tx1, height3 = await asyncio.to_thread(self._mine_single_block, seed)
+                self.assertTrue(block_with_tx1)
+                await self._wait_for_height([follower], height3, 20.0)
+
+                # Second transaction: spend the confirmed P2PKH output (non-coinbase) and leave it in mempool
+                spend_utxo = seed.chain.state_db.get_utxo(tx1.txid(), 0)
+                self.assertIsNotNone(spend_utxo, "Failed to locate tx1 output")
+                assert spend_utxo is not None
+                addr2 = seed.wallet.get_new_address("send-2") if seed.wallet else crypto.address_from_pubkey(crypto.generate_pubkey(5))
+                script2 = script_from_address(addr2)
+                spend_priv = seed.wallet._lookup_privkey(addr1) if seed.wallet else 5
+                tx2 = Transaction(
+                    version=1,
+                    inputs=[TxInput(prev_txid=spend_utxo.txid, prev_vout=spend_utxo.vout, script_sig=b"", sequence=0xFFFFFFFF)],
+                    outputs=[TxOutput(value=max(1, spend_utxo.amount - 5_000), script_pubkey=script2)],
+                    lock_time=0,
+                )
+                sighash2 = tx2.signature_hash(0, spend_utxo.script_pubkey, 0x01)
+                pub2 = crypto.generate_pubkey(spend_priv)
+                sig2 = crypto.sign(sighash2, spend_priv) + b"\x01"
+                tx2.inputs[0].script_sig = bytes([len(sig2)]) + sig2 + bytes([len(pub2)]) + pub2
+                tx2.validate_basic()
+                tx2id = tx2.txid()
+                res2 = seed.mempool.accept_transaction(tx2, peer_id="local")
+                self.assertEqual(res2.get("status"), "accepted", f"seed mempool reject tx2: {res2}")
+
+                # Existing peers should receive the mempool tx immediately
+                await self._wait_for(lambda: follower.mempool.contains(tx2id), 10.0, "follower did not receive tx2")
+                self.assertTrue(follower.mempool.contains(tx2id))
+
+                # New peers should learn about the mempool inventory on connect
+                newcomer = await self._start_node(self._build_config(base_dir, 2, (self._node_address(0),)))
+                nodes.append(newcomer)
+                await self._wait_for(lambda: len(newcomer.network.peers) >= 1, 10.0, "newcomer failed to connect")
+                await self._wait_for_height([newcomer], height3, 20.0)
+                await self._wait_for(lambda: newcomer.mempool.contains(tx2id), 10.0, "newcomer did not receive tx2 on connect")
+                self.assertTrue(newcomer.mempool.contains(tx2id))
+            finally:
+                await self._stop_nodes(nodes)
 
     async def _mine_blocks(self, miner: BaselineNode, count: int, synced_nodes: list[BaselineNode]) -> None:
         for _ in range(count):
