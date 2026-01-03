@@ -4,8 +4,9 @@ Baseline exposes a Bitcoin-like JSON-RPC server over HTTP. The server listens on
 
 ## Authentication
 
-- Read-only methods in the node allowlist are served without Basic Auth (for explorers and public telemetry).
-- Wallet methods and mutating methods still require Basic Auth (configure via `config.rpc.username` / `config.rpc.password`).
+- Status panel: `GET /` is unauthenticated but rate-limited; keep it on trusted networks.
+- JSON-RPC: these read-only/public methods are served without Basic Auth: `getblockcount`, `getbestblockhash`, `getblockchaininfo`, `getblockhash`, `getblockheader`, `getblock`, `getrawtransaction`, `gettxout`, `getrichlist`, `getaddressutxos`, `getaddressbalance`, `getaddresstxids`, `estimatesmartfee`, `getmempoolinfo`, `sendrawtransaction`, `listscheduledtx`, `getschedule`. Any other method—or any batch containing a non-public method—requires Basic Auth (`rpc.username` / `rpc.password`).
+- Wallet and mutating methods always require Basic Auth.
 
 ## Status Panel
 
