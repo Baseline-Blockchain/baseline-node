@@ -152,8 +152,23 @@ class RPCHandlers(WalletRPCMixin):
         return rows
 
     def getaddressutxos(self, options: Any) -> list[dict[str, Any]]:
+        default_limit = 500
         addresses = self._parse_address_list(options)
-        rows = self.state_db.get_address_utxos(addresses)
+        limit = None
+        offset = 0
+        if isinstance(options, dict):
+            try:
+                limit = int(options.get("limit")) if options.get("limit") is not None else None
+                offset = int(options.get("offset") or 0)
+            except Exception as exc:
+                raise RPCError(-8, "limit/offset must be integers") from exc
+            if offset < 0:
+                raise RPCError(-8, "offset must be >= 0")
+            if limit is not None and limit <= 0:
+                raise RPCError(-8, "limit must be > 0")
+        if limit is None:
+            limit = default_limit
+        rows = self.state_db.get_address_utxos(addresses, limit=limit, offset=offset)
         return [
             {
                 "address": row["address"],
@@ -168,24 +183,49 @@ class RPCHandlers(WalletRPCMixin):
 
     def getaddressbalance(self, options: Any) -> dict[str, float]:
         addresses = self._parse_address_list(options)
-        balance, received = self.state_db.get_address_balance(addresses)
+        tip = self.state_db.get_best_tip()
+        best_height = tip[1] if tip else 0
+        maturity = self.chain.config.mining.coinbase_maturity
+        balance, received, matured, immature = self.state_db.get_address_balance(
+            addresses, tip_height=best_height, maturity=maturity
+        )
         return {
             "balance_liners": balance,
             "received_liners": received,
+            "matured_liners": matured,
+            "immature_liners": immature,
             "balance": balance / COIN,
             "received": received / COIN,
+            "matured": matured / COIN,
+            "immature": immature / COIN,
         }
 
     def getaddresstxids(self, options: Any) -> list[Any]:
+        default_limit = 500
         include_height = False
+        limit = None
+        offset = 0
         if isinstance(options, dict):
             include_height = bool(options.get("include_height"))
+            try:
+                limit = int(options.get("limit")) if options.get("limit") is not None else None
+                offset = int(options.get("offset") or 0)
+            except Exception as exc:
+                raise RPCError(-8, "limit/offset must be integers") from exc
+            if offset < 0:
+                raise RPCError(-8, "offset must be >= 0")
+            if limit is not None and limit <= 0:
+                raise RPCError(-8, "limit must be > 0")
+        if limit is None:
+            limit = default_limit
         addresses, start, end = self._parse_address_list_with_range(options)
         return self.state_db.get_address_txids(
             addresses,
             start=start,
             end=end,
             include_height=include_height,
+            limit=limit,
+            offset=offset,
         )
 
     def getblockhash(self, height: int) -> str:

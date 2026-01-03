@@ -48,10 +48,10 @@ Baseline’s JSON-RPC, transaction format, and wallet semantics intentionally mi
 These commands behave like their Bitcoin Core counterparts:
 
 - **Deposits / monitoring**
-  - `getblockchaininfo` – sync status, reorg detection.
-  - `getblockhash`, `getblock`, `getrawtransaction` – transaction decoding for audit pipelines.
-  - `getaddressutxos`, `getaddresstxids`, `getaddressbalance` – Baseline exposes address indexers out of the box; use them to track customer deposit addresses without extra daemons.
-  - `getmempoolinfo`, `getrawmempool` – populate pending-deposit queues.
+  - `getblockchaininfo` - sync status, reorg detection.
+  - `getblockhash`, `getblock`, `getrawtransaction` - transaction decoding for audit pipelines.
+  - `getaddressutxos`, `getaddresstxids`, `getaddressbalance` - Baseline exposes address indexers out of the box; use them to track customer deposit addresses without extra daemons. `getaddressbalance` now reports `matured` / `immature` fields (coinbase maturity enforced). `getaddressutxos` / `getaddresstxids` are paginated (`limit` defaults to 500, `offset` starts at 0) so page through large accounts instead of assuming unbounded replies.
+  - `getmempoolinfo`, `getrawmempool` - populate pending-deposit queues.
 
 - **Wallet / withdrawals**
   - `getnewaddress` – allocate deposit and change addresses.
@@ -81,7 +81,7 @@ If you bring your own signing stack, you can disable the built-in wallet and rel
 ## Deposit Flow Pattern
 
 1. Issue unique deposit addresses per user via `getnewaddress` (label them with account IDs).
-2. Watch `getaddresstxids` or `getaddressutxos` for activity.
+2. Watch `getaddresstxids` or `getaddressutxos` for activity; page with `limit/offset` (default `limit=500`) on busy deposit addresses to avoid truncation.
 3. Require a confirmation threshold (Baseline defaults to 20-block coinbase maturity; typical exchanges use 20 confirmations for deposits to match that safety margin).
 4. Credit user balances once the confirmation threshold passes.
 

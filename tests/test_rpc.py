@@ -399,6 +399,42 @@ class RPCTestCase(unittest.TestCase):
         self.assertIsInstance(first["height"], int)
         self.assertIsInstance(first["blockhash"], str)
 
+    def test_getaddressbalance_reports_maturity(self) -> None:
+        addr = crypto.address_from_pubkey(crypto.generate_pubkey(42))
+        script = script_from_address(addr)
+        tip = self.state_db.get_best_tip()
+        tip_height = tip[1] if tip else 0
+        mature_amount = 2 * COIN
+        immature_amount = 3 * COIN
+        # Spendable (non-coinbase)
+        self.state_db.add_utxo(
+            UTXORecord(
+                txid="aa" * 32,
+                vout=0,
+                amount=mature_amount,
+                script_pubkey=script,
+                height=tip_height,
+                coinbase=False,
+            )
+        )
+        # Coinbase that is still immature at the current tip height
+        self.state_db.add_utxo(
+            UTXORecord(
+                txid="bb" * 32,
+                vout=0,
+                amount=immature_amount,
+                script_pubkey=script,
+                height=tip_height + 1,
+                coinbase=True,
+            )
+        )
+        balance = self.handlers.dispatch("getaddressbalance", [{"addresses": [addr]}])
+        self.assertEqual(balance["balance_liners"], mature_amount + immature_amount)
+        self.assertEqual(balance["matured_liners"], mature_amount)
+        self.assertEqual(balance["immature_liners"], immature_amount)
+        self.assertAlmostEqual(balance["matured"], mature_amount / COIN)
+        self.assertAlmostEqual(balance["immature"], immature_amount / COIN)
+
     def test_getrichlist_ranks_by_balance(self) -> None:
         addr1 = crypto.address_from_pubkey(crypto.generate_pubkey(10))
         addr2 = crypto.address_from_pubkey(crypto.generate_pubkey(11))

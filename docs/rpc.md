@@ -60,10 +60,14 @@ Baseline ships with address/tx indexes enabled so block explorers can stay in sy
 
 | Method | Description |
 |--------|-------------|
-| `getaddressutxos {"addresses":[...]} ` | Returns spendable outputs for the provided addresses (liners + scripts + height). |
-| `getaddressbalance {"addresses":[...]}` | Aggregate confirmed balance + total received (both in liners and BLINE). |
-| `getaddresstxids {"addresses":[...], "include_height":true}` | Lists transaction ids touching any of the addresses. When `include_height` is `true` each entry becomes `{ "txid": "...", "height": 123, "blockhash": "..." }`, which is crucial for explorers that want to fetch block-aware details in one pass. |
+| `getaddressutxos {"addresses":[...], "limit":500, "offset":0} ` | Paginated spendable outputs for the provided addresses (liners + scripts + height). Defaults to `limit=500` when omitted; ordered newest-first (height, then txid/vout). |
+| `getaddressbalance {"addresses":[...]}` | Aggregate confirmed balance + total received (both in liners and BLINE). Returns `matured` / `matured_liners` (spendable; coinbase maturity enforced) and `immature` / `immature_liners` for not-yet-mature coinbase outputs. |
+| `getaddresstxids {"addresses":[...], "limit":500, "offset":0, "include_height":true}` | Paginated transaction ids touching any of the addresses, ordered newest-first. `limit` defaults to 500; `offset` starts at 0. When `include_height` is `true` each entry becomes `{ "txid": "...", "height": 123, "blockhash": "..." }`, which is crucial for explorers that want block-aware details in one pass. |
 | `getrichlist [count] [offset]` | Returns the richest addresses by current UTXO balance. Each entry includes `{ "address": "...", "balance_liners": 123, "balance": 1.23 }` sorted descending. Use `offset` to paginate. |
+
+Pagination notes:
+
+- `getaddressutxos` and `getaddresstxids` enforce pagination. `limit` must be > 0 (default 500) and `offset` must be >= 0; omit `limit` to use the default. Results are returned newest-first so clients can fetch pages until a page contains fewer than `limit` entries to exhaust the set.
 
 ## Pool & Stratum (built-in)
 

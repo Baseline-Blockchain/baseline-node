@@ -686,17 +686,21 @@ class StateDB:
                 conn.execute("DELETE FROM address_history WHERE txid=?", (txid,))
         self._enqueue_write(_write)
 
-    def get_address_utxos(self, addresses: Sequence[str]) -> list[dict[str, Any]]:
+    def get_address_utxos(self, addresses: Sequence[str], *, limit: int | None = None, offset: int = 0) -> list[dict[str, Any]]:
         self._ensure_open()
         if not addresses:
             return []
         placeholders = ",".join("?" for _ in addresses)
         query = (
             "SELECT address, txid, vout, amount, height, script_pubkey "
-            f"FROM address_utxos WHERE address IN ({placeholders}) ORDER BY height, txid, vout"
+            f"FROM address_utxos WHERE address IN ({placeholders}) ORDER BY height DESC, txid DESC, vout DESC"
         )
+        params: list[Any] = list(addresses)
+        if limit is not None:
+            query += " LIMIT ? OFFSET ?"
+            params.extend([int(limit), int(offset)])
         conn = self._reader_conn()
-        rows = conn.execute(query, tuple(addresses)).fetchall()
+        rows = conn.execute(query, tuple(params)).fetchall()
         return [
             {
                 "address": row["address"],
@@ -709,22 +713,47 @@ class StateDB:
             for row in rows
         ]
 
-    def get_address_balance(self, addresses: Sequence[str]) -> tuple[int, int]:
+    def get_address_balance(
+        self,
+        addresses: Sequence[str],
+        *,
+        tip_height: int | None = None,
+        maturity: int | None = None,
+    ) -> tuple[int, int, int, int]:
         self._ensure_open()
         if not addresses:
-            return 0, 0
+            return 0, 0, 0, 0
         placeholders = ",".join("?" for _ in addresses)
         params = tuple(addresses)
         conn = self._reader_conn()
-        balance = conn.execute(
-            f"SELECT COALESCE(SUM(amount), 0) as total FROM address_utxos WHERE address IN ({placeholders})",
+        rows = conn.execute(
+            f"""
+            SELECT au.amount AS amount, au.height AS height, COALESCE(u.coinbase, 0) AS coinbase
+            FROM address_utxos au
+            LEFT JOIN utxos u ON au.txid = u.txid AND au.vout = u.vout
+            WHERE au.address IN ({placeholders})
+            """,
             params,
-        ).fetchone()["total"]
+        ).fetchall()
         received = conn.execute(
             f"SELECT COALESCE(SUM(amount), 0) as total FROM address_history WHERE address IN ({placeholders})",
             params,
         ).fetchone()["total"]
-        return int(balance or 0), int(received or 0)
+        balance = sum(int(row["amount"]) for row in rows)
+        matured = balance
+        immature = 0
+        if tip_height is not None and maturity is not None:
+            matured = 0
+            immature = 0
+            for row in rows:
+                amount = int(row["amount"])
+                is_coinbase = bool(row["coinbase"])
+                height = int(row["height"])
+                if is_coinbase and tip_height - height < maturity:
+                    immature += amount
+                else:
+                    matured += amount
+        return int(balance or 0), int(received or 0), int(matured or 0), int(immature or 0)
 
     def get_address_txids(
         self,
@@ -733,6 +762,8 @@ class StateDB:
         end: int | None = None,
         *,
         include_height: bool = False,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> list[Any]:
         self._ensure_open()
         if not addresses:
@@ -749,7 +780,10 @@ class StateDB:
         if end is not None:
             query += " AND height <= ?"
             params.append(int(end))
-        query += " GROUP BY txid ORDER BY height"
+        query += " GROUP BY txid ORDER BY height DESC"
+        if limit is not None:
+            query += " LIMIT ? OFFSET ?"
+            params.extend([int(limit), int(offset)])
         conn = self._reader_conn()
         rows = conn.execute(query, tuple(params)).fetchall()
         if not include_height:
