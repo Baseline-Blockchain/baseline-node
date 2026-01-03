@@ -401,6 +401,17 @@ class P2PServer:
         await self._send_addr(peer)
         await self._request_addr(peer)
         self._maybe_start_header_sync(peer)
+        await self._send_mempool_inventory(peer)
+
+    async def _send_mempool_inventory(self, peer: Peer, limit: int = 200) -> None:
+        if not self.mempool:
+            return
+        with self.mempool.lock:
+            txids = list(self.mempool.entries.keys())[:limit]
+        if not txids:
+            return
+        items = [{"type": "tx", "hash": txid} for txid in txids]
+        await peer.send_message(protocol.inv_payload(items))
 
     async def on_peer_closed(self, peer: Peer) -> None:
         self.peers.pop(peer.peer_id, None)
