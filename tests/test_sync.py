@@ -1,8 +1,8 @@
 import tempfile
 import time
 import unittest
-from unittest import mock
 from pathlib import Path
+from unittest import mock
 
 from baseline.config import NodeConfig
 from baseline.core import crypto, difficulty
@@ -10,6 +10,7 @@ from baseline.core.block import Block, BlockHeader, merkle_root_hash
 from baseline.core.chain import Chain
 from baseline.core.tx import Transaction, TxInput, TxOutput
 from baseline.mempool import Mempool
+from baseline.net.peer import Peer
 from baseline.net.server import P2PServer
 from baseline.storage import BlockStore, StateDB
 

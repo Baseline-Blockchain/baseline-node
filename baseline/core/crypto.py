@@ -48,13 +48,17 @@ def ripemd160(data: bytes) -> bytes:
         return hashlib.new("ripemd160", data).digest()
     except ValueError:
         # OpenSSL 3.0+ requires legacy provider for RIPEMD160
+        import shutil
         import subprocess
-        # Fallback: use openssl command
-        result = subprocess.run(
-            ['openssl', 'dgst', '-ripemd160', '-binary'],
+
+        openssl = shutil.which("openssl")
+        if openssl is None:
+            raise CryptoError("RIPEMD160 unavailable: openssl not found") from None
+        result = subprocess.run(  # noqa: S603 - fixed executable from PATH, input is in-memory bytes
+            [openssl, "dgst", "-ripemd160", "-binary"],
             input=data,
             capture_output=True,
-            check=True
+            check=True,
         )
         return result.stdout
 

@@ -180,11 +180,11 @@ class PayoutTracker:
                     continue
                 spendable.append((record, utxo_info))
 
-            if not spendable:
-                return None
+                if not spendable:
+                    return None
 
-            inputs: list[UTXORecord] = []
-            consumed: list[dict[str, object]] = []
+                inputs: list[UTXORecord] = []
+                consumed: list[dict[str, object]] = []
             input_sum = 0
             cursor = 0
             fee = 0
@@ -224,6 +224,78 @@ class PayoutTracker:
                 self.matured_utxos.remove(info)
             self._save()
             return tx
+
+    def preview_payout(self, state_db: StateDB, max_outputs: int = 16) -> dict[str, object] | None:
+        """Dry-run payout assembly without mutating balances or UTXOs."""
+        with self.lock:
+            payees = self._gather_payees(max_outputs)
+            if not payees or not self.matured_utxos:
+                return None
+            total_out = sum(amount for _, _, amount in payees)
+            spendable: list[tuple[UTXORecord, dict[str, object]]] = []
+            for utxo_info in self.matured_utxos:
+                vout = int(utxo_info.get("vout", 0))
+                record = state_db.get_utxo(utxo_info["txid"], vout)
+                if record is None:
+                    continue
+                spendable.append((record, utxo_info))
+            if not spendable:
+                return None
+
+            inputs: list[UTXORecord] = []
+            consumed: list[tuple[UTXORecord, dict[str, object]]] = []
+            input_sum = 0
+            cursor = 0
+            fee = 0
+            estimated_size = 0
+            change = 0
+            while True:
+                while input_sum < total_out + fee:
+                    if cursor >= len(spendable):
+                        return None
+                    record, utxo_info = spendable[cursor]
+                    inputs.append(record)
+                    consumed.append((record, utxo_info))
+                    input_sum += record.amount
+                    cursor += 1
+                tx_inputs = [
+                    TxInput(prev_txid=rec.txid, prev_vout=rec.vout, script_sig=b"", sequence=0xFFFFFFFF)
+                    for rec in inputs
+                ]
+                tx_outputs = [TxOutput(value=amount, script_pubkey=state.script) for _, state, amount in payees]
+                change = input_sum - total_out - fee
+                if change > 0:
+                    tx_outputs.append(TxOutput(value=change, script_pubkey=self.pool_script))
+                tx_candidate = Transaction(version=1, inputs=tx_inputs, outputs=tx_outputs, lock_time=0)
+                estimated_size = len(tx_candidate.serialize()) + len(tx_inputs) * self._script_sig_estimate
+                new_fee = required_fee(estimated_size, self.min_fee_rate)
+                if new_fee == fee:
+                    break
+                fee = max(new_fee, 0)
+
+            return {
+                "payees": [
+                    {"worker_id": worker_id, "address": state.address, "amount": amount}
+                    for worker_id, state, amount in payees
+                ],
+                "matured_utxos": [
+                    {
+                        "txid": record.txid,
+                        "vout": info.get("vout", record.vout),
+                        "amount": record.amount,
+                    }
+                    for record, info in consumed
+                ],
+                "inputs_used": [
+                    {"txid": rec.txid, "vout": rec.vout, "amount": rec.amount}
+                    for rec in inputs
+                ],
+                "fee": fee,
+                "change": max(change, 0),
+                "total_output": total_out,
+                "estimated_size": estimated_size,
+                "input_sum": input_sum,
+            }
 
     def _sign_transaction(self, tx: Transaction) -> None:
         for idx, _ in enumerate(tx.inputs):

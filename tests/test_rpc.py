@@ -10,7 +10,7 @@ from baseline.core.block import Block, BlockHeader, merkle_root_hash
 from baseline.core.chain import GENESIS_PRIVKEY, GENESIS_PUBKEY, Chain
 from baseline.core.tx import COIN, Transaction, TxInput, TxOutput
 from baseline.mempool import Mempool
-from baseline.mining.templates import TemplateBuilder
+from baseline.mining import PayoutTracker, StratumServer, TemplateBuilder
 from baseline.policy import MIN_RELAY_FEE_RATE
 from baseline.rpc.handlers import RPCError, RPCHandlers
 from baseline.storage import BlockStore, StateDB, UTXORecord
@@ -35,18 +35,38 @@ class RPCTestCase(unittest.TestCase):
         self.config.data_dir = data_dir
         self.config.mining.allow_consensus_overrides = True
         self.config.mining.coinbase_maturity = 1
+        self.config.mining.min_payout = 1_000
         self.config.mining.foundation_address = self.GENESIS_ADDRESS
         self.config.ensure_data_layout()
         self.block_store = BlockStore(data_dir / "blocks")
         self.state_db = StateDB(data_dir / "chainstate" / "state.sqlite3")
         self.chain = Chain(self.config, self.state_db, self.block_store)
         self.mempool = Mempool(self.chain)
-        pool_pub = crypto.generate_pubkey(2)
-        payout_script = b"\x76\xa9\x14" + crypto.hash160(pool_pub) + b"\x88\xac"
+        self.pool_priv = 2
+        self.pool_pub = crypto.generate_pubkey(self.pool_priv)
+        payout_script = b"\x76\xa9\x14" + crypto.hash160(self.pool_pub) + b"\x88\xac"
+        payouts_path = data_dir / "payouts" / "ledger.json"
+        self.payouts = PayoutTracker(
+            payouts_path,
+            self.pool_priv,
+            self.pool_pub,
+            payout_script,
+            maturity=self.config.mining.coinbase_maturity,
+            min_payout=self.config.mining.min_payout,
+            pool_fee_percent=self.config.mining.pool_fee_percent,
+        )
         self.template_builder = TemplateBuilder(self.chain, self.mempool, payout_script)
         wallet_path = data_dir / "wallet" / "wallet.json"
         self.wallet = WalletManager(wallet_path, self.state_db, self.block_store, self.mempool)
         self.network = DummyNetwork()
+        self.stratum = StratumServer(
+            self.config,
+            self.chain,
+            self.mempool,
+            self.template_builder,
+            self.payouts,
+            network=self.network,
+        )
         self.handlers = RPCHandlers(
             self.chain,
             self.mempool,
@@ -54,6 +74,8 @@ class RPCTestCase(unittest.TestCase):
             self.template_builder,
             self.network,
             self.wallet,
+            payout_tracker=self.payouts,
+            stratum_server=self.stratum,
         )
 
     def tearDown(self) -> None:
@@ -200,6 +222,39 @@ class RPCTestCase(unittest.TestCase):
         self.wallet.sync_chain()
         balance = self.handlers.dispatch("getbalance", [])
         self.assertAlmostEqual(balance, 10.0, places=8)
+
+    def test_getpoolstats_and_sessions(self) -> None:
+        stats = self.handlers.dispatch("getpoolstats", [])
+        self.assertTrue(stats["enabled"])
+        self.assertIn("stratum", stats)
+        self.assertEqual(stats["pending_blocks"], 0)
+        sessions = self.handlers.dispatch("getstratumsessions", [])
+        self.assertEqual(sessions["count"], 0)
+
+    def test_pool_workers_and_preview(self) -> None:
+        addr = crypto.address_from_pubkey(self.pool_pub)
+        self.payouts.register_worker("w1", addr)
+        self.payouts.record_share("w1", addr, 1.0)
+        coinbase_txid = "00" * 32
+        self.payouts.record_block(height=0, coinbase_txid=coinbase_txid, reward=1_000_000)
+        # Mature the pending block and credit balances
+        self.payouts.process_maturity(best_height=5)
+        # Add the matured UTXO so preview can see it
+        utxo = UTXORecord(
+            txid=coinbase_txid,
+            vout=0,
+            amount=1_000_000,
+            script_pubkey=b"\x76\xa9\x14" + crypto.hash160(self.pool_pub) + b"\x88\xac",
+            height=1,
+            coinbase=True,
+        )
+        self.state_db.add_utxo(utxo)
+
+        workers = self.handlers.dispatch("getpoolworkers", [])
+        self.assertGreaterEqual(workers["total"], 1)
+        preview = self.handlers.dispatch("getpoolpayoutpreview", [])
+        self.assertIsNotNone(preview)
+        self.assertGreater(preview["fee_liners"], 0)
 
     def test_listaddressbalances_via_rpc(self) -> None:
         address = self.handlers.dispatch("getnewaddress", ["bal"])

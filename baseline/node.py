@@ -245,6 +245,8 @@ class BaselineNode:
             self.network,
             self.wallet,
             self.time_manager,
+            payout_tracker=self.payout_tracker,
+            stratum_server=self.stratum,
         )
         self.rpc_handlers = handlers
         self.rpc_server = RPCServer(self.config, handlers)

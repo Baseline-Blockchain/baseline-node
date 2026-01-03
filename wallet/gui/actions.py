@@ -6,14 +6,12 @@ import contextlib
 import logging
 import threading
 import tkinter as tk
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import ROUND_DOWN, Decimal
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any
 
 from ..client import RPCClient, RPCResponseError
-
-from ..client import RPCClient
 from ..helpers import fetch_wallet_info
 
 log = logging.getLogger(__name__)
@@ -53,7 +51,7 @@ def parse_schedule_target(raw: str) -> int:
     # the lock_time timestamp.
     if dt.tzinfo is None:
         return int(dt.replace(microsecond=0).timestamp())
-    return int(dt.astimezone(timezone.utc).replace(microsecond=0).timestamp())
+    return int(dt.astimezone(UTC).replace(microsecond=0).timestamp())
 
 
 class ActionMixin:
@@ -70,10 +68,8 @@ class ActionMixin:
                 with contextlib.suppress(Exception):
                     btn.configure(state="disabled" if busy else "normal")
         if status:
-            try:
+            with contextlib.suppress(Exception):
                 self.status_var.set(status)
-            except Exception:
-                pass
 
     def _run_in_background(
         self,
@@ -98,10 +94,8 @@ class ActionMixin:
                 self.after(0, lambda result=result: on_success(result))
 
         if status_msg:
-            try:
+            with contextlib.suppress(Exception):
                 self.status_var.set(status_msg)
-            except Exception:
-                pass
         t = threading.Thread(target=_worker, daemon=True)
         t.start()
 
@@ -618,10 +612,8 @@ class ActionMixin:
             self.send_amount_var.set("")
             self.send_memo_var.set("")
             self.send_memo_to_var.set("")
-            try:
+            with contextlib.suppress(Exception):
                 self.status_var.set("RPC status: connected")
-            except Exception:
-                pass
             self._set_send_busy(False, status="RPC status: connected")
 
         def _on_error(exc: Exception) -> None:
@@ -635,10 +627,8 @@ class ActionMixin:
                     "Check the History tab or mempool to confirm."
                 )
             messagebox.showerror("Send Failed", f"{exc}{hint}")
-            try:
+            with contextlib.suppress(Exception):
                 self.status_var.set("RPC status: error during send")
-            except Exception:
-                pass
             self._set_send_busy(False)
             # Refresh to surface any tx that may have been accepted despite the timeout.
             self.refresh_all()

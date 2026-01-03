@@ -17,6 +17,7 @@ from ..core.block import Block, BlockHeader
 from ..core.chain import Chain, ChainError, UTXOView
 from ..core.tx import COIN, Transaction
 from ..mempool import Mempool, MempoolError
+from ..mining import PayoutTracker, StratumServer
 from ..mining.templates import TemplateBuilder
 from ..policy import MIN_RELAY_FEE_RATE
 from ..storage import BlockStore, HeaderData, StateDB, UTXORecord
@@ -36,6 +37,8 @@ class RPCHandlers(WalletRPCMixin):
         network: Any | None = None,
         wallet: WalletManager | None = None,
         time_manager: TimeManager | None = None,
+        payout_tracker: PayoutTracker | None = None,
+        stratum_server: StratumServer | None = None,
     ):
         self.chain = chain
         self.mempool = mempool
@@ -45,6 +48,8 @@ class RPCHandlers(WalletRPCMixin):
         self.network = network
         self.wallet = wallet
         self.time_manager = time_manager
+        self.payout_tracker = payout_tracker
+        self.stratum = stratum_server
         self._start_time = time.time()
         self._cache_lock = threading.RLock()
         self._block_cache: OrderedDict[str, tuple[Block, HeaderData]] = OrderedDict()
@@ -83,6 +88,12 @@ class RPCHandlers(WalletRPCMixin):
             "getpeerinfo": self.getpeerinfo,
             "uptime": self.uptime,
             "gettxoutsetinfo": self.gettxoutsetinfo,
+            "getpoolstats": self.getpoolstats,
+            "getpoolworkers": self.getpoolworkers,
+            "getpoolpendingblocks": self.getpoolpendingblocks,
+            "getpoolmatured": self.getpoolmatured,
+            "getpoolpayoutpreview": self.getpoolpayoutpreview,
+            "getstratumsessions": self.getstratumsessions,
         }
         if self.wallet:
             self._methods.update(self._wallet_method_map())
@@ -699,6 +710,190 @@ class RPCHandlers(WalletRPCMixin):
                 stats.pop("muhash", None)
                 stats.pop("hash_serialized_2", None)
         return stats
+
+    # Pool / Stratum helpers ------------------------------------------------------
+
+    def _require_pool_tracker(self, require_stratum: bool = False) -> PayoutTracker:
+        if not self.payout_tracker:
+            raise RPCError(-38, "Mining not available")
+        if require_stratum and not self.stratum:
+            raise RPCError(-38, "Mining not available")
+        return self.payout_tracker
+
+    def getpoolstats(self) -> dict[str, Any]:
+        tracker = self._require_pool_tracker()
+        now = time.time()
+        with tracker.lock:
+            pending = len(tracker.pending_blocks)
+            matured = len(tracker.matured_utxos)
+            round_shares = len(tracker.round_shares)
+            workers = len(tracker.workers)
+            pool_balance = tracker.pool_balance
+            pool_fee_percent = tracker.pool_fee_percent
+            min_payout = tracker.min_payout
+            maturity = tracker.maturity
+        stratum_info: dict[str, Any] = {"enabled": bool(self.stratum)}
+        if self.stratum:
+            last_tpl = self.stratum._last_template_time
+            stratum_info.update(
+                {
+                    "sessions": len(self.stratum.sessions),
+                    "host": self.stratum.config.stratum.host,
+                    "port": self.stratum.config.stratum.port,
+                    "min_difficulty": self.stratum.config.stratum.min_difficulty,
+                    "last_template_time": last_tpl,
+                    "last_template_age": max(0.0, now - last_tpl) if last_tpl else None,
+                }
+            )
+        return {
+            "enabled": True,
+            "pool_fee_percent": pool_fee_percent,
+            "min_payout": min_payout,
+            "coinbase_maturity": maturity,
+            "pool_balance_liners": pool_balance,
+            "pool_balance": pool_balance / COIN,
+            "pending_blocks": pending,
+            "matured_utxos": matured,
+            "round_shares": round_shares,
+            "workers": workers,
+            "stratum": stratum_info,
+        }
+
+    def getpoolworkers(self, offset: int = 0, limit: int = 50, include_zero: bool = False) -> dict[str, Any]:
+        tracker = self._require_pool_tracker()
+        offset = int(offset)
+        limit = int(limit)
+        if offset < 0:
+            raise RPCError(-8, "offset must be >= 0")
+        if limit <= 0:
+            raise RPCError(-8, "limit must be > 0")
+        include_zero = bool(include_zero)
+        with tracker.lock:
+            entries = []
+            for worker_id, state in tracker.workers.items():
+                balance = state.balance
+                shares = float(tracker.round_shares.get(worker_id, 0.0))
+                if not include_zero and balance <= 0 and shares <= 0:
+                    continue
+                entries.append(
+                    {
+                        "worker_id": worker_id,
+                        "address": state.address,
+                        "balance_liners": balance,
+                        "balance": balance / COIN,
+                        "round_shares": shares,
+                    }
+                )
+            entries.sort(key=lambda item: (-item["balance_liners"], item["worker_id"]))
+        total = len(entries)
+        window = entries[offset : offset + limit]
+        return {
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+            "workers": window,
+        }
+
+    def getpoolpendingblocks(self) -> list[dict[str, Any]]:
+        tracker = self._require_pool_tracker()
+        with tracker.lock:
+            pending = list(tracker.pending_blocks)
+        pending.sort(key=lambda entry: entry.get("height", 0), reverse=True)
+        return [
+            {
+                "height": int(entry.get("height", 0)),
+                "txid": entry.get("txid"),
+                "total_reward": int(entry.get("total_reward", 0)),
+                "distributable": int(entry.get("distributable", 0)),
+                "pool_fee": int(entry.get("pool_fee", 0)),
+                "vout": int(entry.get("vout", 0)),
+                "time": float(entry.get("time", 0.0)),
+                "shares": entry.get("shares", {}),
+            }
+            for entry in pending
+        ]
+
+    def getpoolmatured(self) -> list[dict[str, Any]]:
+        tracker = self._require_pool_tracker()
+        with tracker.lock:
+            matured = list(tracker.matured_utxos)
+        matured.sort(key=lambda entry: entry.get("amount", 0), reverse=True)
+        return [
+            {
+                "txid": entry.get("txid"),
+                "vout": int(entry.get("vout", 0)),
+                "amount": int(entry.get("amount", 0)),
+            }
+            for entry in matured
+        ]
+
+    def getpoolpayoutpreview(self, max_outputs: int = 16) -> Any:
+        tracker = self._require_pool_tracker()
+        max_outputs = int(max_outputs)
+        if max_outputs <= 0:
+            raise RPCError(-8, "max_outputs must be > 0")
+        preview = tracker.preview_payout(self.state_db, max_outputs=max_outputs)
+        if preview is None:
+            return None
+        return {
+            "payees": [
+                {
+                    "worker_id": entry["worker_id"],
+                    "address": entry["address"],
+                    "amount_liners": entry["amount"],
+                    "amount": entry["amount"] / COIN,
+                }
+                for entry in preview["payees"]
+            ],
+            "matured_utxos": [
+                {
+                    "txid": entry["txid"],
+                    "vout": entry["vout"],
+                    "amount_liners": entry["amount"],
+                    "amount": entry["amount"] / COIN,
+                }
+                for entry in preview["matured_utxos"]
+            ],
+            "inputs_used": preview["inputs_used"],
+            "fee_liners": preview["fee"],
+            "fee": preview["fee"] / COIN,
+            "change_liners": preview["change"],
+            "change": preview["change"] / COIN,
+            "total_output_liners": preview["total_output"],
+            "total_output": preview["total_output"] / COIN,
+            "estimated_size": preview["estimated_size"],
+            "input_sum_liners": preview["input_sum"],
+            "input_sum": preview["input_sum"] / COIN,
+        }
+
+    def getstratumsessions(self) -> dict[str, Any]:
+        self._require_pool_tracker(require_stratum=True)
+        assert self.stratum
+        now = time.time()
+        sessions = []
+        for session in list(self.stratum.sessions.values()):
+            rate = 0.0
+            if len(session.share_times) >= 2:
+                elapsed = session.share_times[-1] - session.share_times[0]
+                if elapsed > 0:
+                    rate = (len(session.share_times) - 1) / elapsed
+            sessions.append(
+                {
+                    "session_id": session.session_id,
+                    "worker_id": session.worker_id,
+                    "address": session.worker_address,
+                    "difficulty": session.difficulty,
+                    "last_activity": session.last_activity,
+                    "idle_seconds": max(0.0, now - session.last_activity),
+                    "stale_shares": session.stale_shares,
+                    "invalid_shares": session.invalid_shares,
+                    "authorized": session.authorized,
+                    "subscribed": session.subscribed,
+                    "share_rate_per_min": rate * 60 if rate else 0.0,
+                    "remote": session.address,
+                }
+            )
+        return {"count": len(sessions), "sessions": sessions}
 
     def getblockstats(self, hash_or_height: Any, stats: list[str] | None = None) -> dict[str, Any]:
         if isinstance(hash_or_height, str):

@@ -81,6 +81,12 @@ class RPCServer:
             "sendrawtransaction",
             "listscheduledtx",
             "getschedule",
+            "getpoolstats",
+            "getpoolworkers",
+            "getpoolpendingblocks",
+            "getpoolmatured",
+            "getpoolpayoutpreview",
+            "getstratumsessions",
         }
 
     async def start(self) -> None:

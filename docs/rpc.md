@@ -5,7 +5,7 @@ Baseline exposes a Bitcoin-like JSON-RPC server over HTTP. The server listens on
 ## Authentication
 
 - Status panel: `GET /` is unauthenticated but rate-limited; keep it on trusted networks.
-- JSON-RPC: these read-only/public methods are served without Basic Auth: `getblockcount`, `getbestblockhash`, `getblockchaininfo`, `getblockhash`, `getblockheader`, `getblock`, `getrawtransaction`, `gettxout`, `getrichlist`, `getaddressutxos`, `getaddressbalance`, `getaddresstxids`, `estimatesmartfee`, `getmempoolinfo`, `sendrawtransaction`, `listscheduledtx`, `getschedule`. Any other method—or any batch containing a non-public method—requires Basic Auth (`rpc.username` / `rpc.password`).
+- JSON-RPC: these read-only/public methods are served without Basic Auth: `getblockcount`, `getbestblockhash`, `getblockchaininfo`, `getblockhash`, `getblockheader`, `getblock`, `getrawtransaction`, `gettxout`, `getrichlist`, `getaddressutxos`, `getaddressbalance`, `getaddresstxids`, `estimatesmartfee`, `getmempoolinfo`, `sendrawtransaction`, `listscheduledtx`, `getschedule`, `getpoolstats`, `getpoolworkers`, `getpoolpendingblocks`, `getpoolmatured`, `getpoolpayoutpreview`, `getstratumsessions`. Any other method—or any batch containing a non-public method—requires Basic Auth (`rpc.username` / `rpc.password`).
 - Wallet and mutating methods always require Basic Auth.
 
 ## Status Panel
@@ -62,6 +62,17 @@ Baseline ships with address/tx indexes enabled so block explorers can stay in sy
 | `getaddressbalance {"addresses":[...]}` | Aggregate confirmed balance + total received (both in liners and BLINE). |
 | `getaddresstxids {"addresses":[...], "include_height":true}` | Lists transaction ids touching any of the addresses. When `include_height` is `true` each entry becomes `{ "txid": "...", "height": 123, "blockhash": "..." }`, which is crucial for explorers that want to fetch block-aware details in one pass. |
 | `getrichlist [count] [offset]` | Returns the richest addresses by current UTXO balance. Each entry includes `{ "address": "...", "balance_liners": 123, "balance": 1.23 }` sorted descending. Use `offset` to paginate. |
+
+## Pool & Stratum (built-in)
+
+| Method | Description |
+|--------|-------------|
+| `getpoolstats` | Summarize pool mode (fee %, min_payout, coinbase_maturity) plus pool balance, worker counts, pending/matured payouts, and Stratum listener/sessions info. |
+| `getpoolworkers [offset] [limit] [include_zero]` | List workers with payout address, confirmed balance, and current round shares (paginated). |
+| `getpoolpendingblocks` | Show pending block rewards awaiting maturity (height, txid, distributable, pool_fee, shares snapshot). |
+| `getpoolmatured` | List matured coinbase UTXOs available for payouts (txid/vout/amount). |
+| `getpoolpayoutpreview [max_outputs]` | Dry-run the payout builder to preview payees, spendable matured UTXOs, estimated fee/size, and change without mutating state. |
+| `getstratumsessions` | Inspect live Stratum sessions (worker id/address, difficulty, share-rate estimate, idle time, stale/invalid counters, remote endpoint). |
 
 ## Wallet Methods (when wallet enabled)
 
