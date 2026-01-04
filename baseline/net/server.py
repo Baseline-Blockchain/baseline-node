@@ -9,6 +9,7 @@ import contextlib
 import json
 import logging
 import random
+from collections import deque
 import time
 from dataclasses import asdict
 from typing import Any
@@ -68,6 +69,11 @@ class P2PServer:
         self.sync_active = False
         self.sync_remote_height = 0
         self.sync_batch = 500
+        self.sync_download_window = 128
+        self._block_queue: deque[str] = deque()
+        self._block_queue_set: set[str] = set()
+        self._inflight_blocks: set[str] = set()
+        self._sync_inv_requested = False
         self.header_peer: Peer | None = None
         self.header_sync_active = False
         self.sync_header_batch = 2000
@@ -359,6 +365,7 @@ class P2PServer:
                     self.log.warning("Block sync stalled; restarting header sync")
                     self.sync_active = False
                     self.sync_peer = None
+                    self._reset_block_sync_state()
                     self._try_start_header_sync()
                 await asyncio.sleep(10)
         except asyncio.CancelledError:
@@ -421,6 +428,7 @@ class P2PServer:
         if self.sync_peer is peer:
             self.sync_peer = None
             self.sync_active = False
+            self._reset_block_sync_state()
         if self.header_peer is peer:
             self.header_peer = None
             self.header_sync_active = False
@@ -443,7 +451,9 @@ class P2PServer:
 
     async def handle_inv(self, peer: Peer, message: dict[str, Any]) -> None:
         items = message.get("items", [])
-        needed = []
+        tx_requests: list[dict[str, str]] = []
+        block_requests: list[dict[str, str]] = []
+        block_hashes: list[str] = []
         for entry in items:
             obj_type = entry.get("type")
             obj_hash = entry.get("hash")
@@ -452,19 +462,43 @@ class P2PServer:
             peer.known_inventory.add(obj_hash)
             if obj_type == "tx":
                 if not self.mempool.contains(obj_hash):
-                    needed.append(entry)
+                    tx_requests.append(entry)
             elif obj_type == "block":
-                if not self.chain.block_store.has_block(obj_hash):
-                    needed.append(entry)
+                block_hashes.append(obj_hash)
+                if not self.sync_active or peer is not self.sync_peer:
+                    if (
+                        not self.chain.block_store.has_block(obj_hash)
+                        and obj_hash not in self._inflight_blocks
+                        and obj_hash not in self._block_queue_set
+                    ):
+                        block_requests.append(entry)
         self.log.debug(
-            "Received inv from %s items=%d requesting=%d",
+            "Received inv from %s items=%d tx_requests=%d block_hashes=%d",
             peer.peer_id,
             len(items),
-            len(needed),
+            len(tx_requests),
+            len(block_hashes),
         )
-        if needed:
-            await peer.send_message(protocol.getdata_payload(needed))
-        self._handle_sync_inv(peer, items)
+        if tx_requests:
+            await peer.send_message(protocol.getdata_payload(tx_requests))
+        sync_inv = self.sync_active and peer is self.sync_peer
+        if sync_inv:
+            self._sync_inv_requested = False
+        if sync_inv and block_hashes:
+            added = self._enqueue_block_hashes(block_hashes)
+            if added:
+                self.log.debug(
+                    "Queued %d blocks from %s (queue=%d inflight=%d)",
+                    added,
+                    peer.peer_id,
+                    len(self._block_queue),
+                    len(self._inflight_blocks),
+                )
+            await self._pump_block_downloads(peer)
+        if sync_inv:
+            self._maybe_request_more_inventory(peer)
+        elif block_requests:
+            await peer.send_message(protocol.getdata_payload(block_requests))
 
     async def handle_getdata(self, peer: Peer, message: dict[str, Any]) -> None:
         items = message.get("items", [])
@@ -509,14 +543,33 @@ class P2PServer:
 
     async def handle_block(self, peer: Peer, message: dict[str, Any]) -> None:
         raw = message.get("raw")
+        requested_hash = message.get("hash")
+        requested_hash = requested_hash if isinstance(requested_hash, str) else None
+        block_hash = None
         if not isinstance(raw, str):
+            if requested_hash:
+                self._inflight_blocks.discard(requested_hash)
             return
         try:
             block_bytes = bytes.fromhex(raw)
             block = Block.parse(block_bytes)
+            block_hash = block.block_hash()
+            if requested_hash and requested_hash != block_hash:
+                self.log.debug(
+                    "Block hash mismatch from %s expected=%s got=%s",
+                    peer.peer_id,
+                    requested_hash,
+                    block_hash,
+                )
+                self._inflight_blocks.discard(requested_hash)
+                self._inflight_blocks.discard(block_hash)
+                return
         except Exception as exc:
+            if requested_hash:
+                self._inflight_blocks.discard(requested_hash)
             self.log.warning("Invalid block payload: %s", exc)
             return
+        result: dict[str, Any] | None = None
         try:
             result = await asyncio.to_thread(self.chain.add_block, block, block_bytes)
         except BlockStoreError as exc:
@@ -525,7 +578,6 @@ class P2PServer:
             # Ask for the missing parent to heal the gap.
             missing = [{"type": "block", "hash": block.header.prev_hash}]
             await peer.send_message(protocol.getdata_payload(missing))
-            return
         except ChainError as exc:
             msg = str(exc)
             if "Unknown parent block" in msg:
@@ -543,12 +595,20 @@ class P2PServer:
                 if not self.header_sync_active:
                     self._maybe_start_header_sync(peer)
                 if not self.sync_active:
-                    asyncio.create_task(self._send_getblocks(peer))
+                    self._request_block_inventory(peer)
             else:
                 self.log.debug("Block rejected: %s", exc)
+        finally:
+            if requested_hash:
+                self._inflight_blocks.discard(requested_hash)
+            if block_hash:
+                self._inflight_blocks.discard(block_hash)
+        if result is None:
+            if self.sync_active and peer is self.sync_peer:
+                await self._pump_block_downloads(peer)
+                self._maybe_request_more_inventory(peer)
             return
         status = result.get("status")
-        block_hash = block.block_hash()
         peer.known_inventory.add(block_hash)
         if status in {"connected", "reorganized"}:
             if self.mempool:
@@ -561,6 +621,9 @@ class P2PServer:
                 self._on_block_connected(height)
             await self.broadcast_inv("block", block_hash, exclude={peer.peer_id})
             await self._process_orphans(block_hash, peer)
+        if self.sync_active and peer is self.sync_peer:
+            await self._pump_block_downloads(peer)
+            self._maybe_request_more_inventory(peer)
 
     async def _request_missing_parent(self, peer: Peer, parent_hash: str) -> None:
         """Ask the peer for a missing parent block when we see an orphan."""
@@ -900,6 +963,72 @@ class P2PServer:
             if self.header_sync_active:
                 break
 
+    def _reset_block_sync_state(self) -> None:
+        self._block_queue.clear()
+        self._block_queue_set.clear()
+        self._inflight_blocks.clear()
+        self._sync_inv_requested = False
+
+    def _sync_backlog_size(self) -> int:
+        return len(self._block_queue) + len(self._inflight_blocks)
+
+    def _enqueue_block_hashes(self, block_hashes: list[str]) -> int:
+        added = 0
+        for block_hash in block_hashes:
+            if not isinstance(block_hash, str):
+                continue
+            if self.chain.block_store.has_block(block_hash):
+                continue
+            if block_hash in self._inflight_blocks or block_hash in self._block_queue_set:
+                continue
+            self._block_queue.append(block_hash)
+            self._block_queue_set.add(block_hash)
+            added += 1
+        return added
+
+    def _request_block_inventory(self, peer: Peer) -> None:
+        if peer.closed:
+            return
+        if self.sync_active and self._sync_inv_requested:
+            return
+        if self.sync_active:
+            self._sync_inv_requested = True
+        asyncio.create_task(self._send_getblocks(peer))
+
+    def _maybe_request_more_inventory(self, peer: Peer) -> None:
+        if not self.sync_active or peer is not self.sync_peer or peer.closed:
+            return
+        if self._sync_inv_requested:
+            return
+        backlog = self._sync_backlog_size()
+        target_backlog = max(self.sync_download_window * 2, self.sync_batch // 2)
+        if backlog >= target_backlog:
+            return
+        local_height = self.best_height()
+        if local_height + backlog >= self.sync_remote_height:
+            return
+        self._request_block_inventory(peer)
+
+    async def _pump_block_downloads(self, peer: Peer) -> None:
+        if not self.sync_active or peer is not self.sync_peer or peer.closed:
+            return
+        available = self.sync_download_window - len(self._inflight_blocks)
+        if available <= 0:
+            return
+        batch = []
+        while self._block_queue and available > 0:
+            block_hash = self._block_queue.popleft()
+            self._block_queue_set.discard(block_hash)
+            if self.chain.block_store.has_block(block_hash):
+                continue
+            if block_hash in self._inflight_blocks:
+                continue
+            self._inflight_blocks.add(block_hash)
+            batch.append({"type": "block", "hash": block_hash})
+            available -= 1
+        if batch:
+            await peer.send_message(protocol.getdata_payload(batch))
+
     async def _send_getblocks(self, peer: Peer) -> None:
         if peer.closed:
             return
@@ -915,21 +1044,6 @@ class P2PServer:
             locator.append("00" * 32)
         await peer.send_message(protocol.getheaders_payload(locator))
 
-    def _handle_sync_inv(self, peer: Peer, items: list[dict[str, str]]) -> None:
-        if peer is not self.sync_peer or not self.sync_active:
-            return
-        block_count = sum(1 for entry in items if entry.get("type") == "block")
-        if block_count == 0:
-            return
-        local_height = self.best_height()
-        if local_height >= self.sync_remote_height:
-            self.log.info("Block sync complete height=%s", local_height)
-            self.sync_active = False
-            self.sync_peer = None
-            return
-        if block_count >= self.sync_batch:
-            asyncio.create_task(self._send_getblocks(peer))
-
     def _on_block_connected(self, height: int) -> None:
         self._block_last_height = max(self._block_last_height, height)
         self._block_last_time = time.time()
@@ -937,6 +1051,7 @@ class P2PServer:
             self.log.info("Block download caught up height=%s", height)
             self.sync_active = False
             self.sync_peer = None
+            self._reset_block_sync_state()
             self._allow_non_seed_outbound = True
 
     def _complete_header_sync(self, peer: Peer) -> None:
@@ -959,6 +1074,7 @@ class P2PServer:
         self.sync_peer = peer
         self.sync_active = True
         self.sync_remote_height = max(self.sync_remote_height, remote_height)
+        self._reset_block_sync_state()
         self._block_last_height = local_height
         self._block_last_time = time.time()
         self.log.info(
@@ -967,7 +1083,7 @@ class P2PServer:
             remote_height,
             local_height,
         )
-        asyncio.create_task(self._send_getblocks(peer))
+        self._request_block_inventory(peer)
 
     async def _cleanup_loop(self) -> None:
         """Periodic cleanup of expired data."""

@@ -228,7 +228,7 @@ class RPCServer:
                 )
                 if not client_keep_alive:
                     break
-        except asyncio.IncompleteReadError:
+        except (asyncio.IncompleteReadError, ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
             await self._write_response(writer, 400, b"Bad Request", b"", keep_alive=False)
         finally:
             writer.close()
@@ -389,7 +389,11 @@ class RPCServer:
             writer.write(f"{name}: {value}\r\n".encode("ascii"))
         writer.write(b"\r\n")
         writer.write(body)
-        await writer.drain()
+        try:
+            await writer.drain()
+        except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
+            # Client bailed; treat as a normal disconnect instead of crashing the server.
+            return
 
     def _client_wants_keep_alive(self, headers: dict[str, str], version: str) -> bool:
         connection = (headers.get("connection") or "").lower()
