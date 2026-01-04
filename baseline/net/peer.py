@@ -164,6 +164,11 @@ class Peer:
         self.handshake_complete = self.sent_verack and self.got_verack and self.got_version
 
     async def send_message(self, payload: dict[str, Any]) -> None:
+        if self.closed:
+            return
+        transport = getattr(self.writer, "transport", None)
+        if transport and transport.is_closing():
+            return
         data = protocol.encode_message(payload)
         try:
             async with self._lock:
