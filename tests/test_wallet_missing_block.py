@@ -1,8 +1,6 @@
 import tempfile
-import threading
 from pathlib import Path
 
-from baseline.storage.blockstore import BlockStoreError
 from baseline.wallet import WalletManager
 
 
@@ -26,13 +24,13 @@ class DummyStateDB:
 
 class DummyBlockStore:
     def get_block(self, _hash: str):
-        raise BlockStoreError("Unknown block")
+        raise RuntimeError("Unknown block")
 
 
 class DummyMempool:
     def __init__(self):
         self.spent_outpoints = set()
-        self.lock = threading.RLock()
+        self.lock = None
 
     def register_listener(self, _):
         return

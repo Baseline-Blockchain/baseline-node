@@ -827,6 +827,7 @@ class WalletManager:
         txs: dict[str, dict] = self.data.setdefault("transactions", {})
         blocks_processed = 0
         dirty = bool(dirty)
+        last_error: str | None = None
         for height in range(start, best_height + 1):
             if aborted():
                 break
@@ -835,10 +836,15 @@ class WalletManager:
                 continue
             try:
                 raw = self.block_store.get_block(header.hash)
-            except BlockStoreError as exc:
+            except Exception as exc:  # noqa: BLE001
                 err = f"Block data missing for {header.hash}: {exc}"
                 self.log.error(err)
-                self._update_sync_status(syncing=False, last_error=err, processed_height=self.data.get("processed_height", -1))
+                self._update_sync_status(
+                    syncing=False,
+                    last_error=err,
+                    processed_height=self.data.get("processed_height", -1),
+                )
+                last_error = err
                 break
             block = Block.parse(raw)
             for tx in block.transactions:
@@ -893,9 +899,9 @@ class WalletManager:
         processed_height = int(self.data.get("processed_height", -1))
         self._update_sync_status(
             syncing=False,
-            last_sync=time.time(),
+            last_sync=time.time() if last_error is None else self._sync_status.get("last_sync"),
             processed_height=processed_height,
-            last_error="",
+            last_error=last_error or "",
         )
         return processed_height >= best_height
 
