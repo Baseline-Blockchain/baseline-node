@@ -38,7 +38,7 @@ class DummyMempool:
 
 class DummyNetwork:
     def __init__(self):
-        self.requested = []
+        self.requested: list[str] = []
 
     def request_block(self, block_hash: str) -> bool:
         self.requested.append(block_hash)

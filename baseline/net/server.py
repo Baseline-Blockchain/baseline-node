@@ -90,6 +90,7 @@ class P2PServer:
         self._allow_non_seed_outbound = False
         self._pending_outbound: set[tuple[str, int]] = set()
         self._missing_block_log: dict[str, float] = {}
+        self._block_request_backoff: dict[str, float] = {}
         self._init_local_addresses()
         self._load_known_addresses()
         self.mempool.register_listener(self._on_local_tx)
@@ -220,24 +221,24 @@ class P2PServer:
 
     def request_block(self, block_hash: str) -> bool:
         """
-        Ask any connected peer for a specific block.
-        Returns True if a request was enqueued, False otherwise.
+        Ask connected peers for a specific block (broadcast with backoff).
+        Returns True if at least one request was enqueued, False otherwise.
         """
         if not self.loop:
             return False
-        peer: Peer | None = None
-        if self.sync_peer and not self.sync_peer.closed:
-            peer = self.sync_peer
-        else:
-            for candidate in self.peers.values():
-                if not candidate.closed:
-                    peer = candidate
-                    break
-        if not peer:
+        now = time.time()
+        last = self._block_request_backoff.get(block_hash, 0.0)
+        if now - last < 10.0:
             return False
+        self._block_request_backoff[block_hash] = now
         payload = protocol.getdata_payload([{"type": "block", "hash": block_hash}])
-        asyncio.run_coroutine_threadsafe(peer.send_message(payload), self.loop)
-        return True
+        any_sent = False
+        for peer in list(self.peers.values()):
+            if peer.closed:
+                continue
+            asyncio.run_coroutine_threadsafe(peer.send_message(payload), self.loop)
+            any_sent = True
+        return any_sent
 
     def record_bytes_sent(self, count: int) -> None:
         self.bytes_sent += count
