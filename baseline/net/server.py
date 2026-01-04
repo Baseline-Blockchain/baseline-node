@@ -87,7 +87,8 @@ class P2PServer:
         self.bytes_received = 0
         self._local_addresses: set[tuple[str, int]] = set()
         self._header_peer_cooldowns: dict[str, float] = {}
-        self._allow_non_seed_outbound = False
+        # If only one or zero seeds are configured, allow outbound discovery immediately.
+        self._allow_non_seed_outbound = len(self.seeds) <= 1
         self._pending_outbound: set[tuple[str, int]] = set()
         self._missing_block_log: dict[str, float] = {}
         self._block_request_backoff: dict[str, float] = {}
@@ -388,6 +389,8 @@ class P2PServer:
                     self.log.warning("Block sync stalled; restarting header sync")
                     self.sync_active = False
                     self.sync_peer = None
+                    # Allow expansion beyond seeds to find healthier peers after a stall.
+                    self._allow_non_seed_outbound = True
                     self._reset_block_sync_state()
                     self._try_start_header_sync()
                 await asyncio.sleep(10)
