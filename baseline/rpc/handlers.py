@@ -531,7 +531,7 @@ class RPCHandlers(WalletRPCMixin):
         height = self.getblockcount()
         difficulty_value = self._current_difficulty()
         target_spacing = max(1, self.chain.config.mining.block_interval_target)
-        network_hash_ps = difficulty_value * (2 ** 32) / target_spacing
+        network_hash_ps = self._network_hashps(difficulty_value, target_spacing)
         with self.mempool.lock:
             pooled_tx = len(self.mempool.entries)
         return {
@@ -1243,6 +1243,18 @@ class RPCHandlers(WalletRPCMixin):
             return 1.0
         max_target = max(1, difficulty.compact_to_target(self.chain.config.mining.pow_limit_bits))
         return max_target / target
+
+    def _network_hashps(self, difficulty_value: float, target_spacing: float) -> float:
+        """
+        Estimate network hashrate using the chain's pow_limit as the diff1 target.
+
+        Expected hashes per block = (2^256 / pow_limit) * difficulty.
+        """
+        if target_spacing <= 0:
+            target_spacing = 1.0
+        pow_limit = max(1, self.chain.max_target)
+        hashes_per_block = (2**256 / pow_limit) * difficulty_value
+        return hashes_per_block / target_spacing
 
     def _compute_block_stats(self, block: Block, header: HeaderData) -> dict[str, Any]:
         block_bytes = block.serialize()
