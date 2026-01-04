@@ -165,9 +165,18 @@ class Peer:
 
     async def send_message(self, payload: dict[str, Any]) -> None:
         data = protocol.encode_message(payload)
-        async with self._lock:
-            self.writer.write(data)
-            await self.writer.drain()
+        try:
+            async with self._lock:
+                self.writer.write(data)
+                await self.writer.drain()
+        except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
+            self.log.debug("Send failed to %s; closing peer", self.peer_id)
+            await self.close()
+            return
+        except Exception:
+            self.log.exception("Unexpected send failure to %s", self.peer_id)
+            await self.close()
+            return
         self.bytes_sent += len(data)
         self.last_send = time.time()
         self.manager.record_bytes_sent(len(data))

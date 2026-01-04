@@ -573,11 +573,16 @@ class P2PServer:
         try:
             result = await asyncio.to_thread(self.chain.add_block, block, block_bytes)
         except BlockStoreError as exc:
-            # Parent block data missing in the local store; request it again.
-            self.log.warning("Block store miss for %s from %s: %s", block.block_hash(), peer.peer_id, exc)
-            # Ask for the missing parent to heal the gap.
-            missing = [{"type": "block", "hash": block.header.prev_hash}]
-            await peer.send_message(protocol.getdata_payload(missing))
+            msg = str(exc)
+            if "already stored" in msg:
+                self.log.debug("Duplicate block %s from %s; already stored", block.block_hash(), peer.peer_id)
+                result = {"status": "duplicate", "hash": block.block_hash()}
+            else:
+                # Parent block data missing in the local store; request it again.
+                self.log.warning("Block store miss for %s from %s: %s", block.block_hash(), peer.peer_id, exc)
+                # Ask for the missing parent to heal the gap.
+                missing = [{"type": "block", "hash": block.header.prev_hash}]
+                await peer.send_message(protocol.getdata_payload(missing))
         except ChainError as exc:
             msg = str(exc)
             if "Unknown parent block" in msg:
