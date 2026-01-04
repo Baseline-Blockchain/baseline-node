@@ -112,6 +112,7 @@ class WalletManager:
         self._pending_sync_lock = threading.Lock()
         self._pending_sync_max_blocks: int | None = None
         self._sync_status_lock = threading.Lock()
+        self._next_sync_after: float = 0.0
         self._sync_status: dict[str, object] = {
             "syncing": False,
             "last_error": "",
@@ -854,6 +855,7 @@ class WalletManager:
                 next_retry = self._missing_block_retry_after.get(header.hash, 0.0)
                 if now < next_retry:
                     last_error = err
+                    self._next_sync_after = max(self._next_sync_after, next_retry)
                     break
                 if now - last_log > 30:
                     self.log.error(err)
@@ -877,6 +879,7 @@ class WalletManager:
                         last_error=err,
                         processed_height=self.data.get("processed_height", -1),
                     )
+                    self._next_sync_after = max(self._next_sync_after, now + 10.0)
                     break
             block = Block.parse(raw)
             for tx in block.transactions:
@@ -1071,6 +1074,8 @@ class WalletManager:
         thread.join(timeout=1.0)
 
     def request_sync(self, max_blocks: int | None = None) -> None:
+        if time.time() < self._next_sync_after:
+            return
         with self._pending_sync_lock:
             if max_blocks is None:
                 self._pending_sync_max_blocks = None
@@ -1413,6 +1418,11 @@ class WalletManager:
                 break
             max_blocks = self._drain_pending_sync_request()
             try:
+                now = time.time()
+                if now < self._next_sync_after:
+                    time.sleep(max(0, self._next_sync_after - now))
+                    if self._background_should_abort():
+                        continue
                 self.sync_chain(self._background_should_abort, max_blocks)
             except Exception as exc:  # noqa: BLE001 - background logging
                 self._update_sync_status(syncing=False, last_error=str(exc))
