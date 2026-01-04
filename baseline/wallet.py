@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import secrets
 import threading
 import time
@@ -86,6 +87,7 @@ class WalletManager:
         self.state_db = state_db
         self.block_store = block_store
         self.mempool = mempool
+        self.log = logging.getLogger("baseline.wallet")
         self.lock = threading.RLock()
         self._io_lock = threading.Lock()
         self._sync_lock = threading.Lock()
@@ -831,7 +833,13 @@ class WalletManager:
             header = self.state_db.get_main_header_at_height(height)
             if header is None:
                 continue
-            raw = self.block_store.get_block(header.hash)
+            try:
+                raw = self.block_store.get_block(header.hash)
+            except BlockStoreError as exc:
+                err = f"Block data missing for {header.hash}: {exc}"
+                self.log.error(err)
+                self._update_sync_status(syncing=False, last_error=err, processed_height=self.data.get("processed_height", -1))
+                break
             block = Block.parse(raw)
             for tx in block.transactions:
                 txid = tx.txid()
