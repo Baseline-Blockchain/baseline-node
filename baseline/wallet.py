@@ -118,6 +118,8 @@ class WalletManager:
             "last_sync": None,
             "processed_height": -1,
         }
+        self._missing_block_backoff: dict[str, float] = {}
+        self._missing_block_retry_after: dict[str, float] = {}
         self._load()
         if not self.data["addresses"] and not self.is_encrypted():
             self.get_new_address("default")
@@ -847,19 +849,28 @@ class WalletManager:
                 raw = self.block_store.get_block(header.hash)
             except Exception as exc:  # noqa: BLE001
                 err = f"Block data missing for {header.hash}: {exc}"
-                self.log.error(err)
+                now = time.time()
+                last_log = self._missing_block_backoff.get(header.hash, 0)
+                next_retry = self._missing_block_retry_after.get(header.hash, 0.0)
+                if now < next_retry:
+                    last_error = err
+                    break
+                if now - last_log > 30:
+                    self.log.error(err)
+                    self._missing_block_backoff[header.hash] = now
                 last_error = err
                 # Try to request the missing block from peers before giving up.
                 requested = False
                 if self.network:
                     requested = self.network.request_block(header.hash)
-                    if requested:
-                        time.sleep(0.5)
-                        try:
-                            raw = self.block_store.get_block(header.hash)
-                            err = None
-                        except Exception:  # noqa: BLE001
-                            pass
+                self._missing_block_retry_after[header.hash] = now + 10.0
+                if requested:
+                    time.sleep(1.0)
+                    try:
+                        raw = self.block_store.get_block(header.hash)
+                        err = None
+                    except Exception:  # noqa: BLE001
+                        pass
                 if err:
                     self._update_sync_status(
                         syncing=False,

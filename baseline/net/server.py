@@ -89,6 +89,7 @@ class P2PServer:
         self._header_peer_cooldowns: dict[str, float] = {}
         self._allow_non_seed_outbound = False
         self._pending_outbound: set[tuple[str, int]] = set()
+        self._missing_block_log: dict[str, float] = {}
         self._init_local_addresses()
         self._load_known_addresses()
         self.mempool.register_listener(self._on_local_tx)
@@ -599,8 +600,11 @@ class P2PServer:
                 self.log.debug("Duplicate block %s from %s; already stored", block.block_hash(), peer.peer_id)
                 result = {"status": "duplicate", "hash": block.block_hash()}
             else:
-                # Parent block data missing in the local store; request it again.
-                self.log.warning("Block store miss for %s from %s: %s", block.block_hash(), peer.peer_id, exc)
+                now = time.time()
+                last = self._missing_block_log.get(block_hash)
+                if not last or now - last > 30:
+                    self.log.warning("Block store miss for %s from %s: %s", block.block_hash(), peer.peer_id, exc)
+                    self._missing_block_log[block_hash] = now
                 # Ask for the missing parent to heal the gap.
                 missing = [{"type": "block", "hash": block.header.prev_hash}]
                 await peer.send_message(protocol.getdata_payload(missing))

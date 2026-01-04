@@ -61,4 +61,9 @@ def test_wallet_sync_handles_missing_block_and_returns() -> None:
     assert status["last_error"]
     assert network.requested == ["abc"]
 
+    # Second attempt within retry window should not spam or re-request.
+    ok = wallet.sync_chain()
+    assert not ok
+    assert network.requested == ["abc"]
+
     tmp.cleanup()
