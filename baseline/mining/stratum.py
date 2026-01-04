@@ -36,6 +36,7 @@ VARDIFF_TOLERANCE = 0.25  # +/-25% before retuning
 MIN_VARDIFF_INTERVAL = 30.0  # seconds between difficulty changes
 MAX_VARDIFF_STEP = 2.0
 MIN_VARDIFF_STEP = 0.5
+MIN_DIFF_FLOOR = 0.01  # Absolute floor to avoid absurdly tiny share targets
 
 
 @dataclass(slots=True)
@@ -58,7 +59,7 @@ class StratumSession:
         self.worker_address: str | None = None
         self.authorized = False
         self.subscribed = False
-        self.difficulty = server.config.stratum.min_difficulty
+        self.difficulty = server._clamp_difficulty(server.config.stratum.min_difficulty)
         self.share_target = server.difficulty_to_target(self.difficulty)
         self.extranonce1 = os.urandom(server.builder.extranonce1_size)
         self.last_activity = time.time()
@@ -157,7 +158,7 @@ class StratumSession:
         return True
 
     def set_difficulty(self, value: float) -> None:
-        self.difficulty = max(self.server.config.stratum.min_difficulty, value)
+        self.difficulty = self.server._clamp_difficulty(value)
         self.share_target = self.server.difficulty_to_target(self.difficulty)
 
     def _prune_old_jobs(self, valid_ids: Sequence[str]) -> None:
@@ -206,11 +207,16 @@ class StratumServer:
         return self._session_seq
 
     def difficulty_to_target(self, difficulty_value: float) -> int:
-        if difficulty_value <= 0:
-            difficulty_value = self.config.stratum.min_difficulty
+        difficulty_value = self._clamp_difficulty(difficulty_value)
         base = self.chain.max_target
         target = int(base / difficulty_value)
         return max(target, 1)
+
+    def _clamp_difficulty(self, value: float) -> float:
+        floor = max(self.config.stratum.min_difficulty, MIN_DIFF_FLOOR)
+        if value <= 0:
+            return floor
+        return max(floor, value)
 
     @staticmethod
     def _hash_to_int(block_hash: str) -> int:
@@ -395,7 +401,8 @@ class StratumServer:
             session.share_times.popleft()
         if len(session.share_times) < 4:
             return
-        if now - session.last_diff_update < MIN_VARDIFF_INTERVAL:
+        # Allow a fast first adjustment; afterwards enforce a minimum interval.
+        if session.last_diff_update and (now - session.last_diff_update) < MIN_VARDIFF_INTERVAL:
             return
         elapsed = session.share_times[-1] - session.share_times[0]
         if elapsed <= 0:
