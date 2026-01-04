@@ -318,6 +318,23 @@ class Chain:
         existing_header = self.state_db.get_header(block_hash)
         if existing_header is not None and self.block_store.has_block(block_hash):
             return {"status": "duplicate", "hash": block_hash}
+        if existing_header is not None and not self.block_store.has_block(block_hash):
+            # If we've already connected this block on-chain (status==0) but lost the raw data,
+            # restore it without replaying state. Otherwise fall through to normal processing.
+            if existing_header.status == 0:
+                if raw_block is None:
+                    raw_block = block.serialize()
+                if (
+                    existing_header.prev_hash != block.header.prev_hash
+                    or existing_header.bits != block.header.bits
+                    or existing_header.merkle_root != block.header.merkle_root
+                    or existing_header.timestamp != block.header.timestamp
+                ):
+                    raise ChainError("Block header mismatch for stored header")
+                if not difficulty.check_proof_of_work(block_hash, block.header.bits):
+                    raise ChainError("Invalid proof of work")
+                self.block_store.append_block(bytes.fromhex(block_hash), raw_block)
+                return {"status": "restored", "hash": block_hash, "height": existing_header.height}
         if raw_block is None:
             raw_block = block.serialize()
         prev_hash = block.header.prev_hash

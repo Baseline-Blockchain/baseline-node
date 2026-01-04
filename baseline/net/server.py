@@ -9,8 +9,8 @@ import contextlib
 import json
 import logging
 import random
-from collections import deque
 import time
+from collections import deque
 from dataclasses import asdict
 from typing import Any
 

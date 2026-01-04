@@ -21,8 +21,8 @@ from .core.address import script_from_address
 from .core.block import Block
 from .core.tx import COIN, Transaction, TxInput, TxOutput
 from .mempool import Mempool, MempoolError
-from .policy import MIN_RELAY_FEE_RATE, required_fee
 from .net.server import P2PServer
+from .policy import MIN_RELAY_FEE_RATE, required_fee
 from .storage import BlockStore, StateDB
 
 
@@ -871,8 +871,8 @@ class WalletManager:
                     try:
                         raw = self.block_store.get_block(header.hash)
                         err = None
-                    except Exception:  # noqa: BLE001
-                        pass
+                    except Exception as exc:  # noqa: BLE001
+                        self.log.debug("Block %s still missing after request: %s", header.hash, exc)
                 if err:
                     self._update_sync_status(
                         syncing=False,

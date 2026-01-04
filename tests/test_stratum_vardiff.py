@@ -87,7 +87,7 @@ def test_vardiff_adjusts_on_first_window():
     session.share_times.extend([now - 0.6, now - 0.4, now - 0.2, now])
     session.last_diff_update = 0.0
 
-    asyncio.get_event_loop().run_until_complete(server._maybe_adjust_difficulty(session))
+    asyncio.run(server._maybe_adjust_difficulty(session))
 
     assert session.difficulty > server.config.stratum.min_difficulty
     assert session.last_diff_update > 0
