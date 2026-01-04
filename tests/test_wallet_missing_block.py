@@ -36,18 +36,29 @@ class DummyMempool:
         return
 
 
+class DummyNetwork:
+    def __init__(self):
+        self.requested = []
+
+    def request_block(self, block_hash: str) -> bool:
+        self.requested.append(block_hash)
+        return True
+
+
 def test_wallet_sync_handles_missing_block_and_returns() -> None:
     tmp = tempfile.TemporaryDirectory()
     wallet_path = Path(tmp.name) / "wallet.json"
     state_db = DummyStateDB()
     block_store = DummyBlockStore()
     mempool = DummyMempool()
+    network = DummyNetwork()
 
-    wallet = WalletManager(wallet_path, state_db, block_store, mempool)
+    wallet = WalletManager(wallet_path, state_db, block_store, mempool, network)
     ok = wallet.sync_chain()
 
     assert not ok
     status = wallet.sync_status()
     assert status["last_error"]
+    assert network.requested == ["abc"]
 
     tmp.cleanup()

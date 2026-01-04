@@ -22,6 +22,7 @@ from .core.block import Block
 from .core.tx import COIN, Transaction, TxInput, TxOutput
 from .mempool import Mempool, MempoolError
 from .policy import MIN_RELAY_FEE_RATE, required_fee
+from .net.server import P2PServer
 from .storage import BlockStore, StateDB
 
 
@@ -82,11 +83,19 @@ class WalletTransaction:
 
 
 class WalletManager:
-    def __init__(self, path: Path, state_db: StateDB, block_store: BlockStore, mempool: Mempool):
+    def __init__(
+        self,
+        path: Path,
+        state_db: StateDB,
+        block_store: BlockStore,
+        mempool: Mempool,
+        network: P2PServer | None = None,
+    ):
         self.path = path
         self.state_db = state_db
         self.block_store = block_store
         self.mempool = mempool
+        self.network = network
         self.log = logging.getLogger("baseline.wallet")
         self.lock = threading.RLock()
         self._io_lock = threading.Lock()
@@ -839,13 +848,25 @@ class WalletManager:
             except Exception as exc:  # noqa: BLE001
                 err = f"Block data missing for {header.hash}: {exc}"
                 self.log.error(err)
-                self._update_sync_status(
-                    syncing=False,
-                    last_error=err,
-                    processed_height=self.data.get("processed_height", -1),
-                )
                 last_error = err
-                break
+                # Try to request the missing block from peers before giving up.
+                requested = False
+                if self.network:
+                    requested = self.network.request_block(header.hash)
+                    if requested:
+                        time.sleep(0.5)
+                        try:
+                            raw = self.block_store.get_block(header.hash)
+                            err = None
+                        except Exception:  # noqa: BLE001
+                            pass
+                if err:
+                    self._update_sync_status(
+                        syncing=False,
+                        last_error=err,
+                        processed_height=self.data.get("processed_height", -1),
+                    )
+                    break
             block = Block.parse(raw)
             for tx in block.transactions:
                 txid = tx.txid()

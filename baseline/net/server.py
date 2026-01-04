@@ -217,6 +217,27 @@ class P2PServer:
 
         task.add_done_callback(_cleanup)
 
+    def request_block(self, block_hash: str) -> bool:
+        """
+        Ask any connected peer for a specific block.
+        Returns True if a request was enqueued, False otherwise.
+        """
+        if not self.loop:
+            return False
+        peer: Peer | None = None
+        if self.sync_peer and not self.sync_peer.closed:
+            peer = self.sync_peer
+        else:
+            for candidate in self.peers.values():
+                if not candidate.closed:
+                    peer = candidate
+                    break
+        if not peer:
+            return False
+        payload = protocol.getdata_payload([{"type": "block", "hash": block_hash}])
+        asyncio.run_coroutine_threadsafe(peer.send_message(payload), self.loop)
+        return True
+
     def record_bytes_sent(self, count: int) -> None:
         self.bytes_sent += count
 
