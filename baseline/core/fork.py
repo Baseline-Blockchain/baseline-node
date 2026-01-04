@@ -155,6 +155,7 @@ class ForkDetector:
         self.reorg_count = 0
         self.reorg_window_start = 0.0
         self.max_reorgs_per_hour = 10
+        self._last_rate_limit_log = 0.0
 
     def detect_fork(self, new_block: Block) -> ForkInfo | None:
         """Detect if a new block creates a fork."""
@@ -194,7 +195,9 @@ class ForkDetector:
         fork_chain_work = self._calculate_chain_work_from_height(block_hash, fork_height)
 
         # Determine if we should reorganize with rate limiting
-        should_reorganize = fork_chain_work > main_chain_work and self._can_reorganize()
+        should_reorganize = fork_chain_work > main_chain_work and self._can_reorganize(
+            fork_chain_work, main_chain_work
+        )
 
         return ForkInfo(
             fork_height=fork_height,
@@ -275,14 +278,23 @@ class ForkDetector:
 
         return connected_blocks
 
-    def _can_reorganize(self) -> bool:
+    def _can_reorganize(self, fork_work: int, main_work: int) -> bool:
         """Check if reorganization is allowed based on rate limits."""
         import time
         current_time = time.time()
 
+        # If syncing or the fork has dramatically more work (e.g., >2x), bypass the cooldown.
+        syncing = getattr(getattr(self, "chain", None), "mempool", None) is None or getattr(
+            getattr(self, "chain", None), "network", None
+        ) is not None and getattr(self.chain.network, "sync_active", False)
+        if syncing or (main_work > 0 and fork_work >= 2 * main_work):
+            return True
+
         # Check minimum interval since last reorganization
         if current_time - self.last_reorg_time < self.min_reorg_interval:
-            self.log.warning("Reorganization rate limited: too soon since last reorg")
+            if current_time - self._last_rate_limit_log > 5:
+                self.log.warning("Reorganization rate limited: too soon since last reorg")
+                self._last_rate_limit_log = current_time
             return False
 
         # Check hourly rate limit
@@ -291,7 +303,9 @@ class ForkDetector:
             self.reorg_count = 0
 
         if self.reorg_count >= self.max_reorgs_per_hour:
-            self.log.warning("Reorganization rate limited: exceeded hourly limit")
+            if current_time - self._last_rate_limit_log > 5:
+                self.log.warning("Reorganization rate limited: exceeded hourly limit")
+                self._last_rate_limit_log = current_time
             return False
 
         return True
