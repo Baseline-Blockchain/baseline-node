@@ -90,12 +90,9 @@ class P2PServer:
         # If only one or zero seeds are configured, allow outbound discovery immediately.
         self._allow_non_seed_outbound = len(self.seeds) <= 1
         self._pending_outbound: set[tuple[str, int]] = set()
-<<<<<<< HEAD
         self._missing_block_log: dict[str, float] = {}
         self._block_request_backoff: dict[str, float] = {}
-=======
         self._bad_block_counts: dict[str, int] = {}
->>>>>>> f661ecb (penalization system for peers)
         self._init_local_addresses()
         self._load_known_addresses()
         self.mempool.register_listener(self._on_local_tx)
