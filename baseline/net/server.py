@@ -100,6 +100,9 @@ class P2PServer:
         self._orphan_log_state: dict[str, tuple[float, int]] = {}
         self._inv_flood_counts: dict[str, int] = {}
         self._inv_rate: dict[str, tuple[float, int]] = {}
+        self._address_cooldowns: dict[tuple[str, int], float] = {}
+        self._handshake_failures: dict[str, tuple[int, float]] = {}
+        self._invalid_inv_counts: dict[str, int] = {}
         self._seed_ports: set[int] = {self.listen_port}
         for seed in self.seeds:
             try:
@@ -329,6 +332,9 @@ class P2PServer:
             if self._should_skip_outbound_port(tgt_port):
                 continue
             key = (tgt_host, tgt_port)
+            cooldown = self._address_cooldowns.get(key)
+            if cooldown and cooldown > time.time():
+                continue
             if key in self._pending_outbound:
                 continue
             if key in self.active_addresses():
@@ -547,6 +553,20 @@ class P2PServer:
         self._bad_block_counts.pop(peer.peer_id, None)
         self._missing_parent_counts.pop(peer.peer_id, None)
         self._inv_flood_counts.pop(peer.peer_id, None)
+        self._invalid_inv_counts.pop(peer.peer_id, None)
+        host, port = self._canonical_remote_address(peer)
+        if not peer.handshake_complete:
+            # Cooldown addresses that repeatedly close during handshake.
+            self.discovery.record_connection_failure(host, port)
+            now = time.time()
+            count, last = self._handshake_failures.get(host, (0, 0.0))
+            if now - last > 300:
+                count = 0
+            count += 1
+            self._handshake_failures[host] = (count, now)
+            if count >= 3:
+                # Short cooldown to avoid rapid redial storms; keep it under 5 minutes.
+                self._address_cooldowns[(host, port)] = now + 180.0
         self.log.info("Peer %s disconnected", peer.peer_id)
         if self.sync_peer is peer:
             self.sync_peer = None
@@ -582,7 +602,17 @@ class P2PServer:
             obj_hash = entry.get("hash")
             if obj_hash is None:
                 continue
-            if self._is_block_invalid(obj_hash):
+            if obj_type == "block" and self._is_block_invalid(obj_hash):
+                cnt = self._invalid_inv_counts.get(peer.peer_id, 0) + 1
+                self._invalid_inv_counts[peer.peer_id] = cnt
+                if cnt == 1 or cnt % 5 == 0:
+                    self.log.debug("Peer %s advertising known invalid block %s (cnt=%d)", peer.peer_id, obj_hash, cnt)
+                if cnt >= 15:
+                    host, port = self._canonical_remote_address(peer)
+                    self._address_cooldowns[(host, port)] = time.time() + 180.0
+                    self.log.info("Disconnecting %s for repeated invalid block inventory", peer.peer_id)
+                    await peer.close()
+                    return
                 continue
             peer.known_inventory.add(obj_hash)
             if obj_type == "tx":
@@ -744,8 +774,6 @@ class P2PServer:
                 self._missing_parent_counts[peer.peer_id] = count
                 if self.sync_active and peer is self.sync_peer and count >= 3:
                     self._rotate_sync_peer("missing parents from sync peer", cooldown=120.0)
-                elif count >= 5:
-                    self._penalize_peer(peer, "excessive missing parents", severity=1)
                 # Kick sync to get ordered blocks instead of a long orphan chain.
                 if not self.header_sync_active:
                     self._maybe_start_header_sync(peer)
@@ -762,7 +790,8 @@ class P2PServer:
                     self._rotate_sync_peer("parent data missing from sync peer", cooldown=120.0)
                 return
             else:
-                self._mark_block_invalid(block_hash or requested_hash, msg, peer, severity=2)
+                penalize = "Missing referenced output" not in msg
+                self._mark_block_invalid(block_hash or requested_hash, msg, peer, severity=2, penalize=penalize)
                 if self.sync_active and peer is self.sync_peer:
                     self._rotate_sync_peer("invalid block during sync", cooldown=180.0)
             return
@@ -780,6 +809,8 @@ class P2PServer:
         self._missing_parent_counts.pop(peer.peer_id, None)
         peer.known_inventory.add(block_hash)
         if status in {"connected", "reorganized"}:
+            # Successful block from this peer: forgive prior bad-block strikes.
+            self._bad_block_counts.pop(peer.peer_id, None)
             if self.mempool:
                 try:
                     self.mempool.remove_confirmed(block.transactions)
@@ -1058,11 +1089,19 @@ class P2PServer:
             return False
         return True
 
-    def _mark_block_invalid(self, block_hash: str | None, reason: str, peer: Peer | None = None, *, severity: int = 1) -> None:
+    def _mark_block_invalid(
+        self,
+        block_hash: str | None,
+        reason: str,
+        peer: Peer | None = None,
+        *,
+        severity: int = 1,
+        penalize: bool = True,
+    ) -> None:
         if block_hash:
             # Remember invalid blocks for a while to avoid retry storms.
             self._invalid_blocks[block_hash] = time.time() + 1800.0
-        if peer:
+        if penalize and peer:
             self._penalize_peer(peer, reason, severity=severity)
         self.log.debug("Marked block %s invalid: %s", block_hash, reason)
 
@@ -1349,6 +1388,9 @@ class P2PServer:
                     expired = [h for h, exp in self._invalid_blocks.items() if exp < now]
                     for h in expired:
                         self._invalid_blocks.pop(h, None)
+                    cooled = [addr for addr, exp in self._address_cooldowns.items() if exp < now]
+                    for addr in cooled:
+                        self._address_cooldowns.pop(addr, None)
 
                     self.log.debug("Completed periodic cleanup")
                 except Exception as exc:

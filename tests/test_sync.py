@@ -272,7 +272,7 @@ class SyncTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(peer.sent[0]["items"]), 200)
         self.assertNotIn(peer.peer_id, self.server._bad_block_counts)
 
-    async def test_missing_parent_penalizes_peer(self) -> None:
+    async def test_missing_parent_does_not_ban_peer(self) -> None:
         peer = DummyPeer()
         peer.peer_id = "no-sync"
         orphan_block = self._mine_block("22" * 32)
@@ -281,8 +281,8 @@ class SyncTests(unittest.IsolatedAsyncioTestCase):
         for _ in range(5):
             await self.server.handle_block(peer, payload)
 
-        # After repeated missing parents, peer should be on penalty radar.
-        self.assertIn(peer.peer_id, self.server._bad_block_counts)
+        # Missing parents should not ban/penalize the peer; we just rotate sync sources.
+        self.assertNotIn(peer.peer_id, self.server._bad_block_counts)
 
     async def test_parent_data_missing_requests_parent_not_ban(self) -> None:
         peer = DummyPeer()
@@ -310,3 +310,27 @@ class SyncTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertNotIn(peer.peer_id, self.server._bad_block_counts)
         self.assertFalse(self.server._is_block_invalid(block.block_hash()))
+
+    async def test_missing_referenced_output_does_not_ban_peer(self) -> None:
+        peer = DummyPeer()
+        peer.peer_id = "utxo-miss"
+        tip = self.state_db.get_best_tip()[0]
+        coinbase = self._make_coinbase(4)
+        bogus_tx = Transaction(
+            version=1,
+            inputs=[
+                TxInput(prev_txid="ff" * 32, prev_vout=0, script_sig=b"", sequence=0xFFFFFFFF),
+            ],
+            outputs=[TxOutput(value=1, script_pubkey=b"\x51")],
+            lock_time=0,
+        )
+        block = self._mine_block(tip)
+        block.transactions = [coinbase, bogus_tx]
+        block.header.merkle_root = merkle_root_hash(block.transactions)
+        while not difficulty.check_proof_of_work(block.block_hash(), block.header.bits):
+            block.header.nonce += 1
+        payload = {"raw": block.serialize().hex(), "hash": block.block_hash()}
+
+        await self.server.handle_block(peer, payload)
+
+        self.assertNotIn(peer.peer_id, self.server._bad_block_counts)
