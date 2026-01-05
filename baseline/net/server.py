@@ -577,7 +577,6 @@ class P2PServer:
         if not isinstance(raw, str):
             if requested_hash:
                 self._inflight_blocks.discard(requested_hash)
-            self._penalize_peer(peer, "invalid block payload type")
             return
         try:
             block_bytes = bytes.fromhex(raw)
@@ -597,7 +596,6 @@ class P2PServer:
             if requested_hash:
                 self._inflight_blocks.discard(requested_hash)
             self.log.warning("Invalid block payload: %s", exc)
-            self._penalize_peer(peer, f"invalid block parse: {exc}", severity=2)
             return
         result: dict[str, Any] | None = None
         try:
@@ -636,7 +634,6 @@ class P2PServer:
                     self._request_block_inventory(peer)
             else:
                 self.log.debug("Block rejected: %s", exc)
-                self._penalize_peer(peer, f"invalid block: {exc}", severity=2)
             return
         finally:
             if requested_hash:
@@ -817,7 +814,6 @@ class P2PServer:
                 )
             except (KeyError, ValueError, TypeError):
                 self.log.warning("Malformed header received")
-                self._penalize_peer(peer, "malformed header", severity=2)
                 return
             parent = self.chain.state_db.get_header(header.prev_hash)
             if parent is None:
@@ -850,11 +846,9 @@ class P2PServer:
                     expected_bits,
                     header.prev_hash,
                 )
-                self._penalize_peer(peer, "header bits mismatch", severity=2)
                 return
             if not difficulty.check_proof_of_work(header.hash(), header.bits):
                 self.log.debug("Invalid POW for header %s", header.hash())
-                self._penalize_peer(peer, "invalid header pow", severity=2)
                 return
             header_hash = header.hash()
             chainwork_int = int(parent.chainwork) + difficulty.block_work(header.bits)
