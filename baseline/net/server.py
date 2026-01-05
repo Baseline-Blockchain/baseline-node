@@ -90,8 +90,12 @@ class P2PServer:
         # If only one or zero seeds are configured, allow outbound discovery immediately.
         self._allow_non_seed_outbound = len(self.seeds) <= 1
         self._pending_outbound: set[tuple[str, int]] = set()
+<<<<<<< HEAD
         self._missing_block_log: dict[str, float] = {}
         self._block_request_backoff: dict[str, float] = {}
+=======
+        self._bad_block_counts: dict[str, int] = {}
+>>>>>>> f661ecb (penalization system for peers)
         self._init_local_addresses()
         self._load_known_addresses()
         self.mempool.register_listener(self._on_local_tx)
@@ -450,6 +454,7 @@ class P2PServer:
         self.peers.pop(peer.peer_id, None)
         with contextlib.suppress(Exception):
             self.security.remove_connection(peer.address[0], peer.peer_id)
+        self._bad_block_counts.pop(peer.peer_id, None)
         self.log.info("Peer %s disconnected", peer.peer_id)
         if self.sync_peer is peer:
             self.sync_peer = None
@@ -575,6 +580,7 @@ class P2PServer:
         if not isinstance(raw, str):
             if requested_hash:
                 self._inflight_blocks.discard(requested_hash)
+            self._penalize_peer(peer, "invalid block payload type")
             return
         try:
             block_bytes = bytes.fromhex(raw)
@@ -594,6 +600,7 @@ class P2PServer:
             if requested_hash:
                 self._inflight_blocks.discard(requested_hash)
             self.log.warning("Invalid block payload: %s", exc)
+            self._penalize_peer(peer, f"invalid block parse: {exc}", severity=2)
             return
         result: dict[str, Any] | None = None
         try:
@@ -632,6 +639,8 @@ class P2PServer:
                     self._request_block_inventory(peer)
             else:
                 self.log.debug("Block rejected: %s", exc)
+                self._penalize_peer(peer, f"invalid block: {exc}", severity=2)
+            return
         finally:
             if requested_hash:
                 self._inflight_blocks.discard(requested_hash)
@@ -811,6 +820,7 @@ class P2PServer:
                 )
             except (KeyError, ValueError, TypeError):
                 self.log.warning("Malformed header received")
+                self._penalize_peer(peer, "malformed header", severity=2)
                 return
             parent = self.chain.state_db.get_header(header.prev_hash)
             if parent is None:
@@ -843,9 +853,11 @@ class P2PServer:
                     expected_bits,
                     header.prev_hash,
                 )
+                self._penalize_peer(peer, "header bits mismatch", severity=2)
                 return
             if not difficulty.check_proof_of_work(header.hash(), header.bits):
                 self.log.debug("Invalid POW for header %s", header.hash())
+                self._penalize_peer(peer, "invalid header pow", severity=2)
                 return
             header_hash = header.hash()
             chainwork_int = int(parent.chainwork) + difficulty.block_work(header.bits)
@@ -899,6 +911,20 @@ class P2PServer:
         if not self.loop:
             return
         asyncio.run_coroutine_threadsafe(self.broadcast_inv("block", block_hash), self.loop)
+
+    def _penalize_peer(self, peer: Peer, reason: str, *, severity: int = 1, ban_seconds: int = 600) -> None:
+        """
+        Penalize a peer for providing bad data. After a few strikes, temporarily ban and disconnect.
+        """
+        count = self._bad_block_counts.get(peer.peer_id, 0) + max(1, severity)
+        self._bad_block_counts[peer.peer_id] = count
+        if count >= 3:
+            self.log.warning("Banning peer %s for repeated bad data: %s", peer.peer_id, reason)
+            with contextlib.suppress(Exception):
+                self.security.ban_manager.ban_peer(peer.peer_id, ban_seconds)
+                self.security.ban_manager.ban_ip(peer.address[0], ban_seconds)
+            asyncio.create_task(peer.close())
+            self._bad_block_counts.pop(peer.peer_id, None)
 
     def _load_known_addresses(self) -> None:
         legacy_path = self.config.data_dir / "peers" / "known_peers.json"
