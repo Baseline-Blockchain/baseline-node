@@ -39,6 +39,42 @@ class SyncManager:
         self._header_received: int = 0
         self.max_seen_remote_height: int = 0
         self._stale_height_slack = 2000
+        self._last_high_seen: float = 0.0
+
+    def _record_remote_height(self, remote_height: int) -> None:
+        if remote_height > self.max_seen_remote_height:
+            self.max_seen_remote_height = remote_height
+            self._last_high_seen = time.time()
+
+    def _best_connected_height(self) -> int:
+        best = 0
+        for peer in self.server.peers.values():
+            if not peer.remote_version:
+                continue
+            try:
+                height = int(peer.remote_version.get("height", 0))
+            except Exception:
+                continue
+            if height > best:
+                best = height
+        return best
+
+    def _is_peer_stale(self, remote_height: int, peer=None) -> bool:
+        now = time.time()
+        ceiling = self.max_seen_remote_height
+        # Decay the ceiling after a minute without seeing a better peer, so we can fall back.
+        if self._last_high_seen and now - self._last_high_seen > 60.0:
+            ceiling = max(ceiling, self._best_connected_height(), self.server.best_height())
+            self.max_seen_remote_height = ceiling
+        if ceiling and remote_height + self._stale_height_slack < ceiling:
+            self.server.log.debug(
+                "Skipping sync with %s: remote height %s far below best seen %s",
+                getattr(peer, "peer_id", "peer"),
+                remote_height,
+                ceiling,
+            )
+            return True
+        return False
 
     # Header sync
     def maybe_start_header_sync(self, peer) -> None:
@@ -49,15 +85,8 @@ class SyncManager:
             return
         self._header_peer_cooldowns.pop(peer.peer_id, None)
         remote_height = int(peer.remote_version.get("height", 0))
-        self.max_seen_remote_height = max(self.max_seen_remote_height, remote_height)
-        if self.max_seen_remote_height and remote_height + self._stale_height_slack < self.max_seen_remote_height:
-            # Peer is far behind the best height we have seen; avoid syncing from it.
-            self.server.log.debug(
-                "Skipping header sync with %s: remote height %s far below best seen %s",
-                peer.peer_id,
-                remote_height,
-                self.max_seen_remote_height,
-            )
+        self._record_remote_height(remote_height)
+        if self._is_peer_stale(remote_height, peer):
             return
         local_height = self.server.best_height()
         if remote_height <= local_height:
@@ -199,14 +228,8 @@ class SyncManager:
             return
         self._sync_peer_cooldowns.pop(key, None)
         remote_height = int(peer.remote_version.get("height", 0))
-        self.max_seen_remote_height = max(self.max_seen_remote_height, remote_height)
-        if self.max_seen_remote_height and remote_height + self._stale_height_slack < self.max_seen_remote_height:
-            self.server.log.debug(
-                "Skipping block sync with %s: remote height %s far below best seen %s",
-                peer.peer_id,
-                remote_height,
-                self.max_seen_remote_height,
-            )
+        self._record_remote_height(remote_height)
+        if self._is_peer_stale(remote_height, peer):
             return
         local_height = self.server.best_height()
         if remote_height <= local_height:

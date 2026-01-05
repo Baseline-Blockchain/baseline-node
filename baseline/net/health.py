@@ -62,6 +62,10 @@ class PeerHealthManager:
             self.invalid_blocks[block_hash] = time.time() + ttl
         self.log.debug("Marked block %s invalid: %s", block_hash, reason)
 
+    def clear_invalid_block(self, block_hash: str | None) -> None:
+        if block_hash:
+            self.invalid_blocks.pop(block_hash, None)
+
     def increment_bad_block(self, peer_id: str, severity: int = 1) -> int:
         count = self.bad_block_counts.get(peer_id, 0) + max(1, severity)
         self.bad_block_counts[peer_id] = count

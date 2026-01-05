@@ -627,7 +627,8 @@ class P2PServer:
             if obj_hash is None:
                 continue
             if obj_type == "block" and self._is_block_invalid(obj_hash):
-                if self.health.record_invalid_inv(peer.peer_id, obj_hash):
+                exceeded = self.health.record_invalid_inv(peer.peer_id, obj_hash, max_count=50)
+                if exceeded and peer not in {self.sync.sync_peer, self.sync.header_peer}:
                     host, port = self._canonical_remote_address(peer)
                     self.health.set_address_cooldown((host, port), 180.0)
                     self.log.info("Disconnecting %s for repeated invalid block inventory", peer.peer_id)
@@ -1105,6 +1106,16 @@ class P2PServer:
             asyncio.create_task(peer.close())
 
     def _is_block_invalid(self, block_hash: str) -> bool:
+        if not block_hash:
+            return False
+        # If we already have the block (or its header) stored, do not treat it as invalid.
+        try:
+            if self.chain.block_store.has_block(block_hash):
+                return False
+            if self.chain.state_db.get_header(block_hash):
+                return False
+        except Exception:
+            pass
         return self.health.is_block_invalid(block_hash)
 
     def _mark_block_invalid(
@@ -1117,6 +1128,10 @@ class P2PServer:
         penalize: bool = True,
     ) -> None:
         self.health.mark_block_invalid(block_hash, reason)
+        if "Missing referenced output" in reason:
+            # Do not persist a missing-output failure; allow re-requests as parents arrive.
+            self.health.clear_invalid_block(block_hash)
+            penalize = False
         if penalize and peer:
             self._penalize_peer(peer, reason, severity=severity)
 
