@@ -12,7 +12,7 @@ from baseline.core.tx import Transaction, TxInput, TxOutput
 from baseline.mempool import Mempool
 from baseline.net.peer import Peer
 from baseline.net.server import P2PServer
-from baseline.storage import BlockStore, StateDB
+from baseline.storage import BlockStore, HeaderData, StateDB
 
 
 class DummyPeer:
@@ -187,3 +187,126 @@ class SyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(inbound.address, captured)
         self.assertEqual(len(spawned), 1)
         self.assertTrue(spawned[0].outbound)
+
+    async def test_outbound_maintains_network_diversity(self) -> None:
+        self.server.target_outbound = 2
+        self.server._allow_non_seed_outbound = False
+        captured: list[tuple[str, int]] = []
+
+        async def fake_connect(host: str, port: int) -> None:
+            captured.append((host, port))
+
+        candidates = [
+            ("192.0.2.1", 9333),
+            ("192.0.2.55", 9333),
+            ("198.51.100.5", 9333),
+        ]
+        with mock.patch.object(self.server, "_connect_outbound", fake_connect), mock.patch.object(
+            self.server.discovery, "discover_peers", return_value=candidates
+        ):
+            await self.server._maintain_outbound()
+
+        self.assertEqual(len(captured), 2)
+        buckets = {self.server._network_bucket(host) for host, _ in captured}
+        self.assertGreaterEqual(len(buckets), 2)
+
+    async def test_missing_parent_rotation_moves_to_new_peer(self) -> None:
+        peer = DummyPeer()
+        peer.peer_id = "sync"
+        self.server.sync_peer = peer
+        self.server.sync_active = True
+
+        orphan_block = self._mine_block("11" * 32)
+        payload = {"raw": orphan_block.serialize().hex(), "hash": orphan_block.block_hash()}
+
+        for _ in range(3):
+            await self.server.handle_block(peer, payload)
+
+        self.assertFalse(self.server.sync_active)
+        self.assertIsNone(self.server.sync_peer)
+
+    async def test_invalid_block_marked_and_penalized(self) -> None:
+        peer = DummyPeer()
+        peer.peer_id = "bad"
+
+        tip = self.state_db.get_best_tip()[0]
+        block = self._mine_block(tip)
+        block.transactions = []
+        payload = {"raw": block.serialize().hex(), "hash": block.block_hash()}
+
+        await self.server.handle_block(peer, payload)
+
+        self.assertTrue(self.server._is_block_invalid(block.block_hash()))
+        self.assertIn(peer.peer_id, self.server._bad_block_counts)
+
+    async def test_ephemeral_outbound_skipped(self) -> None:
+        captured: list[tuple[str, int]] = []
+
+        class DummyReader:
+            pass
+
+        class DummyWriter:
+            def close(self):  # pragma: no cover - noop
+                pass
+
+            async def wait_closed(self):  # pragma: no cover - noop
+                pass
+
+        async def fake_open_connection(host: str, port: int, **_):
+            captured.append((host, port))
+            return DummyReader(), DummyWriter()
+
+        with mock.patch("baseline.net.server.asyncio.open_connection", fake_open_connection):
+            await self.server._connect_outbound("203.0.113.9", 36054)
+
+        self.assertEqual(captured, [("203.0.113.9", self.server.listen_port)])
+
+    async def test_inv_floods_truncated_for_non_sync_peer(self) -> None:
+        peer = DummyPeer()
+        items = [{"type": "block", "hash": f"{i:064x}"} for i in range(300)]
+        for _ in range(7):
+            await self.server.handle_inv(peer, {"items": items})
+        # Should only respond a few times, then rate-limit further floods.
+        self.assertLessEqual(len(peer.sent), 5)
+        if peer.sent:
+            self.assertEqual(len(peer.sent[0]["items"]), 200)
+        self.assertNotIn(peer.peer_id, self.server._bad_block_counts)
+
+    async def test_missing_parent_penalizes_peer(self) -> None:
+        peer = DummyPeer()
+        peer.peer_id = "no-sync"
+        orphan_block = self._mine_block("22" * 32)
+        payload = {"raw": orphan_block.serialize().hex(), "hash": orphan_block.block_hash()}
+
+        for _ in range(5):
+            await self.server.handle_block(peer, payload)
+
+        # After repeated missing parents, peer should be on penalty radar.
+        self.assertIn(peer.peer_id, self.server._bad_block_counts)
+
+    async def test_parent_data_missing_requests_parent_not_ban(self) -> None:
+        peer = DummyPeer()
+        peer.peer_id = "parent-miss"
+        # Insert a fake header without storing the raw block to trigger "Parent block data missing".
+        fake_prev = "ab" * 32
+        header = HeaderData(
+            hash=fake_prev,
+            prev_hash=self.chain.genesis_hash,
+            height=1,
+            bits=self.config.mining.initial_bits,
+            nonce=0,
+            timestamp=self.chain.genesis_block.header.timestamp + self.config.mining.block_interval_target,
+            merkle_root="00" * 32,
+            chainwork="1",
+            version=1,
+            status=0,
+        )
+        self.state_db.store_header(header)
+
+        block = self._mine_block(fake_prev)
+        payload = {"raw": block.serialize().hex(), "hash": block.block_hash()}
+
+        await self.server.handle_block(peer, payload)
+
+        self.assertNotIn(peer.peer_id, self.server._bad_block_counts)
+        self.assertFalse(self.server._is_block_invalid(block.block_hash()))

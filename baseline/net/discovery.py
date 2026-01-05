@@ -644,6 +644,8 @@ class PeerDiscovery:
     def cleanup(self) -> None:
         """Periodic cleanup of stale addresses."""
         self.address_book.cleanup_stale()
+        # Drop unreliable/high-failure addresses aggressively so we prefer fresh/default-port peers.
+        self.address_book.cleanup_old_addresses(max_age=86400, max_failures=2)
         self.save_address_book()
 
     def get_discovery_stats(self) -> dict[str, Any]:

@@ -49,6 +49,7 @@ class Peer:
         self.bytes_received = 0
         self.last_send = 0.0
         self._lock = asyncio.Lock()
+        self._ban_notice_sent = False
 
     async def run(self) -> None:
         try:
@@ -94,6 +95,12 @@ class Peer:
             skip_rate_limit=skip_rate_limit,
         )
         if not should_accept:
+            if "banned" in error_reason.lower():
+                if not self._ban_notice_sent:
+                    self.log.warning("Peer banned; closing connection (%s)", error_reason)
+                    self._ban_notice_sent = True
+                await self.close()
+                return
             self.log.warning("Message rejected: %s", error_reason)
             # Do not penalize peers for rate limiting; just drop the message.
             if "rate limit exceeded" not in error_reason.lower():

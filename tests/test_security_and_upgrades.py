@@ -2,6 +2,8 @@
 Tests for P2P security enhancements and upgrade mechanisms.
 """
 
+import asyncio
+import logging
 import tempfile
 import time
 import unittest
@@ -19,6 +21,7 @@ from baseline.net.security import (
     RateLimiter,
 )
 from baseline.storage.state import HeaderData, StateDB
+from baseline.net.peer import Peer
 
 
 class SecurityTests(unittest.TestCase):
@@ -170,6 +173,62 @@ class SecurityTests(unittest.TestCase):
         invalid_msg = {"type": "version"}  # Missing required fields
         should_accept, error = security.should_accept_message("peer1", invalid_msg)
         self.assertFalse(should_accept)
+
+
+class BannedPeerSpamTests(unittest.IsolatedAsyncioTestCase):
+    """Ensure banned peers are closed without log spam."""
+
+    async def test_banned_peer_closes_once(self):
+        class DummyWriter:
+            def close(self):  # pragma: no cover - noop
+                pass
+
+            async def wait_closed(self):  # pragma: no cover - noop
+                pass
+
+        class DummyManager:
+            def __init__(self, logger):
+                self.security = P2PSecurity()
+                self.log = logger
+                self.closed_called = False
+
+            def should_skip_rate_limit(self, *_args, **_kwargs):
+                return False
+
+            async def on_peer_closed(self, _peer):
+                self.closed_called = True
+
+        # Capture warnings on the peer logger to assert we only log once.
+        peer_logger = logging.getLogger("baseline.peer[203.0.113.9:9333]")
+        peer_logger.setLevel(logging.WARNING)
+        peer_logger.propagate = False
+        records: list[logging.LogRecord] = []
+
+        class ListHandler(logging.Handler):
+            def emit(self, record):  # pragma: no cover - simple sink
+                records.append(record)
+
+        handler = ListHandler(level=logging.WARNING)
+        peer_logger.addHandler(handler)
+
+        manager = DummyManager(peer_logger)
+        manager.security.ban_manager.ban_peer("peer-ban", 60)
+        peer = Peer(
+            reader=None,
+            writer=DummyWriter(),
+            manager=manager,
+            address=("203.0.113.9", 9333),
+            outbound=False,
+            peer_id="peer-ban",
+        )
+
+        await peer.handle_message({"type": "ping", "nonce": 1})
+        await peer.handle_message({"type": "ping", "nonce": 2})
+
+        self.assertTrue(peer.closed)
+        self.assertTrue(manager.closed_called)
+        warning_count = sum(1 for rec in records if rec.levelno == logging.WARNING)
+        self.assertEqual(warning_count, 1)
 
 
 class PeerDiscoveryTests(unittest.TestCase):
