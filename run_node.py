@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 from baseline.config import ConfigError, NodeConfig, load_config
-from baseline.logging import setup_logging
+from baseline.logging import setup_logging, shutdown_logging
 from baseline.node import BaselineNode
 
 
@@ -97,6 +97,7 @@ def main() -> None:
         logger.warning("Interrupted, shutting down...")
     finally:
         node.close()
+        shutdown_logging()
 
 
 if __name__ == "__main__":
