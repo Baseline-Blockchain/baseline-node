@@ -207,20 +207,45 @@ class P2PServer:
 
     async def stop(self) -> None:
         self._stop_event.set()
-        for task in self._tasks:
-            task.cancel()
-        for task in list(self.peer_tasks):
-            task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await asyncio.gather(*self._tasks, return_exceptions=True)
+
+        # 1) Stop accepting NEW inbound connections immediately
         if self.server:
             self.server.close()
-            await self.server.wait_closed()
-        for peer in list(self.peers.values()):
-            await peer.close()
+            with contextlib.suppress(Exception):
+                await self.server.wait_closed()
+
+        # 2) Cancel background loops
+        for task in self._tasks:
+            task.cancel()
+
+        # 3) Cancel peer tasks (peer.run)
+        for task in list(self.peer_tasks):
+            task.cancel()
+
+        # 4) Close all peers (idempotent)
+        close_peers = [peer.close() for peer in list(self.peers.values())]
+
+        # 5) Await everything, but don't deadlock shutdown
+        async def _drain():
+            await asyncio.gather(*close_peers, return_exceptions=True)
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+            await asyncio.gather(*list(self.peer_tasks), return_exceptions=True)
+
+        try:
+            await asyncio.wait_for(_drain(), timeout=10.0)
+        except TimeoutError:
+            self.log.warning("Shutdown timed out; forcing exit with pending tasks")
+
         self._save_known_addresses()
 
+
     async def _handle_inbound(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        if self._stop_event.is_set():
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+            return
+
         peername = writer.get_extra_info("peername")
         if not peername:
             writer.close()
@@ -282,10 +307,34 @@ class P2PServer:
         task = asyncio.create_task(peer.run(), name=f"peer-{peer.peer_id}")
         self.peer_tasks.add(task)
 
-        def _cleanup(_):
-            self.peer_tasks.discard(task)
+        def _cleanup(t: asyncio.Task) -> None:
+            self.peer_tasks.discard(t)
+            try:
+                exc = t.exception()
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                self.log.exception("Failed reading peer task exception")
+                return
+
+            if exc is not None:
+                # keep it low-noise unless you’re debugging
+                self.log.warning("Peer task %s ended with exception: %r", t.get_name(), exc, exc_info=False)
 
         task.add_done_callback(_cleanup)
+
+    def _schedule(self, coro) -> None:
+        if not self.loop:
+            return
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+
+        if running is self.loop:
+            asyncio.create_task(coro)
+        else:
+            asyncio.run_coroutine_threadsafe(coro, self.loop)
 
     def request_block(self, block_hash: str) -> bool:
         """
@@ -306,7 +355,7 @@ class P2PServer:
         for peer in list(self.peers.values()):
             if peer.closed:
                 continue
-            asyncio.run_coroutine_threadsafe(peer.send_message(payload), self.loop)
+            self._schedule(peer.send_message(payload))
             any_sent = True
         return any_sent
 
@@ -533,6 +582,9 @@ class P2PServer:
             pass
 
     async def on_peer_ready(self, peer: Peer) -> None:
+        if self._stop_event.is_set():
+            await peer.close()
+            return
         if len(self.peers) >= self.max_peers:
             self.log.warning("Max peers reached, disconnecting %s", peer.peer_id)
             await peer.close()
@@ -1072,7 +1124,8 @@ class P2PServer:
             if obj_hash in peer.known_inventory:
                 continue
             peer.known_inventory.add(obj_hash)
-            self._fire_and_forget(peer.send_message(payload))
+            asyncio.create_task(peer.send_message(payload))
+
 
     def _fire_and_forget(self, coro) -> None:
         task = asyncio.create_task(coro)

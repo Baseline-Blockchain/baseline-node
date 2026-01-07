@@ -50,6 +50,7 @@ class Peer:
         self.last_send = 0.0
         self._lock = asyncio.Lock()
         self._ban_notice_sent = False
+        self._close_lock = asyncio.Lock()
 
     async def run(self) -> None:
         try:
@@ -63,10 +64,20 @@ class Peer:
                 self.bytes_received += byte_len
                 self.manager.record_bytes_received(byte_len)
                 await self.handle_message(msg)
-        except (TimeoutError, asyncio.IncompleteReadError, ConnectionError, protocol.ProtocolError) as exc:
+
+        except (TimeoutError, asyncio.IncompleteReadError, ConnectionError, OSError, protocol.ProtocolError) as exc:
             self.log.info("Connection closed: %s", exc)
+
+        except asyncio.CancelledError:
+            raise
+
+        except Exception:
+            # This is what stops “one peer kills the whole process” scenarios
+            self.log.exception("Peer.run crashed unexpectedly")
+
         finally:
             await self.close()
+
 
     async def _perform_handshake(self) -> None:
         if self.outbound:
@@ -173,37 +184,77 @@ class Peer:
     async def send_message(self, payload: dict[str, Any]) -> None:
         if self.closed:
             return
+
         transport = getattr(self.writer, "transport", None)
         if transport and transport.is_closing():
             return
+
         data = protocol.encode_message(payload)
-        try:
-            async with self._lock:
+        exc: BaseException | None = None
+
+        async with self._lock:
+            # re-check under the lock
+            if self.closed:
+                return
+            transport = getattr(self.writer, "transport", None)
+            if transport and transport.is_closing():
+                return
+
+            try:
                 self.writer.write(data)
                 await self.writer.drain()
-        except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
-            self.log.debug("Send failed to %s; closing peer", self.peer_id)
+            except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError, OSError) as e:
+                # Treat as normal disconnect / shutdown path
+                exc = e
+            except Exception as e:
+                # Truly unexpected
+                exc = e
+
+        if exc is not None:
+            # IMPORTANT: do not spam tracebacks for normal network errors
+            if isinstance(exc, (ConnectionResetError, BrokenPipeError, ConnectionAbortedError, OSError)):
+                self.log.debug("Send failed to %s (%r); closing", self.peer_id, exc, exc_info=False)
+            else:
+                self.log.exception("Unexpected send failure to %s", self.peer_id)
             await self.close()
             return
-        except Exception:
-            self.log.exception("Unexpected send failure to %s", self.peer_id)
-            await self.close()
-            return
+
         self.bytes_sent += len(data)
         self.last_send = time.time()
         self.manager.record_bytes_sent(len(data))
 
+
     async def close(self) -> None:
         if self.closed:
             return
-        self.closed = True
-        try:
-            self.writer.close()
+
+        async with self._close_lock:
+            if self.closed:
+                return
+            self.closed = True
+
+            # Stop future writes ASAP
             with contextlib.suppress(Exception):
-                await self.writer.wait_closed()
-        except Exception:  # noqa: BLE001
-            self.manager.log.exception("Peer close failed for peer_id=%s", self.peer_id)
-        await self.manager.on_peer_closed(self)
+                self.writer.close()
+
+            # Wait for close; suppress expected network/transport errors
+            try:
+                with contextlib.suppress(ConnectionError, OSError, RuntimeError):
+                    await self.writer.wait_closed()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # This should now be rare
+                self.manager.log.exception("Peer wait_closed failed for peer_id=%s", self.peer_id)
+
+            # DO NOT let manager callbacks take down the server
+            try:
+                await self.manager.on_peer_closed(self)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self.manager.log.exception("on_peer_closed crashed for peer_id=%s", self.peer_id)
+
 
     async def ping(self) -> None:
         self.ping_nonce = int(time.time() * 1000) & 0xFFFFFFFFFFFFFFFF
