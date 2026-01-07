@@ -1059,7 +1059,6 @@ class P2PServer:
         if peer is not self.sync.header_peer or not self.sync.header_sync_active:
             return
 
-        # End of header stream
         if not headers:
             if self.sync.sync_remote_height > self.best_height():
                 self.log.warning(
@@ -1072,49 +1071,30 @@ class P2PServer:
                 self._complete_header_sync(peer)
             return
 
-        # Parse first header so we can resolve the parent ONCE.
-        try:
-            first = headers[0]
-            first_header = BlockHeader(
-                version=int(first["version"]),
-                prev_hash=str(first["prev_hash"]),
-                merkle_root=str(first["merkle_root"]),
-                timestamp=int(first["timestamp"]),
-                bits=int(first["bits"]),
-                nonce=int(first["nonce"]),
-            )
-        except (KeyError, ValueError, TypeError):
-            self.log.warning("Malformed header received")
+        # Anchor on our current best tip (or genesis).
+        best = self.chain.state_db.get_best_tip()
+        if not best:
+            self.log.warning("No best tip available; cannot validate headers")
+            self.sync.rotate_sync_peer("no local best tip", cooldown=60.0)
             return
 
-        parent = self.chain.state_db.get_header(first_header.prev_hash)
+        parent_hash, parent_height = best
+        parent = self.chain.state_db.get_header(parent_hash)
         if parent is None:
-            self.log.warning(
-                "Header parent unknown from %s: header=%s prev=%s (genesis=%s)",
-                peer.peer_id,
-                first_header.hash(),
-                first_header.prev_hash,
-                self.chain.genesis_hash,
-            )
-            best = self.chain.state_db.get_best_tip()
-            if not best or best[1] == 0:
-                self.log.info("Resetting cached headers to genesis and restarting header sync")
-                with contextlib.suppress(Exception):
-                    self.chain.state_db.reset_headers_to_genesis(self.chain.genesis_hash)
-                self.sync.header_sync_active = False
-                self.sync.header_peer = None
-                self.sync.try_start_header_sync()
+            self.log.warning("Best tip header missing (%s); re-anchoring", parent_hash)
+            with contextlib.suppress(Exception):
+                self.chain.state_db.reanchor_main_chain()
+            self.sync.rotate_sync_peer("missing local tip header", cooldown=60.0)
             return
 
-        # Validate/build in-memory, write once.
-        prev_hash = parent.hash
-        height = int(parent.height)
-        chainwork_int = int(parent.chainwork)
+        expected_prev = parent.hash
+        height = parent.height
+
         batch: list[HeaderData] = []
 
         for entry in headers:
             try:
-                header = BlockHeader(
+                hdr = BlockHeader(
                     version=int(entry["version"]),
                     prev_hash=str(entry["prev_hash"]),
                     merkle_root=str(entry["merkle_root"]),
@@ -1123,78 +1103,95 @@ class P2PServer:
                     nonce=int(entry["nonce"]),
                 )
             except (KeyError, ValueError, TypeError):
-                self.log.warning("Malformed header received")
+                self.log.warning("Malformed header received from %s", peer.peer_id)
+                self.sync.rotate_sync_peer("malformed headers", cooldown=120.0)
                 return
 
-            # Continuity check (prevents per-header DB parent lookups)
-            if header.prev_hash != prev_hash:
+            hdr_hash = hdr.hash()
+
+            # Enforce that the received stream is a continuous chain.
+            if hdr.prev_hash != expected_prev:
                 self.log.warning(
-                    "Header continuity break from %s at height~%s: expected_prev=%s got_prev=%s",
+                    "Header continuity break from %s at local_next_height=%d: prev=%s expected=%s header=%s",
                     peer.peer_id,
                     height + 1,
-                    prev_hash,
-                    header.prev_hash,
+                    hdr.prev_hash,
+                    expected_prev,
+                    hdr_hash,
                 )
+                self.sync.rotate_sync_peer("header continuity break", cooldown=120.0)
                 return
 
-            height += 1
-            expected_bits = self.chain._expected_bits(height, parent)
-            if header.bits != expected_bits:
+            next_height = height + 1
+
+            with contextlib.suppress(Exception):
+                self.chain.upgrade_manager.process_new_block(hdr, next_height)
+
+            expected_bits = self.chain._expected_bits(next_height, parent)
+            if hdr.bits != expected_bits:
                 self.log.warning(
-                    "Header bits mismatch at height %s from %s: got=%s expected=%s prev=%s",
-                    height,
+                    "Header bits mismatch at height %s from %s: got=%s expected=%s prev=%s header=%s",
+                    next_height,
                     peer.peer_id,
-                    header.bits,
+                    hdr.bits,
                     expected_bits,
-                    header.prev_hash,
+                    hdr.prev_hash,
+                    hdr_hash,
                 )
+                # Rotate away instead of getting stuck.
+                self.sync.rotate_sync_peer("header bits mismatch", cooldown=180.0)
                 return
 
-            header_hash = header.hash()
-            if not difficulty.check_proof_of_work(header_hash, header.bits):
-                self.log.debug("Invalid POW for header %s", header_hash)
+            if not difficulty.check_proof_of_work(hdr_hash, hdr.bits):
+                self.log.warning("Invalid POW for header %s from %s", hdr_hash, peer.peer_id)
+                self.sync.rotate_sync_peer("invalid header pow", cooldown=180.0)
                 return
 
-            chainwork_int += difficulty.block_work(header.bits)
-            header_record = HeaderData(
-                hash=header_hash,
-                prev_hash=header.prev_hash,
-                height=height,
-                bits=header.bits,
-                nonce=header.nonce,
-                timestamp=header.timestamp,
-                merkle_root=header.merkle_root,
-                chainwork=str(chainwork_int),
-                version=header.version,
-                status=1,
+            chainwork_int = int(parent.chainwork) + difficulty.block_work(hdr.bits)
+
+            # status=1 is fine for "known header but not main chain yet"
+            batch.append(
+                HeaderData(
+                    hash=hdr_hash,
+                    prev_hash=hdr.prev_hash,
+                    height=next_height,
+                    bits=hdr.bits,
+                    nonce=hdr.nonce,
+                    timestamp=hdr.timestamp,
+                    merkle_root=hdr.merkle_root,
+                    chainwork=str(chainwork_int),
+                    version=hdr.version,
+                    status=1,
+                )
             )
-            batch.append(header_record)
 
-            # advance "parent" notion for next expected_bits() call
-            parent = header_record  # has .height/.bits/.timestamp/.chainwork/.hash
-            prev_hash = header_hash
+            # advance
+            parent = batch[-1]
+            expected_prev = hdr_hash
+            height = next_height
 
-        # One DB write for the whole batch (must be fast + in a transaction).
-        if batch:
+        # Bulk-store to avoid per-header commits
+        try:
             if hasattr(self.chain.state_db, "store_headers_bulk"):
                 await asyncio.to_thread(self.chain.state_db.store_headers_bulk, batch)
             else:
-                # Fallback: still do it off-thread (slower than bulk, but avoids blocking the loop)
-                def _store_one_by_one() -> None:
-                    for rec in batch:
-                        self.chain.state_db.store_header(rec)
-                await asyncio.to_thread(_store_one_by_one)
+                # fallback (older StateDB)
+                for h in batch:
+                    await asyncio.to_thread(self.chain.state_db.store_header, h)
+        except Exception as exc:
+            self.log.warning("Failed storing headers batch: %s", exc)
+            self.sync.rotate_sync_peer("header store failure", cooldown=60.0)
+            return
 
-        last_height = batch[-1].height if batch else None
-        self.sync.record_headers_received(len(headers))
-        if last_height is not None:
-            self.sync.sync_remote_height = max(self.sync.sync_remote_height, int(last_height))
+        self.sync.record_headers_received(len(batch))
+        self.sync.sync_remote_height = max(self.sync.sync_remote_height, height)
 
         if len(headers) < self.sync.sync_header_batch:
             self._complete_header_sync(peer)
         else:
             if not self._stop_event.is_set():
                 self._schedule(self._send_getheaders(peer))
+
 
 
     async def _bounded_send_with_release(self, peer, payload):
