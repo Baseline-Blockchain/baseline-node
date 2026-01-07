@@ -32,11 +32,16 @@ class PeerAddress:
             return False
         return time.time() - self.last_seen > max_age
 
-    def should_retry(self, min_retry_delay: float = 30) -> bool:
-        """True if enough time has passed since the last attempt."""
+    def retry_delay(self, base: float = 30.0, cap: float = 3600.0) -> float:
+        # backoff based on consecutive-ish failures; use failure_count as a proxy
+        delay = base * (2 ** min(self.failure_count, 7))  # max 30*128=3840
+        return min(delay, cap)
+
+    def should_retry(self, min_retry_delay: float = 30.0) -> bool:
         if self.last_attempt == 0:
             return True
-        return time.time() - self.last_attempt > min_retry_delay
+        delay = max(min_retry_delay, self.retry_delay())
+        return time.time() - self.last_attempt > delay
 
     def record_attempt(self) -> None:
         self.attempts += 1
@@ -48,9 +53,8 @@ class PeerAddress:
 
     def record_failure(self) -> None:
         self.failure_count += 1
+        self.last_attempt = time.time()
 
     def reliability_score(self) -> float:
-        total = self.success_count + self.failure_count
-        if total == 0:
-            return 0.5
-        return self.success_count / total
+        # Beta(2,2) prior -> starts at 0.5, less jumpy
+        return (self.success_count + 2) / (self.success_count + self.failure_count + 4)

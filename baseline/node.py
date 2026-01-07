@@ -67,7 +67,7 @@ class BaselineNode:
             await self.network.start()
             self._initialize_time_sync()
             self._initialize_mining_components()
-            self._initialize_wallet()
+            await self._initialize_wallet()
             self._initialize_rpc()
             if self.stratum:
                 await self.stratum.start()
@@ -233,7 +233,7 @@ class BaselineNode:
             network=self.network,
         )
 
-    def _initialize_wallet(self) -> None:
+    async def _initialize_wallet(self) -> None:
         if not (self.chain and self.mempool):
             return
         if self.wallet:
@@ -241,7 +241,7 @@ class BaselineNode:
         wallet_path = self.config.data_dir / "wallet" / "wallet.json"
         wallet_path.parent.mkdir(parents=True, exist_ok=True)
         self.wallet = WalletManager(wallet_path, self.state_db, self.block_store, self.mempool, self.network)
-        self.wallet.sync_chain(self._wallet_should_abort)
+        await asyncio.to_thread(self.wallet.sync_chain, self._wallet_should_abort)
         self.wallet.start_background_sync(self._wallet_should_abort)
         self.wallet.request_sync()
 

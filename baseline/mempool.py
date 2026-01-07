@@ -95,13 +95,11 @@ class Mempool:
         # occurs.  This is safe because Python allows setting arbitrary
         # attributes on objects at runtime.  See handle_reorg() below.
         try:
-            # Avoid overwriting an existing attribute if one already exists.
             if not hasattr(chain, "mempool"):
                 chain.mempool = self
         except Exception as exc:
-            # It's not fatal if we cannot set the attribute; reorg callbacks
-            # simply won't be invoked automatically.
             raise MempoolError(f"Unexpected script verification failure: {exc}") from exc
+
 
     def handle_reorg(self, old_branch: list[str], new_branch: list[str]) -> None:
         """

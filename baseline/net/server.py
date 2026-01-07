@@ -672,6 +672,9 @@ class P2PServer:
         await peer.send_message(protocol.getaddr_payload())
 
     async def handle_inv(self, peer: Peer, message: dict[str, Any]) -> None:
+        sync_active = self.sync.sync_active
+        sync_peer = self.sync.sync_peer
+
         items = message.get("items", [])
         tx_requests: list[dict[str, str]] = []
         block_requests: list[dict[str, str]] = []
@@ -696,6 +699,9 @@ class P2PServer:
                     tx_requests.append(entry)
             elif obj_type == "block":
                 block_hashes.append(obj_hash)
+
+                if sync_active and peer is not sync_peer:
+                    continue
                 if not self.sync.sync_active or peer is not self.sync.sync_peer:
                     if (
                         not self.chain.block_store.has_block(obj_hash)
@@ -719,28 +725,36 @@ class P2PServer:
             floods = self._inv_flood_counts.get(peer.peer_id, 0) + 1
             self._inv_flood_counts[peer.peer_id] = floods
             if floods == 1 or floods % 5 == 0:
-                self.log.debug("Truncating large inv from %s (count=%s)", peer.peer_id, floods)
+                self.log.debug(
+                    "Truncating large inv from %s (items=%d flood_events=%d)",
+                    peer.peer_id, len(block_hashes), floods
+                )
             block_hashes = block_hashes[:200]
             block_requests = block_requests[:200]
         if tx_requests:
             await peer.send_message(protocol.getdata_payload(tx_requests))
-        sync_inv = self.sync.sync_active and peer is self.sync.sync_peer
+
+        sync_inv = sync_active and (peer is sync_peer)
+
         if sync_inv:
             self.sync._sync_inv_requested = False
-        if sync_inv and block_hashes:
-            added = self._enqueue_block_hashes(block_hashes)
-            if added:
-                self.log.debug(
-                    "Queued %d blocks from %s (queue=%d inflight=%d)",
-                    added,
-                    peer.peer_id,
-                    len(self.sync._block_queue),
-                    len(self.sync._inflight_blocks),
-                )
-            await self._pump_block_downloads(peer)
-        if sync_inv:
+            if block_hashes:
+                added = self._enqueue_block_hashes(block_hashes)
+                if added:
+                    self.log.debug(
+                        "Queued %d blocks from %s (queue=%d inflight=%d)",
+                        added, peer.peer_id, len(self.sync._block_queue), len(self.sync._inflight_blocks),
+                    )
+                await self._pump_block_downloads(peer)
             self._maybe_request_more_inventory(peer)
-        elif block_requests:
+            return
+
+        # if syncing, do NOT fetch blocks from anyone else
+        if sync_active:
+            return
+
+        # only when NOT syncing, allow opportunistic block fetches
+        if block_requests:
             await peer.send_message(protocol.getdata_payload(block_requests))
 
     async def handle_getdata(self, peer: Peer, message: dict[str, Any]) -> None:
@@ -785,9 +799,13 @@ class P2PServer:
             await self.broadcast_inv("tx", txid, exclude={peer.peer_id})
 
     async def handle_block(self, peer: Peer, message: dict[str, Any]) -> None:
-        raw = message.get("raw")
         requested_hash = message.get("hash")
         requested_hash = requested_hash if isinstance(requested_hash, str) else None
+        raw = message.get("raw")
+
+        if self.sync.sync_active and peer is not self.sync.sync_peer:
+            if not requested_hash or requested_hash not in self.sync._inflight_blocks:
+                return
         block_hash = None
         if not isinstance(raw, str):
             if requested_hash:
