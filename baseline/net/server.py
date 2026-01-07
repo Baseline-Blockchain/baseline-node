@@ -1556,7 +1556,6 @@ class P2PServer:
 
         async def _reanchor() -> None:
             try:
-                await asyncio.to_thread(self.chain.state_db.reanchor_main_chain)
                 await self._refresh_best_tip_cache()
             except Exception as exc:
                 self.log.debug("reanchor_main_chain failed: %s", exc)
