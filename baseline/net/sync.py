@@ -123,7 +123,7 @@ class SyncManager:
     async def send_getheaders(self, peer) -> None:
         if peer.closed:
             return
-        locator = self.server._build_block_locator()
+        locator = await self.server._build_block_locator()
         # If we have no chain yet, add a zero-hash sentinel to encourage peers to start from genesis.
         if len(locator) == 1 and locator[0] == self.server.chain.genesis_hash:
             locator.append("00" * 32)
