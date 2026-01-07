@@ -202,12 +202,12 @@ class Peer:
 
             try:
                 self.writer.write(data)
-                await self.writer.drain()
+                await asyncio.wait_for(self.writer.drain(), timeout=self.manager.write_timeout)
+            except asyncio.CancelledError:
+                raise
             except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError, OSError) as e:
-                # Treat as normal disconnect / shutdown path
                 exc = e
             except Exception as e:
-                # Truly unexpected
                 exc = e
 
         if exc is not None:
@@ -236,6 +236,11 @@ class Peer:
             # Stop future writes ASAP
             with contextlib.suppress(Exception):
                 self.writer.close()
+
+            with contextlib.suppress(Exception):
+                transport = getattr(self.writer, "transport", None)
+                if transport:
+                    transport.abort()
 
             # Wait for close; suppress expected network/transport errors
             try:

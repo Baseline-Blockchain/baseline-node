@@ -141,7 +141,10 @@ class SyncManager:
             )
             self.try_start_header_sync()
             return
-        self.start_block_sync(peer)
+        if not peer.closed:
+            self.start_block_sync(peer)
+        if not self.sync_active:
+            self.try_start_header_sync()   # or pick another for blocks
         if not self.sync_active:
             # No block sync needed; consider ourselves caught up for outbound expansion.
             self.server._allow_non_seed_outbound = True
