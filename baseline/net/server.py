@@ -65,6 +65,7 @@ class P2PServer:
         self._stop_event = asyncio.Event()
         self.server: asyncio.AbstractServer | None = None
         self.loop: asyncio.AbstractEventLoop | None = None
+        self._broadcast_sem = asyncio.Semaphore(500)  # tune
         self.known_addresses = self.discovery.address_book.addresses
         self._peer_seq = 0
         self._tasks: list[asyncio.Task] = []
@@ -1116,6 +1117,10 @@ class P2PServer:
         else:
             asyncio.create_task(self._send_getheaders(peer))
 
+    async def _bounded_send(self, peer: Peer, payload: dict[str, Any]) -> None:
+        async with self._broadcast_sem:
+            await peer.send_message(payload)
+            
     async def broadcast_inv(self, obj_type: str, obj_hash: str, exclude: set[str] | None = None) -> None:
         payload = protocol.inv_payload([{"type": obj_type, "hash": obj_hash}])
         for peer in list(self.peers.values()):
@@ -1124,7 +1129,7 @@ class P2PServer:
             if obj_hash in peer.known_inventory:
                 continue
             peer.known_inventory.add(obj_hash)
-            asyncio.create_task(peer.send_message(payload))
+            asyncio.create_task(self._bounded_send(peer, payload))
 
 
     def _fire_and_forget(self, coro) -> None:
