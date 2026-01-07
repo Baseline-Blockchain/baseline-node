@@ -1320,7 +1320,13 @@ class P2PServer:
                     status=1,
                 )
             )
-            self.log.debug("Header synced height=%d hash=%s", next_height, hdr_hash)
+            if next_height % 1000 == 0:
+                self.log.info(
+                    "Header sync from %s at height %d hash=%s",
+                    peer.peer_id,
+                    next_height,
+                    hdr_hash,
+                )
             overlay[hdr_hash] = batch[-1]
             parent = batch[-1]
             expected_prev = hdr_hash
