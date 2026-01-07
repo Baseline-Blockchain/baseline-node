@@ -1192,6 +1192,57 @@ class P2PServer:
         height = int(parent.height)
 
         batch: list[HeaderData] = []
+        overlay: dict[str, HeaderData] = {parent.hash: parent}
+
+        def get_hdr(h: str) -> HeaderData | None:
+            return overlay.get(h) or self.chain.state_db.get_header(h)
+
+        def expected_bits_lwma(height: int, parent_header: HeaderData) -> int:
+            # same logic as Chain._expected_bits_lwma but using get_hdr()
+            from ..core.chain import LWMA_WINDOW, LWMA_SOLVETIME_CLAMP_FACTOR
+
+            if height <= 1:
+                return self.chain.config.mining.initial_bits
+            if height < 3:
+                return parent_header.bits
+
+            target_spacing = max(1, self.chain.config.mining.block_interval_target)
+            window = min(LWMA_WINDOW, height - 1)
+            if window < 2:
+                return parent_header.bits
+
+            path: list[HeaderData] = []
+            current: HeaderData | None = parent_header
+            for _ in range(window + 1):
+                if current is None:
+                    break
+                path.append(current)
+                if current.prev_hash is None:
+                    break
+                current = get_hdr(current.prev_hash)
+
+            if len(path) < window + 1:
+                return parent_header.bits
+
+            path.reverse()
+            actual_window = len(path) - 1
+            sum_targets = 0
+            sum_weighted_solvetime = 0
+            max_solvetime = LWMA_SOLVETIME_CLAMP_FACTOR * target_spacing
+            weight_sum = actual_window * (actual_window + 1) // 2
+
+            for i in range(1, actual_window + 1):
+                prev = path[i - 1]
+                curr = path[i]
+                solvetime = curr.timestamp - prev.timestamp
+                solvetime = max(1, min(max_solvetime, solvetime))
+                sum_weighted_solvetime += solvetime * i
+                sum_targets += difficulty.compact_to_target(curr.bits)
+
+            denom = actual_window * weight_sum * target_spacing
+            next_target = (sum_targets * sum_weighted_solvetime) // max(1, denom)
+            next_target = max(1, min(self.chain.max_target, next_target))
+            return difficulty.target_to_compact(next_target)
 
         for entry in headers:
             try:
@@ -1229,7 +1280,7 @@ class P2PServer:
 
             # expected bits might consult DB; do it off-thread
             try:
-                expected_bits = await asyncio.to_thread(self.chain._expected_bits, next_height, parent)
+                expected_bits =  await asyncio.to_thread(expected_bits_lwma, next_height, parent)
             except Exception as exc:
                 self.log.warning("Failed computing expected bits at height %s: %s", next_height, exc)
                 self.sync.rotate_sync_peer("expected bits failure", cooldown=60.0)
@@ -1269,7 +1320,8 @@ class P2PServer:
                     status=1,
                 )
             )
-
+            self.log.debug("Header synced height=%d hash=%s", next_height, hdr_hash)
+            overlay[hdr_hash] = batch[-1]
             parent = batch[-1]
             expected_prev = hdr_hash
             height = next_height
@@ -1481,7 +1533,7 @@ class P2PServer:
     async def _send_getheaders(self, peer: Peer) -> None:
         if peer.closed:
             return
-        locator = await self._build_block_locator_async()
+        locator = await self._build_header_locator_async()
         if len(locator) == 1 and locator[0] == self.chain.genesis_hash:
             locator.append("00" * 32)
         await peer.send_message(protocol.getheaders_payload(locator))
@@ -1505,6 +1557,29 @@ class P2PServer:
 
         if not self._stop_event.is_set():
             self._schedule(_reanchor())
+
+    async def _build_header_locator_async(self, limit: int = 32) -> list[str]:
+        def _work() -> list[str]:
+            tip = self.chain.state_db.get_highest_chainwork_header()
+            if not tip:
+                return [self.chain.genesis_hash]
+            locator: list[str] = []
+            current_hash = tip.hash
+            while current_hash and len(locator) < limit:
+                locator.append(current_hash)
+                header = self.chain.state_db.get_header(current_hash)
+                if header is None or header.prev_hash is None:
+                    break
+                current_hash = header.prev_hash
+            if self.chain.genesis_hash not in locator:
+                locator.append(self.chain.genesis_hash)
+            return locator
+
+        try:
+            return await self._db(_work)
+        except Exception:
+            return [self.chain.genesis_hash]
+
 
     # -------------------------------------------------------------------------
     # Best-effort header repair (runs off-thread, never blocks responses)
