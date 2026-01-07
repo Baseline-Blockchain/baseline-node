@@ -1,19 +1,29 @@
 """
 Async P2P server coordinating peer connections.
+
+This version avoids blocking the event loop on:
+- SQLite (StateDB) reads/writes
+- disk IO (BlockStore reads)
+- heavier/optional repair work
+
+Key changes:
+- All StateDB calls inside async handlers go through asyncio.to_thread()
+- BlockStore.get_block() goes through asyncio.to_thread()
+- best_height() is cached (no DB in handshake paths)
+- getheaders/getblocks build responses using batched DB reads (range queries) off-thread
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import ipaddress
 import json
 import logging
 import random
 import time
-import ipaddress
-from collections import deque
 from dataclasses import asdict
-from typing import Any
+from typing import Any, Callable, Iterable
 
 from ..config import NodeConfig
 from ..core import difficulty
@@ -27,8 +37,8 @@ from .address import PeerAddress
 from .discovery import PeerDiscovery
 from .health import PeerHealthManager
 from .peer import Peer
-from .sync import SyncManager
 from .security import P2PSecurity
+from .sync import SyncManager
 
 MAINNET_NETWORK_ID = "baseline-mainnet-2025-12-28-r1"
 
@@ -56,8 +66,8 @@ class P2PServer:
         self.security = P2PSecurity()
         self.discovery = PeerDiscovery(
             data_dir=config.data_dir,
-            dns_seeds=getattr(config.network, 'dns_seeds', []),
-            manual_seeds=config.network.seeds
+            dns_seeds=getattr(config.network, "dns_seeds", []),
+            manual_seeds=config.network.seeds,
         )
         self.seeds = tuple(config.network.seeds)
         self.peers: dict[str, Peer] = {}
@@ -74,6 +84,11 @@ class P2PServer:
         self.bytes_sent = 0
         self.bytes_received = 0
         self._local_addresses: set[tuple[str, int]] = set()
+
+        # Cached chain tip (avoid DB reads in hot paths like handshake)
+        self._best_height_cache: int = 0
+        self._best_hash_cache: str | None = None
+
         # If only one or zero seeds are configured, allow outbound discovery immediately.
         self._allow_non_seed_outbound = len(self.seeds) <= 1
         self._pending_outbound: set[tuple[str, int]] = set()
@@ -81,11 +96,13 @@ class P2PServer:
         self._block_request_backoff: dict[str, float] = {}
         self.health = PeerHealthManager(self.log)
         self._block_apply_lock = asyncio.Lock()
+
         # Legacy references used in tests
         self._bad_block_counts = self.health.bad_block_counts
         self._missing_parent_counts = self.health.missing_parent_counts
         self._inv_flood_counts = self.health.inv_flood_counts
         self._invalid_inv_counts = self.health.invalid_inv_counts
+
         self._seed_ports: set[int] = {self.listen_port}
         for seed in self.seeds:
             try:
@@ -93,9 +110,30 @@ class P2PServer:
                 self._seed_ports.add(port)
             except Exception:
                 continue
+
         self._init_local_addresses()
         self._load_known_addresses()
         self.mempool.register_listener(self._on_local_tx)
+
+    # -------------------------------------------------------------------------
+    # Thread offload helpers (avoid blocking the event loop)
+    # -------------------------------------------------------------------------
+
+    async def _to_thread(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        return await asyncio.to_thread(fn, *args, **kwargs)
+
+    async def _db(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        # StateDB is thread-safe for readers; its writes are already serialized internally.
+        return await asyncio.to_thread(fn, *args, **kwargs)
+
+    async def _refresh_best_tip_cache(self) -> None:
+        """Refresh cached tip values from the DB (off-thread)."""
+        try:
+            tip = await self._db(self.chain.state_db.get_best_tip)
+        except Exception:
+            return
+        if tip:
+            self._best_hash_cache, self._best_height_cache = tip[0], int(tip[1])
 
     # Compatibility shims for legacy sync/header attributes used in tests and callers.
     @property
@@ -162,9 +200,12 @@ class P2PServer:
     def sync_header_batch(self, value: int) -> None:
         self.sync.sync_header_batch = value
 
+    # -------------------------------------------------------------------------
+
     def _init_local_addresses(self) -> None:
         """Initialize the set of local addresses to prevent self-connection."""
         import socket
+
         # Add configured listen address
         self._local_addresses.add((self.host, self.listen_port))
         # Add common localhost variants
@@ -203,6 +244,10 @@ class P2PServer:
         self.server = await asyncio.start_server(self._handle_inbound, self.host, self.listen_port)
         self.log.info("P2P server listening on %s:%s", self.host, self.listen_port)
         self._stop_event.clear()
+
+        # Initialize cached tip without blocking the loop.
+        await self._refresh_best_tip_cache()
+
         self._tasks.append(asyncio.create_task(self._dialer_loop(), name="p2p-dialer"))
         self._tasks.append(asyncio.create_task(self._heartbeat_loop(), name="p2p-heartbeat"))
         self._tasks.append(asyncio.create_task(self._sync_watchdog_loop(), name="p2p-sync-watchdog"))
@@ -229,7 +274,7 @@ class P2PServer:
         close_peers = [peer.close() for peer in list(self.peers.values())]
 
         # 5) Await everything, but don't deadlock shutdown
-        async def _drain():
+        async def _drain() -> None:
             await asyncio.gather(*close_peers, return_exceptions=True)
             await asyncio.gather(*self._tasks, return_exceptions=True)
             await asyncio.gather(*list(self.peer_tasks), return_exceptions=True)
@@ -240,7 +285,6 @@ class P2PServer:
             self.log.warning("Shutdown timed out; forcing exit with pending tasks")
 
         self._save_known_addresses()
-
 
     async def _handle_inbound(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         if self._stop_event.is_set():
@@ -321,7 +365,6 @@ class P2PServer:
                 return
 
             if exc is not None:
-                # keep it low-noise unless you’re debugging
                 self.log.warning("Peer task %s ended with exception: %r", t.get_name(), exc, exc_info=False)
 
         task.add_done_callback(_cleanup)
@@ -342,11 +385,11 @@ class P2PServer:
     def request_block(self, block_hash: str) -> bool:
         """
         Ask connected peers for a specific block (broadcast with backoff).
-        Returns True if at least one request was enqueued, False otherwise.
+        This must not block the loop; it only uses in-memory checks.
         """
         if not self.loop:
             return False
-        if self._is_block_invalid(block_hash):
+        if self._is_block_invalid_fast(block_hash):
             return False
         now = time.time()
         last = self._block_request_backoff.get(block_hash, 0.0)
@@ -402,11 +445,7 @@ class P2PServer:
 
         request_count = max(needed * 2, diversity_target)
         candidates = await self.discovery.discover_peers(request_count, seeds_only=seeds_only)
-        filtered = [
-            (host, port)
-            for host, port in candidates
-            if not self.security.ban_manager.is_ip_banned(host)
-        ]
+        filtered = [(host, port) for host, port in candidates if not self.security.ban_manager.is_ip_banned(host)]
         diversified = self._diversify_candidates(filtered, needed)
         for host, port in diversified:
             await self._connect_outbound(host, port)
@@ -434,7 +473,6 @@ class P2PServer:
             if key in self._pending_outbound:
                 continue
             if key in self.active_addresses():
-                # Allow an outbound even if we already have only inbound connections
                 existing = [peer for peer in self.peers.values() if peer.address == key]
                 if any(peer.outbound for peer in existing):
                     continue
@@ -447,9 +485,7 @@ class P2PServer:
             self._pending_outbound.add(key)
 
             try:
-                reader, writer = await asyncio.wait_for(
-                    asyncio.open_connection(tgt_host, tgt_port), timeout=5
-                )
+                reader, writer = await asyncio.wait_for(asyncio.open_connection(tgt_host, tgt_port), timeout=5)
             except (TimeoutError, OSError) as exc:
                 self.log.debug("Failed to dial %s:%s: %s", tgt_host, tgt_port, exc)
                 self.discovery.record_connection_failure(tgt_host, tgt_port)
@@ -492,17 +528,13 @@ class P2PServer:
         for addr in self.active_addresses().union(self._pending_outbound):
             bucket = self._network_bucket(addr[0])
             if bucket:
-                if outbound_only and not any(
-                    peer.outbound and peer.address == addr for peer in self.peers.values()
-                ):
+                if outbound_only and not any(peer.outbound and peer.address == addr for peer in self.peers.values()):
                     continue
                 buckets.add(bucket)
         return buckets
 
     def _diversify_candidates(self, candidates: list[tuple[str, int]], target: int) -> list[tuple[str, int]]:
-        """
-        Prefer candidates from new network buckets to avoid concentrating on one ASN/IP range.
-        """
+        """Prefer candidates from new network buckets to avoid concentrating on one ASN/IP range."""
         selected: list[tuple[str, int]] = []
         used_buckets = self._active_buckets()
         overflow: list[tuple[str, int]] = []
@@ -522,35 +554,13 @@ class P2PServer:
                 selected.append((host, port))
         return selected
 
-    @staticmethod
-    def _is_ephemeral_port(port: int) -> bool:
-        return port >= 32768
-
     def _should_skip_outbound_port(self, port: int) -> bool:
-        """
-        Avoid dialing obvious ephemeral ports learned from inbound peers.
-        Still allow the peer's advertised/listen port.
-        """
+        """Avoid dialing junk ports; only allow listen/seed ports."""
         if port == self.listen_port:
             return False
         if port in self._seed_ports:
             return False
-        # Skip anything outside our known/listen/seed ports to avoid junk dial targets.
         return True
-
-    def _pick_addresses(self, count: int) -> list[tuple[str, int]]:
-        available = [addr for addr in self.known_addresses.values()]
-        if not available:
-            available = [PeerAddress(host=host, port=port, last_seen=0) for host, port in self._seed_hosts()]
-        random.shuffle(available)
-        selected: list[tuple[str, int]] = []
-        for addr in available:
-            if addr.key() in self.active_addresses():
-                continue
-            selected.append(addr.key())
-            if len(selected) >= count:
-                break
-        return selected
 
     def _seed_hosts(self) -> list[tuple[str, int]]:
         hosts = []
@@ -577,7 +587,6 @@ class P2PServer:
     async def _sync_watchdog_loop(self) -> None:
         try:
             while not self._stop_event.is_set():
-                now = time.time()
                 self.sync.handle_header_timeout()
                 self.sync.handle_block_timeout()
                 await asyncio.sleep(10)
@@ -592,7 +601,9 @@ class P2PServer:
             self.log.warning("Max peers reached, disconnecting %s", peer.peer_id)
             await peer.close()
             return
+
         self.peers[peer.peer_id] = peer
+
         host, port = self._canonical_remote_address(peer)
         services = 1
         if peer.remote_version:
@@ -600,6 +611,7 @@ class P2PServer:
                 services = int(peer.remote_version.get("services", services))
             except (TypeError, ValueError):
                 services = 1
+
         addr = PeerAddress(
             host=host,
             port=port,
@@ -608,7 +620,6 @@ class P2PServer:
             source="outbound" if peer.outbound else "inbound",
         )
 
-        # Preserve existing attempt/health counters when refreshing an address.
         existing = self.discovery.address_book.addresses.get(addr.key())
         if existing:
             addr.attempts = existing.attempts
@@ -641,29 +652,32 @@ class P2PServer:
         with contextlib.suppress(Exception):
             self.security.remove_connection(peer.address[0], peer.peer_id)
         self.health.reset_peer(peer.peer_id)
+
         host, port = self._canonical_remote_address(peer)
         if not peer.handshake_complete:
-            # Cooldown addresses that repeatedly close during handshake.
             self.discovery.record_connection_failure(host, port)
             self.health.record_handshake_failure(host, port)
+
         self.log.info("Peer %s disconnected", peer.peer_id)
+
         if self.sync.sync_peer is peer:
             self.sync.sync_peer = None
             self.sync.sync_active = False
             self.sync._reset_block_sync_state()
+
         if self.sync.header_peer is peer:
             self.sync.header_peer = None
             self.sync.header_sync_active = False
+
         if not self._stop_event.is_set():
             self.sync.try_start_header_sync()
 
+    # -------------------------------------------------------------------------
+    # Hot path height lookup: cached (no DB)
+    # -------------------------------------------------------------------------
+
     def best_height(self) -> int:
-        try:
-            tip = self.chain.state_db.get_best_tip()
-        except StateDBError:
-            self.log.debug("StateDB unavailable during best_height lookup")
-            return 0
-        return tip[1] if tip else 0
+        return int(self._best_height_cache or 0)
 
     async def _send_addr(self, peer: Peer) -> None:
         peers = list(self.known_addresses.values())[:32]
@@ -671,6 +685,10 @@ class P2PServer:
 
     async def _request_addr(self, peer: Peer) -> None:
         await peer.send_message(protocol.getaddr_payload())
+
+    # -------------------------------------------------------------------------
+    # INV / GETDATA / BLOCK / TX
+    # -------------------------------------------------------------------------
 
     async def handle_inv(self, peer: Peer, message: dict[str, Any]) -> None:
         sync_active = self.sync.sync_active
@@ -680,12 +698,14 @@ class P2PServer:
         tx_requests: list[dict[str, str]] = []
         block_requests: list[dict[str, str]] = []
         block_hashes: list[str] = []
+
         for entry in items:
             obj_type = entry.get("type")
             obj_hash = entry.get("hash")
             if obj_hash is None:
                 continue
-            if obj_type == "block" and self._is_block_invalid(obj_hash):
+
+            if obj_type == "block" and self._is_block_invalid_fast(obj_hash):
                 exceeded = self.health.record_invalid_inv(peer.peer_id, obj_hash, max_count=50)
                 if exceeded and peer not in {self.sync.sync_peer, self.sync.header_peer}:
                     host, port = self._canonical_remote_address(peer)
@@ -694,7 +714,9 @@ class P2PServer:
                     await peer.close()
                     return
                 continue
+
             peer.known_inventory.add(obj_hash)
+
             if obj_type == "tx":
                 if not self.mempool.contains(obj_hash):
                     tx_requests.append(entry)
@@ -703,13 +725,16 @@ class P2PServer:
 
                 if sync_active and peer is not sync_peer:
                     continue
+
                 if not self.sync.sync_active or peer is not self.sync.sync_peer:
+                    # NOTE: has_block() is in-memory index lookup (fast, no disk IO).
                     if (
                         not self.chain.block_store.has_block(obj_hash)
                         and obj_hash not in self.sync._inflight_blocks
                         and obj_hash not in self.sync._block_queue_set
                     ):
                         block_requests.append(entry)
+
         self.log.debug(
             "Received inv from %s items=%d tx_requests=%d block_hashes=%d",
             peer.peer_id,
@@ -717,26 +742,30 @@ class P2PServer:
             len(tx_requests),
             len(block_hashes),
         )
+
         if (not self.sync.sync_active or peer is not self.sync.sync_peer) and len(block_hashes) > 200:
             if self._inv_rate_limited(peer.peer_id):
                 if self._inv_flood_counts.get(peer.peer_id, 0) % 10 == 0:
                     self.log.debug("Dropping repeated large inv from %s (rate limited)", peer.peer_id)
                 return
+
         if (not self.sync.sync_active or peer is not self.sync.sync_peer) and len(block_hashes) > 200:
             floods = self._inv_flood_counts.get(peer.peer_id, 0) + 1
             self._inv_flood_counts[peer.peer_id] = floods
             if floods == 1 or floods % 5 == 0:
                 self.log.debug(
                     "Truncating large inv from %s (items=%d flood_events=%d)",
-                    peer.peer_id, len(block_hashes), floods
+                    peer.peer_id,
+                    len(block_hashes),
+                    floods,
                 )
             block_hashes = block_hashes[:200]
             block_requests = block_requests[:200]
+
         if tx_requests:
             await peer.send_message(protocol.getdata_payload(tx_requests))
 
         sync_inv = sync_active and (peer is sync_peer)
-
         if sync_inv:
             self.sync._sync_inv_requested = False
             if block_hashes:
@@ -744,17 +773,18 @@ class P2PServer:
                 if added:
                     self.log.debug(
                         "Queued %d blocks from %s (queue=%d inflight=%d)",
-                        added, peer.peer_id, len(self.sync._block_queue), len(self.sync._inflight_blocks),
+                        added,
+                        peer.peer_id,
+                        len(self.sync._block_queue),
+                        len(self.sync._inflight_blocks),
                     )
                 await self._pump_block_downloads(peer)
             self._maybe_request_more_inventory(peer)
             return
 
-        # if syncing, do NOT fetch blocks from anyone else
         if sync_active:
             return
 
-        # only when NOT syncing, allow opportunistic block fetches
         if block_requests:
             await peer.send_message(protocol.getdata_payload(block_requests))
 
@@ -769,7 +799,7 @@ class P2PServer:
                     await peer.send_message(protocol.tx_payload(obj_hash, tx.serialize().hex()))
             elif obj_type == "block":
                 try:
-                    raw = self.chain.block_store.get_block(obj_hash)
+                    raw: bytes = await self._to_thread(self.chain.block_store.get_block, obj_hash)
                 except BlockStoreError:
                     continue
                 await peer.send_message(protocol.block_payload(obj_hash, raw.hex()))
@@ -788,13 +818,16 @@ class P2PServer:
         except Exception as exc:
             self.log.warning("Invalid tx from %s: %s", peer.peer_id, exc)
             return
+
         if self.mempool.contains(txid):
             return
+
         try:
             result = await asyncio.to_thread(self.mempool.accept_transaction, tx, peer_id=peer.peer_id)
         except MempoolError as exc:
             self.log.debug("Rejected tx %s: %s", txid, exc)
             return
+
         if result.get("status") == "accepted":
             peer.known_inventory.add(txid)
             await self.broadcast_inv("tx", txid, exclude={peer.peer_id})
@@ -807,15 +840,18 @@ class P2PServer:
         if self.sync.sync_active and peer is not self.sync.sync_peer:
             if not requested_hash or requested_hash not in self.sync._inflight_blocks:
                 return
-        block_hash = None
+
+        block_hash: str | None = None
         if not isinstance(raw, str):
             if requested_hash:
                 self.sync._inflight_blocks.discard(requested_hash)
             return
+
         try:
             block_bytes = bytes.fromhex(raw)
             block = Block.parse(block_bytes)
             block_hash = block.block_hash()
+
             if requested_hash and requested_hash != block_hash:
                 self.log.debug(
                     "Block hash mismatch from %s expected=%s got=%s",
@@ -826,22 +862,27 @@ class P2PServer:
                 self.sync._inflight_blocks.discard(requested_hash)
                 self.sync._inflight_blocks.discard(block_hash)
                 return
-            if block_hash and self._is_block_invalid(block_hash):
+
+            if block_hash and self._is_block_invalid_fast(block_hash):
                 if requested_hash:
                     self.sync._inflight_blocks.discard(requested_hash)
                 self.sync._inflight_blocks.discard(block_hash)
                 self.log.debug("Dropping known invalid block %s from %s", block_hash, peer.peer_id)
                 return
+
         except Exception as exc:
             if requested_hash:
                 self.sync._inflight_blocks.discard(requested_hash)
             self.log.warning("Invalid block payload: %s", exc)
             self._mark_block_invalid(requested_hash or block_hash, str(exc), peer, severity=1)
             return
+
         result: dict[str, Any] | None = None
         try:
             async with self._block_apply_lock:
+                # add_block may touch disk/DB heavily -> off-thread
                 result = await asyncio.to_thread(self.chain.add_block, block, block_bytes)
+
         except BlockStoreError as exc:
             msg = str(exc)
             if "already stored" in msg:
@@ -849,33 +890,33 @@ class P2PServer:
                 result = {"status": "duplicate", "hash": block.block_hash()}
             else:
                 now = time.time()
-                last = self._missing_block_log.get(block_hash)
+                last = self._missing_block_log.get(block_hash or "")
                 if not last or now - last > 30:
                     self.log.warning("Block store miss for %s from %s: %s", block.block_hash(), peer.peer_id, exc)
-                    self._missing_block_log[block_hash] = now
-                # Ask for the missing parent to heal the gap.
+                    self._missing_block_log[block_hash or ""] = now
                 missing = [{"type": "block", "hash": block.header.prev_hash}]
                 await peer.send_message(protocol.getdata_payload(missing))
                 self.request_block(block.header.prev_hash)
+
         except ChainError as exc:
             msg = str(exc)
             if "Unknown parent block" in msg:
-                # Treat as an out-of-order block; keep it as an orphan and fetch the parent.
                 orphan_hash = block.block_hash()
                 self._log_orphan_event(peer, orphan_hash, block.header.prev_hash)
                 self.chain.fork_manager.detector.orphan_manager.add_orphan(block, peer.peer_id)
                 await self._request_missing_parent(peer, block.header.prev_hash)
                 self.request_block(block.header.prev_hash)
+
                 count = self.health.increment_missing_parent(peer.peer_id)
                 if self.sync.sync_active and peer is self.sync.sync_peer and count >= 3:
                     self._rotate_sync_peer("missing parents from sync peer", cooldown=120.0)
-                # Kick sync to get ordered blocks instead of a long orphan chain.
+
                 if not self.sync.header_sync_active:
                     self._maybe_start_header_sync(peer)
                 if not self.sync.sync_active:
                     self._request_block_inventory(peer)
+
             elif "Parent block data missing" in msg:
-                # We have the header but not the raw parent block; request it instead of banning.
                 parent_hash = block.header.prev_hash
                 await self._request_missing_parent(peer, parent_hash)
                 self.request_block(parent_hash)
@@ -883,41 +924,49 @@ class P2PServer:
                 if self.sync.sync_active and peer is self.sync.sync_peer and count >= 3:
                     self._rotate_sync_peer("parent data missing from sync peer", cooldown=120.0)
                 return
+
             elif "Missing referenced output" in msg:
-                # transient / fork-state issue: don't mark invalid, don't ban.
                 return
+
             else:
                 penalize = "Missing referenced output" not in msg
                 self._mark_block_invalid(block_hash or requested_hash, msg, peer, severity=2, penalize=penalize)
                 if self.sync.sync_active and peer is self.sync.sync_peer:
                     self._rotate_sync_peer("invalid block during sync", cooldown=180.0)
             return
+
         finally:
             if requested_hash:
                 self.sync._inflight_blocks.discard(requested_hash)
             if block_hash:
                 self.sync._inflight_blocks.discard(block_hash)
+
         if result is None:
             if self.sync.sync_active and peer is self.sync.sync_peer:
                 await self._pump_block_downloads(peer)
                 self._maybe_request_more_inventory(peer)
             return
+
         status = result.get("status")
         self.health.record_success(peer.peer_id)
-        peer.known_inventory.add(block_hash)
+        if block_hash:
+            peer.known_inventory.add(block_hash)
+
         if status in {"connected", "reorganized"}:
-            # Successful block from this peer: forgive prior bad-block strikes.
             self._bad_block_counts.pop(peer.peer_id, None)
+
             if self.mempool:
-                try:
+                with contextlib.suppress(Exception):
                     self.mempool.remove_confirmed(block.transactions)
-                except Exception as exc:
-                    self.log.debug("Failed to prune mempool for block %s: %s", block_hash, exc)
+
             height = result.get("height")
             if isinstance(height, int):
                 self._on_block_connected(height)
-            await self.broadcast_inv("block", block_hash, exclude={peer.peer_id})
-            await self._process_orphans(block_hash, peer)
+
+            if block_hash:
+                await self.broadcast_inv("block", block_hash, exclude={peer.peer_id})
+                await self._process_orphans(block_hash, peer)
+
         if self.sync.sync_active and peer is self.sync.sync_peer:
             await self._pump_block_downloads(peer)
             self._maybe_request_more_inventory(peer)
@@ -942,7 +991,6 @@ class P2PServer:
             except ChainError as exc:
                 msg = str(exc)
                 if "Unknown parent block" in msg:
-                    # Still missing a parent further back; keep it as an orphan and try to fetch again.
                     self.chain.fork_manager.detector.orphan_manager.add_orphan(
                         orphan, getattr(source_peer, "peer_id", "unknown")
                     )
@@ -955,102 +1003,135 @@ class P2PServer:
             status = result.get("status")
             if status in {"connected", "reorganized"}:
                 if self.mempool:
-                    try:
+                    with contextlib.suppress(Exception):
                         self.mempool.remove_confirmed(orphan.transactions)
-                    except Exception as exc:
-                        self.log.debug("Failed to prune mempool for orphan %s: %s", orphan_hash, exc)
+
                 height = result.get("height")
                 if isinstance(height, int):
                     self._on_block_connected(height)
+
                 exclude = {source_peer.peer_id} if source_peer else None
                 await self.broadcast_inv("block", orphan_hash, exclude=exclude)
 
     async def handle_addr(self, _peer: Peer, _message: dict[str, Any]) -> None:
         return
 
+    # -------------------------------------------------------------------------
+    # GETHEADERS / GETBLOCKS: batch DB read off-thread, no per-height DB loop
+    # -------------------------------------------------------------------------
+
+    async def _find_locator_height_async(self, locator: list[str]) -> int:
+        def _work() -> int:
+            for block_hash in locator:
+                header = self.chain.state_db.get_header(block_hash)
+                if header and getattr(header, "status", 0) == 0:
+                    return int(header.height)
+            return -1
+
+        return int(await self._db(_work))
+
     async def handle_getheaders(self, peer: Peer, message: dict[str, Any]) -> None:
         locator = message.get("locator")
         if not isinstance(locator, list):
             return
-        best = self.chain.state_db.get_best_tip()
-        if not best:
-            return
-        # Ensure our main chain view is coherent before serving headers.
-        try:
-            if self.chain.state_db.has_main_chain_gap():
-                repaired = self.chain.state_db.rebuild_main_headers_from_blocks(self.chain.block_store)
-                if repaired:
-                    self.log.warning("Rebuilt %s missing headers before responding to getheaders", repaired)
-            # If continuity is broken, re-anchor from the highest chainwork tip.
-            highest = self.chain.state_db.get_highest_main_header()
-            if highest is None or highest.height < best[1]:
-                path_len, final_height = self.chain.state_db.reanchor_main_chain()
-                if path_len:
-                    self.log.warning(
-                        "Re-anchored main chain before getheaders; path=%s final_height=%s",
-                        path_len,
-                        final_height,
-                    )
-        except Exception as exc:  # noqa: BLE001
-            self.log.warning("Failed to repair headers before getheaders: %s", exc)
-        start_height = self._find_locator_height(locator)
+
         stop_hash = message.get("stop")
-        headers: list[dict[str, int]] = []
-        height = start_height + 1
-        prev_hash: str | None = None
-        if start_height >= 0:
-            prev = self.chain.state_db.get_main_header_at_height(start_height)
-            prev_hash = prev.hash if prev else None
-        while height <= best[1] and len(headers) < self.sync_header_batch:
-            header = self.chain.state_db.get_main_header_at_height(height)
-            if header is None:
-                # Try once to re-anchor and retry the fetch at this height.
-                repaired = self.chain.state_db.reanchor_main_chain()
-                if repaired[0] > 0:
-                    self.log.warning("Re-anchored main chain during getheaders; path=%s height=%s", *repaired)
-                    header = self.chain.state_db.get_main_header_at_height(height)
-                if header is None:
-                    break
-            if prev_hash and header.prev_hash != prev_hash:
-                self.log.warning(
-                    "Detected header continuity break at height %s (prev=%s actual=%s); re-anchoring",
-                    height,
-                    prev_hash,
-                    header.prev_hash,
-                )
-                repaired = self.chain.state_db.reanchor_main_chain()
-                if repaired[0] > 0:
-                    header = self.chain.state_db.get_main_header_at_height(height)
-                if header is None or (prev_hash and header.prev_hash != prev_hash):
-                    break
-            headers.append(self._header_to_dict(header))
-            prev_hash = header.hash
-            if stop_hash and header.hash == stop_hash:
-                break
-            height += 1
-        await peer.send_message(protocol.headers_payload(headers))
+        stop_hash = stop_hash if isinstance(stop_hash, str) else None
+
+        # Optional: schedule repair in background (off-thread) without blocking response.
+        # (If you want "always repair before serving", wrap this in wait_for)
+        self._schedule(self._repair_headers_best_effort())
+
+        start_height = await self._find_locator_height_async(locator)
+
+        def _work() -> tuple[int, list[HeaderData]]:
+            best = self.chain.state_db.get_best_tip()
+            if not best:
+                return 0, []
+            best_height = int(best[1])
+
+            from_h = start_height + 1
+            to_h = min(best_height, from_h + int(self.sync_header_batch) - 1)
+            if to_h < from_h:
+                return best_height, []
+
+            headers = self.chain.state_db.get_headers_range(from_h, to_h)
+
+            # If stop_hash is in-range, truncate up to it.
+            if stop_hash:
+                trimmed: list[HeaderData] = []
+                for h in headers:
+                    trimmed.append(h)
+                    if h.hash == stop_hash:
+                        break
+                headers = trimmed
+
+            # Continuity sanity: if broken, truncate at first break.
+            if headers:
+                prev = self.chain.state_db.get_main_header_at_height(start_height) if start_height >= 0 else None
+                expected_prev = prev.hash if prev else None
+                if expected_prev:
+                    ok: list[HeaderData] = []
+                    for h in headers:
+                        if h.prev_hash != expected_prev:
+                            break
+                        ok.append(h)
+                        expected_prev = h.hash
+                    headers = ok
+
+            return best_height, headers
+
+        try:
+            _best_height, hdrs = await self._db(_work)
+        except Exception as exc:
+            self.log.debug("getheaders DB error: %s", exc)
+            return
+
+        payload_headers = [self._header_to_dict(h) for h in hdrs]
+        await peer.send_message(protocol.headers_payload(payload_headers))
 
     async def handle_getblocks(self, peer: Peer, message: dict[str, Any]) -> None:
         locator = message.get("locator")
         if not isinstance(locator, list):
             return
-        best = self.chain.state_db.get_best_tip()
-        if not best:
-            return
-        start_height = self._find_locator_height(locator)
+
         stop_hash = message.get("stop")
-        inv_items = []
-        height = start_height + 1
-        while height <= best[1] and len(inv_items) < self.sync_batch:
-            header = self.chain.state_db.get_main_header_at_height(height)
-            if header is None:
-                break
-            inv_items.append({"type": "block", "hash": header.hash})
-            if stop_hash and header.hash == stop_hash:
-                break
-            height += 1
-        if inv_items:
+        stop_hash = stop_hash if isinstance(stop_hash, str) else None
+
+        start_height = await self._find_locator_height_async(locator)
+
+        def _work() -> list[str]:
+            best = self.chain.state_db.get_best_tip()
+            if not best:
+                return []
+            best_height = int(best[1])
+
+            from_h = start_height + 1
+            to_h = min(best_height, from_h + int(self.sync_batch) - 1)
+            if to_h < from_h:
+                return []
+
+            headers = self.chain.state_db.get_headers_range(from_h, to_h)
+            hashes: list[str] = []
+            for h in headers:
+                hashes.append(h.hash)
+                if stop_hash and h.hash == stop_hash:
+                    break
+            return hashes
+
+        try:
+            block_hashes: list[str] = await self._db(_work)
+        except Exception as exc:
+            self.log.debug("getblocks DB error: %s", exc)
+            return
+
+        if block_hashes:
+            inv_items = [{"type": "block", "hash": h} for h in block_hashes]
             await peer.send_message(protocol.inv_payload(inv_items))
+
+    # -------------------------------------------------------------------------
+    # HEADERS (header sync)
+    # -------------------------------------------------------------------------
 
     async def handle_headers(self, peer: Peer, message: dict[str, Any]) -> None:
         headers = message.get("headers")
@@ -1071,24 +1152,31 @@ class P2PServer:
                 self._complete_header_sync(peer)
             return
 
-        # Anchor on our current best tip (or genesis).
-        best = self.chain.state_db.get_best_tip()
+        # Anchor on current best tip (off-thread DB)
+        try:
+            best = await self._db(self.chain.state_db.get_best_tip)
+        except Exception:
+            best = None
+
         if not best:
             self.log.warning("No best tip available; cannot validate headers")
             self.sync.rotate_sync_peer("no local best tip", cooldown=60.0)
             return
 
-        parent_hash, parent_height = best
-        parent = self.chain.state_db.get_header(parent_hash)
+        parent_hash, _parent_height = best
+
+        try:
+            parent = await self._db(self.chain.state_db.get_header, parent_hash)
+        except Exception:
+            parent = None
+
         if parent is None:
-            self.log.warning("Best tip header missing (%s); re-anchoring", parent_hash)
-            with contextlib.suppress(Exception):
-                self.chain.state_db.reanchor_main_chain()
+            self.log.warning("Best tip header missing (%s); rotating", parent_hash)
             self.sync.rotate_sync_peer("missing local tip header", cooldown=60.0)
             return
 
         expected_prev = parent.hash
-        height = parent.height
+        height = int(parent.height)
 
         batch: list[HeaderData] = []
 
@@ -1109,7 +1197,6 @@ class P2PServer:
 
             hdr_hash = hdr.hash()
 
-            # Enforce that the received stream is a continuous chain.
             if hdr.prev_hash != expected_prev:
                 self.log.warning(
                     "Header continuity break from %s at local_next_height=%d: prev=%s expected=%s header=%s",
@@ -1127,7 +1214,14 @@ class P2PServer:
             with contextlib.suppress(Exception):
                 self.chain.upgrade_manager.process_new_block(hdr, next_height)
 
-            expected_bits = self.chain._expected_bits(next_height, parent)
+            # expected bits might consult DB; do it off-thread
+            try:
+                expected_bits = await asyncio.to_thread(self.chain._expected_bits, next_height, parent)
+            except Exception as exc:
+                self.log.warning("Failed computing expected bits at height %s: %s", next_height, exc)
+                self.sync.rotate_sync_peer("expected bits failure", cooldown=60.0)
+                return
+
             if hdr.bits != expected_bits:
                 self.log.warning(
                     "Header bits mismatch at height %s from %s: got=%s expected=%s prev=%s header=%s",
@@ -1138,7 +1232,6 @@ class P2PServer:
                     hdr.prev_hash,
                     hdr_hash,
                 )
-                # Rotate away instead of getting stuck.
                 self.sync.rotate_sync_peer("header bits mismatch", cooldown=180.0)
                 return
 
@@ -1149,7 +1242,6 @@ class P2PServer:
 
             chainwork_int = int(parent.chainwork) + difficulty.block_work(hdr.bits)
 
-            # status=1 is fine for "known header but not main chain yet"
             batch.append(
                 HeaderData(
                     hash=hdr_hash,
@@ -1165,17 +1257,15 @@ class P2PServer:
                 )
             )
 
-            # advance
             parent = batch[-1]
             expected_prev = hdr_hash
             height = next_height
 
-        # Bulk-store to avoid per-header commits
+        # Bulk-store (already off-thread)
         try:
             if hasattr(self.chain.state_db, "store_headers_bulk"):
                 await asyncio.to_thread(self.chain.state_db.store_headers_bulk, batch)
             else:
-                # fallback (older StateDB)
                 for h in batch:
                     await asyncio.to_thread(self.chain.state_db.store_header, h)
         except Exception as exc:
@@ -1186,20 +1276,22 @@ class P2PServer:
         self.sync.record_headers_received(len(batch))
         self.sync.sync_remote_height = max(self.sync.sync_remote_height, height)
 
-        if len(headers) < self.sync.sync_header_batch:
+        if len(headers) < self.sync.sync.sync_header_batch:
             self._complete_header_sync(peer)
         else:
             if not self._stop_event.is_set():
                 self._schedule(self._send_getheaders(peer))
 
+    # -------------------------------------------------------------------------
+    # Broadcast: bounded tasks
+    # -------------------------------------------------------------------------
 
-
-    async def _bounded_send_with_release(self, peer, payload):
+    async def _bounded_send_with_release(self, peer: Peer, payload: dict[str, Any]) -> None:
         try:
             await peer.send_message(payload)
         finally:
             self._broadcast_sem.release()
-            
+
     async def broadcast_inv(self, obj_type: str, obj_hash: str, exclude: set[str] | None = None) -> None:
         if self._stop_event.is_set():
             return
@@ -1214,26 +1306,13 @@ class P2PServer:
             if obj_hash in peer.known_inventory:
                 continue
 
-            # Acquire capacity BEFORE creating a task (bounds total pending tasks)
             try:
                 await asyncio.wait_for(self._broadcast_sem.acquire(), timeout=0.0)
             except TimeoutError:
-                # saturated -> drop (best-effort gossip)
                 continue
 
             peer.known_inventory.add(obj_hash)
             asyncio.create_task(self._bounded_send_with_release(peer, payload))
-
-
-
-    def _fire_and_forget(self, coro) -> None:
-        task = asyncio.create_task(coro)
-
-        def _ignore(result: asyncio.Task) -> None:
-            with contextlib.suppress(Exception):
-                result.result()
-
-        task.add_done_callback(_ignore)
 
     def _on_local_tx(self, tx: Transaction) -> None:
         if not self.loop:
@@ -1245,10 +1324,11 @@ class P2PServer:
             return
         asyncio.run_coroutine_threadsafe(self.broadcast_inv("block", block_hash), self.loop)
 
+    # -------------------------------------------------------------------------
+    # Health / security helpers
+    # -------------------------------------------------------------------------
+
     def _penalize_peer(self, peer: Peer, reason: str, *, severity: int = 1, ban_seconds: int = 600) -> None:
-        """
-        Penalize a peer for providing bad data. After a few strikes, temporarily ban and disconnect.
-        """
         count = self.health.increment_bad_block(peer.peer_id, severity)
         if count >= 3:
             self.log.warning("Banning peer %s for repeated bad data: %s", peer.peer_id, reason)
@@ -1257,14 +1337,16 @@ class P2PServer:
                 self.security.ban_manager.ban_ip(peer.address[0], ban_seconds)
             asyncio.create_task(peer.close())
 
-    def _is_block_invalid(self, block_hash: str) -> bool:
+    def _is_block_invalid_fast(self, block_hash: str) -> bool:
+        """
+        Non-blocking invalid check.
+        - block_store.has_block() is in-memory (safe)
+        - health cache is in-memory
+        """
         if not block_hash:
             return False
-        # If we already have the block (or its header) stored, do not treat it as invalid.
         try:
             if self.chain.block_store.has_block(block_hash):
-                return False
-            if self.chain.state_db.get_header(block_hash):
                 return False
         except Exception:
             pass
@@ -1281,7 +1363,6 @@ class P2PServer:
     ) -> None:
         self.health.mark_block_invalid(block_hash, reason)
         if "Missing referenced output" in reason:
-            # Don't ban, but DO remember it so we don't reprocess it endlessly.
             penalize = False
         if penalize and peer:
             self._penalize_peer(peer, reason, severity=severity)
@@ -1290,8 +1371,11 @@ class P2PServer:
         self.health.log_orphan_event(peer.peer_id, block_hash, prev_hash)
 
     def _inv_rate_limited(self, peer_id: str, limit: int = 5, window: float = 10.0) -> bool:
-        """Return True if peer sent too many large invs in a short window."""
         return self.health.inv_rate_limited(peer_id, limit=limit, window=window)
+
+    # -------------------------------------------------------------------------
+    # Known peers persistence (called on init/stop; not on hot loop paths)
+    # -------------------------------------------------------------------------
 
     def _load_known_addresses(self) -> None:
         legacy_path = self.config.data_dir / "peers" / "known_peers.json"
@@ -1321,25 +1405,35 @@ class P2PServer:
     def _save_known_addresses(self) -> None:
         self.discovery.save_address_book()
 
-    def _build_block_locator(self, limit: int = 32) -> list[str]:
-        tip = self.chain.state_db.get_best_tip()
-        if not tip:
-            return [self.chain.genesis_hash]
-        locator: list[str] = []
-        current_hash = tip[0]
-        while current_hash and len(locator) < limit:
-            locator.append(current_hash)
-            header = self.chain.state_db.get_header(current_hash)
-            if header is None or header.prev_hash is None:
-                break
-            current_hash = header.prev_hash
-        if self.chain.genesis_hash not in locator:
-            locator.append(self.chain.genesis_hash)
-        return locator
+    # -------------------------------------------------------------------------
+    # Locator building: async DB access
+    # -------------------------------------------------------------------------
 
-    def _header_to_dict(self, header) -> dict[str, int]:
+    async def _build_block_locator_async(self, limit: int = 32) -> list[str]:
+        def _work() -> list[str]:
+            tip = self.chain.state_db.get_best_tip()
+            if not tip:
+                return [self.chain.genesis_hash]
+            locator: list[str] = []
+            current_hash = tip[0]
+            while current_hash and len(locator) < limit:
+                locator.append(current_hash)
+                header = self.chain.state_db.get_header(current_hash)
+                if header is None or header.prev_hash is None:
+                    break
+                current_hash = header.prev_hash
+            if self.chain.genesis_hash not in locator:
+                locator.append(self.chain.genesis_hash)
+            return locator
+
+        try:
+            return await self._db(_work)
+        except Exception:
+            return [self.chain.genesis_hash]
+
+    def _header_to_dict(self, header: HeaderData) -> dict[str, int]:
         return {
-            "version": int(getattr(header, "version", header.version if hasattr(header, "version") else 1)),
+            "version": int(getattr(header, "version", 1)),
             "prev_hash": header.prev_hash,
             "merkle_root": header.merkle_root,
             "timestamp": int(header.timestamp),
@@ -1347,24 +1441,11 @@ class P2PServer:
             "nonce": int(header.nonce),
         }
 
-    def _find_locator_height(self, locator: list[str]) -> int:
-        for block_hash in locator:
-            header = self.chain.state_db.get_header(block_hash)
-            if header and header.status == 0:
-                return header.height
-        return -1
-
     def _maybe_start_header_sync(self, peer: Peer) -> None:
         self.sync.maybe_start_header_sync(peer)
 
-    def _try_start_header_sync(self) -> None:
-        self.sync.try_start_header_sync()
-
     def _rotate_sync_peer(self, reason: str, cooldown: float = 90.0) -> None:
         self.sync.rotate_sync_peer(reason, cooldown=cooldown)
-
-    def _sync_backlog_size(self) -> int:
-        return self.sync._sync_backlog_size()
 
     def _enqueue_block_hashes(self, block_hashes: list[str]) -> int:
         return self.sync.enqueue_block_hashes(block_hashes)
@@ -1381,46 +1462,65 @@ class P2PServer:
     async def _send_getblocks(self, peer: Peer) -> None:
         if peer.closed:
             return
-        locator = self._build_block_locator()
+        locator = await self._build_block_locator_async()
         await peer.send_message(protocol.getblocks_payload(locator))
 
     async def _send_getheaders(self, peer: Peer) -> None:
         if peer.closed:
             return
-        locator = self._build_block_locator()
-        # If we have no chain yet, add a zero-hash sentinel to encourage peers to start from genesis.
+        locator = await self._build_block_locator_async()
         if len(locator) == 1 and locator[0] == self.chain.genesis_hash:
             locator.append("00" * 32)
         await peer.send_message(protocol.getheaders_payload(locator))
 
     def _on_block_connected(self, height: int) -> None:
+        # update cache cheaply
+        if height > self._best_height_cache:
+            self._best_height_cache = int(height)
         self.sync.on_block_connected(height)
 
     def _complete_header_sync(self, peer: Peer) -> None:
         self.sync.complete_header_sync(peer)
 
-    def _start_block_sync(self, peer: Peer) -> None:
-        self.sync.start_block_sync(peer)
+    # -------------------------------------------------------------------------
+    # Best-effort header repair (runs off-thread, never blocks responses)
+    # -------------------------------------------------------------------------
+
+    async def _repair_headers_best_effort(self) -> None:
+        def _work() -> None:
+            try:
+                if self.chain.state_db.has_main_chain_gap():
+                    self.chain.state_db.rebuild_main_headers_from_blocks(self.chain.block_store)
+                best = self.chain.state_db.get_best_tip()
+                if best:
+                    highest = self.chain.state_db.get_highest_main_header()
+                    if highest is None or int(highest.height) < int(best[1]):
+                        self.chain.state_db.reanchor_main_chain()
+            except Exception:
+                return
+
+        # Avoid stacking a bunch of repair jobs
+        if getattr(self, "_repair_inflight", False):
+            return
+        setattr(self, "_repair_inflight", True)
+        try:
+            await asyncio.to_thread(_work)
+        finally:
+            setattr(self, "_repair_inflight", False)
+
+    # -------------------------------------------------------------------------
 
     async def _cleanup_loop(self) -> None:
         """Periodic cleanup of expired data."""
         try:
             while not self._stop_event.is_set():
                 try:
-                    # Clean up security-related data
                     self.security.cleanup()
-
-                    # Clean up peer discovery data
                     self.discovery.cleanup()
-
-                    # Clean up health-related caches
                     self.health.cleanup()
-
                     self.log.debug("Completed periodic cleanup")
                 except Exception as exc:
                     self.log.error("Error during cleanup: %s", exc)
-
-                # Run cleanup every 5 minutes
                 await asyncio.sleep(300)
         except asyncio.CancelledError:
             pass
