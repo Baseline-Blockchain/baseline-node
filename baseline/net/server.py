@@ -80,6 +80,7 @@ class P2PServer:
         self._missing_block_log: dict[str, float] = {}
         self._block_request_backoff: dict[str, float] = {}
         self.health = PeerHealthManager(self.log)
+        self._block_apply_lock = asyncio.Lock()
         # Legacy references used in tests
         self._bad_block_counts = self.health.bad_block_counts
         self._missing_parent_counts = self.health.missing_parent_counts
@@ -839,7 +840,8 @@ class P2PServer:
             return
         result: dict[str, Any] | None = None
         try:
-            result = await asyncio.to_thread(self.chain.add_block, block, block_bytes)
+            async with self._block_apply_lock:
+                result = await asyncio.to_thread(self.chain.add_block, block, block_bytes)
         except BlockStoreError as exc:
             msg = str(exc)
             if "already stored" in msg:
@@ -880,6 +882,9 @@ class P2PServer:
                 count = self.health.increment_missing_parent(peer.peer_id)
                 if self.sync.sync_active and peer is self.sync.sync_peer and count >= 3:
                     self._rotate_sync_peer("parent data missing from sync peer", cooldown=120.0)
+                return
+            elif "Missing referenced output" in msg:
+                # transient / fork-state issue: don't mark invalid, don't ban.
                 return
             else:
                 penalize = "Missing referenced output" not in msg
@@ -1053,6 +1058,8 @@ class P2PServer:
             return
         if peer is not self.sync.header_peer or not self.sync.header_sync_active:
             return
+
+        # End of header stream
         if not headers:
             if self.sync.sync_remote_height > self.best_height():
                 self.log.warning(
@@ -1064,7 +1071,47 @@ class P2PServer:
             else:
                 self._complete_header_sync(peer)
             return
-        last_height = None
+
+        # Parse first header so we can resolve the parent ONCE.
+        try:
+            first = headers[0]
+            first_header = BlockHeader(
+                version=int(first["version"]),
+                prev_hash=str(first["prev_hash"]),
+                merkle_root=str(first["merkle_root"]),
+                timestamp=int(first["timestamp"]),
+                bits=int(first["bits"]),
+                nonce=int(first["nonce"]),
+            )
+        except (KeyError, ValueError, TypeError):
+            self.log.warning("Malformed header received")
+            return
+
+        parent = self.chain.state_db.get_header(first_header.prev_hash)
+        if parent is None:
+            self.log.warning(
+                "Header parent unknown from %s: header=%s prev=%s (genesis=%s)",
+                peer.peer_id,
+                first_header.hash(),
+                first_header.prev_hash,
+                self.chain.genesis_hash,
+            )
+            best = self.chain.state_db.get_best_tip()
+            if not best or best[1] == 0:
+                self.log.info("Resetting cached headers to genesis and restarting header sync")
+                with contextlib.suppress(Exception):
+                    self.chain.state_db.reset_headers_to_genesis(self.chain.genesis_hash)
+                self.sync.header_sync_active = False
+                self.sync.header_peer = None
+                self.sync.try_start_header_sync()
+            return
+
+        # Validate/build in-memory, write once.
+        prev_hash = parent.hash
+        height = int(parent.height)
+        chainwork_int = int(parent.chainwork)
+        batch: list[HeaderData] = []
+
         for entry in headers:
             try:
                 header = BlockHeader(
@@ -1078,27 +1125,19 @@ class P2PServer:
             except (KeyError, ValueError, TypeError):
                 self.log.warning("Malformed header received")
                 return
-            parent = self.chain.state_db.get_header(header.prev_hash)
-            if parent is None:
+
+            # Continuity check (prevents per-header DB parent lookups)
+            if header.prev_hash != prev_hash:
                 self.log.warning(
-                    "Header parent unknown from %s: header=%s prev=%s (genesis=%s)",
+                    "Header continuity break from %s at height~%s: expected_prev=%s got_prev=%s",
                     peer.peer_id,
-                    header.hash(),
+                    height + 1,
+                    prev_hash,
                     header.prev_hash,
-                    self.chain.genesis_hash,
                 )
-                # If we are still effectively at genesis, clear any cached headers
-                # so we can restart cleanly rather than getting stuck on orphans.
-                best = self.chain.state_db.get_best_tip()
-                if not best or best[1] == 0:
-                    self.log.info("Resetting cached headers to genesis and restarting header sync")
-                    with contextlib.suppress(Exception):
-                        self.chain.state_db.reset_headers_to_genesis(self.chain.genesis_hash)
-                    self.sync.header_sync_active = False
-                    self.sync.header_peer = None
-                    self.sync.try_start_header_sync()
                 return
-            height = parent.height + 1
+
+            height += 1
             expected_bits = self.chain._expected_bits(height, parent)
             if header.bits != expected_bits:
                 self.log.warning(
@@ -1110,11 +1149,13 @@ class P2PServer:
                     header.prev_hash,
                 )
                 return
-            if not difficulty.check_proof_of_work(header.hash(), header.bits):
-                self.log.debug("Invalid POW for header %s", header.hash())
-                return
+
             header_hash = header.hash()
-            chainwork_int = int(parent.chainwork) + difficulty.block_work(header.bits)
+            if not difficulty.check_proof_of_work(header_hash, header.bits):
+                self.log.debug("Invalid POW for header %s", header_hash)
+                return
+
+            chainwork_int += difficulty.block_work(header.bits)
             header_record = HeaderData(
                 hash=header_hash,
                 prev_hash=header.prev_hash,
@@ -1127,16 +1168,34 @@ class P2PServer:
                 version=header.version,
                 status=1,
             )
-            self.chain.state_db.store_header(header_record)
-            last_height = height
+            batch.append(header_record)
+
+            # advance "parent" notion for next expected_bits() call
+            parent = header_record  # has .height/.bits/.timestamp/.chainwork/.hash
+            prev_hash = header_hash
+
+        # One DB write for the whole batch (must be fast + in a transaction).
+        if batch:
+            if hasattr(self.chain.state_db, "store_headers_bulk"):
+                await asyncio.to_thread(self.chain.state_db.store_headers_bulk, batch)
+            else:
+                # Fallback: still do it off-thread (slower than bulk, but avoids blocking the loop)
+                def _store_one_by_one() -> None:
+                    for rec in batch:
+                        self.chain.state_db.store_header(rec)
+                await asyncio.to_thread(_store_one_by_one)
+
+        last_height = batch[-1].height if batch else None
         self.sync.record_headers_received(len(headers))
         if last_height is not None:
-            self.sync.sync_remote_height = max(self.sync.sync_remote_height, last_height)
+            self.sync.sync_remote_height = max(self.sync.sync_remote_height, int(last_height))
+
         if len(headers) < self.sync.sync_header_batch:
             self._complete_header_sync(peer)
         else:
             if not self._stop_event.is_set():
                 self._schedule(self._send_getheaders(peer))
+
 
     async def _bounded_send_with_release(self, peer, payload):
         try:
@@ -1225,8 +1284,7 @@ class P2PServer:
     ) -> None:
         self.health.mark_block_invalid(block_hash, reason)
         if "Missing referenced output" in reason:
-            # Do not persist a missing-output failure; allow re-requests as parents arrive.
-            self.health.clear_invalid_block(block_hash)
+            # Don't ban, but DO remember it so we don't reprocess it endlessly.
             penalize = False
         if penalize and peer:
             self._penalize_peer(peer, reason, severity=severity)

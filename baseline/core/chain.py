@@ -19,6 +19,7 @@ from .block import MAX_BLOCK_WEIGHT, Block, BlockHeader, merkle_root_hash
 from .fork import ForkManager
 from .tx import COIN, Transaction, TxInput, TxOutput
 from .upgrade import UpgradeManager
+import threading
 
 
 class ChainError(Exception):
@@ -112,6 +113,7 @@ class Chain:
         self.state_db = state_db
         self.block_store = block_store
         self.log = logging.getLogger("baseline.chain")
+        self._add_block_lock = threading.RLock()
         if getattr(self.config.mining, "allow_consensus_overrides", False):
             # Keep dev/test nets fast to mine unless explicitly configured otherwise.
             if self.config.mining.pow_limit_bits == CONSENSUS_DEFAULTS["pow_limit_bits"]:
@@ -314,89 +316,101 @@ class Chain:
         return self.add_block(block, raw_block)
 
     def add_block(self, block: Block, raw_block: bytes | None = None) -> dict[str, str | int | bool]:
-        block_hash = block.block_hash()
-        existing_header = self.state_db.get_header(block_hash)
-        if existing_header is not None and self.block_store.has_block(block_hash):
-            return {"status": "duplicate", "hash": block_hash}
-        if existing_header is not None and not self.block_store.has_block(block_hash):
-            # If we've already connected this block on-chain (status==0) but lost the raw data,
-            # restore it without replaying state. Otherwise fall through to normal processing.
-            if existing_header.status == 0:
-                if raw_block is None:
-                    raw_block = block.serialize()
-                if (
-                    existing_header.prev_hash != block.header.prev_hash
-                    or existing_header.bits != block.header.bits
-                    or existing_header.merkle_root != block.header.merkle_root
-                    or existing_header.timestamp != block.header.timestamp
-                ):
-                    raise ChainError("Block header mismatch for stored header")
-                if not difficulty.check_proof_of_work(block_hash, block.header.bits):
-                    raise ChainError("Invalid proof of work")
-                self.block_store.append_block(bytes.fromhex(block_hash), raw_block)
-                return {"status": "restored", "hash": block_hash, "height": existing_header.height}
-        if raw_block is None:
-            raw_block = block.serialize()
-        prev_hash = block.header.prev_hash
-        if prev_hash == "00" * 32:
-            if block_hash != self.genesis_hash:
-                raise ChainError("Unexpected alternate genesis block")
-            return {"status": "genesis"}
-        parent_header = self.state_db.get_header(prev_hash)
-        if parent_header is None:
-            raise ChainError("Unknown parent block")
-        if not self.block_store.has_block(prev_hash):
-            raise ChainError("Parent block data missing")
-        height = parent_header.height + 1
-        view = self._build_view_for_parent(prev_hash)
-        validation = self._validate_block(block, height, parent_header, view)
+        with self._add_block_lock:
+            block_hash = block.block_hash()
+            existing_header = self.state_db.get_header(block_hash)
+            if existing_header is not None and self.block_store.has_block(block_hash):
+                return {"status": "duplicate", "hash": block_hash}
 
-        # Process upgrade signaling
-        self.upgrade_manager.process_new_block(block.header, height)
+            if existing_header is not None and not self.block_store.has_block(block_hash):
+                if existing_header.status == 0:
+                    if raw_block is None:
+                        raw_block = block.serialize()
+                    if (
+                        existing_header.prev_hash != block.header.prev_hash
+                        or existing_header.bits != block.header.bits
+                        or existing_header.merkle_root != block.header.merkle_root
+                        or existing_header.timestamp != block.header.timestamp
+                    ):
+                        raise ChainError("Block header mismatch for stored header")
+                    if not difficulty.check_proof_of_work(block_hash, block.header.bits):
+                        raise ChainError("Invalid proof of work")
+                    self.block_store.append_block(bytes.fromhex(block_hash), raw_block)
+                    return {"status": "restored", "hash": block_hash, "height": existing_header.height}
 
-        chainwork_int = int(parent_header.chainwork) + difficulty.block_work(block.header.bits)
-        header = HeaderData(
-            hash=block_hash,
-            prev_hash=prev_hash,
-            height=height,
-            bits=block.header.bits,
-            nonce=block.header.nonce,
-            timestamp=block.header.timestamp,
-            merkle_root=block.header.merkle_root,
-            chainwork=str(chainwork_int),
-            version=block.header.version,
-            status=1,
-        )
-        self.block_store.append_block(bytes.fromhex(block_hash), raw_block)
-        self.state_db.store_header(header)
+            if raw_block is None:
+                raw_block = block.serialize()
 
-        # Handle fork detection and reorganization
-        block_accepted, reorganization_occurred, reorg_deferred = self.fork_manager.handle_new_block(block)
+            prev_hash = block.header.prev_hash
+            if prev_hash == "00" * 32:
+                if block_hash != self.genesis_hash:
+                    raise ChainError("Unexpected alternate genesis block")
+                return {"status": "genesis"}
 
-        if not block_accepted:
-            # Block was rejected by fork manager
-            return {"status": "rejected", "hash": block_hash, "height": height}
+            parent_header = self.state_db.get_header(prev_hash)
+            if parent_header is None:
+                raise ChainError("Unknown parent block")
+            if not self.block_store.has_block(prev_hash):
+                raise ChainError("Parent block data missing")
 
-        if reorganization_occurred:
-            # Fork manager handled the reorganization
-            return {"status": "reorganized", "hash": block_hash, "height": height}
+            height = parent_header.height + 1
 
-        # Continue with normal processing
-        self.state_db.upsert_chain_tip(block_hash, height, header.chainwork)
-        self.state_db.remove_chain_tip(prev_hash)
-        if reorg_deferred:
-            return {"status": "deferred", "hash": block_hash, "height": height}
-        best = self.state_db.get_best_tip()
-        best_work = int(self.state_db.get_meta("best_work") or "0")
-        extends_best = best and prev_hash == best[0]
-        if extends_best:
-            self._connect_main(block, block_hash, height, chainwork_int, validation)
-            return {"status": "connected", "hash": block_hash, "height": height}
-        if chainwork_int > best_work:
-            self.log.info("New chainwork %s surpasses best %s; reorganizing", chainwork_int, best_work)
-            self._reorganize_to(block_hash)
-            return {"status": "reorganized", "hash": block_hash, "height": height}
-        return {"status": "side", "hash": block_hash, "height": height}
+            # Compute chainwork/header early (cheap)
+            chainwork_int = int(parent_header.chainwork) + difficulty.block_work(block.header.bits)
+            header = HeaderData(
+                hash=block_hash,
+                prev_hash=prev_hash,
+                height=height,
+                bits=block.header.bits,
+                nonce=block.header.nonce,
+                timestamp=block.header.timestamp,
+                merkle_root=block.header.merkle_root,
+                chainwork=str(chainwork_int),
+                version=block.header.version,
+                status=1,
+            )
+
+            # Store raw + header (cheap, and needed for later)
+            self.block_store.append_block(bytes.fromhex(block_hash), raw_block)
+            self.state_db.store_header(header)
+
+            # Let fork manager decide whether it's even relevant
+            block_accepted, reorganization_occurred, reorg_deferred = self.fork_manager.handle_new_block(block)
+            if not block_accepted:
+                return {"status": "rejected", "hash": block_hash, "height": height}
+            if reorganization_occurred:
+                return {"status": "reorganized", "hash": block_hash, "height": height}
+
+            # Update tips (still cheap)
+            self.state_db.upsert_chain_tip(block_hash, height, header.chainwork)
+            self.state_db.remove_chain_tip(prev_hash)
+            if reorg_deferred:
+                return {"status": "deferred", "hash": block_hash, "height": height}
+
+            best = self.state_db.get_best_tip()
+            best_work = int(self.state_db.get_meta("best_work") or "0")
+            extends_best = bool(best and prev_hash == best[0])
+
+            # ✅ Only now do the expensive stuff, and only if it matters.
+            if extends_best or chainwork_int > best_work:
+                view = self._build_view_for_parent(prev_hash)
+                validation = self._validate_block(block, height, parent_header, view)
+
+                # Only process upgrades for blocks we actually validated as connectable/candidate-best
+                self.upgrade_manager.process_new_block(block.header, height)
+
+                if extends_best:
+                    self._connect_main(block, block_hash, height, chainwork_int, validation)
+                    return {"status": "connected", "hash": block_hash, "height": height}
+
+                # chainwork beats best => reorg path should validate first (we just did)
+                self.log.info("New chainwork %s surpasses best %s; reorganizing", chainwork_int, best_work)
+                self._reorganize_to(block_hash)
+                return {"status": "reorganized", "hash": block_hash, "height": height}
+
+            # Not extending best and not a best-chain candidate => don't waste CPU validating now.
+            return {"status": "side", "hash": block_hash, "height": height}
+
 
     def _connect_main(self, block: Block, block_hash: str, height: int, chainwork: int, validation: ValidationResult) -> None:
         spent, created = self._collect_utxo_changes(validation)

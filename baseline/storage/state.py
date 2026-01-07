@@ -323,6 +323,49 @@ class StateDB:
             status=row["status"],
         )
 
+    def store_headers_bulk(self, headers: Sequence[HeaderData]) -> None:
+        """Insert/update many headers in ONE write job (single SQLite transaction)."""
+        self._ensure_open()
+        if not headers:
+            return
+
+        sql = """
+        INSERT INTO headers(hash, prev_hash, height, bits, nonce, timestamp, merkle_root, chainwork, version, status)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(hash) DO UPDATE SET
+            prev_hash=excluded.prev_hash,
+            height=excluded.height,
+            bits=excluded.bits,
+            nonce=excluded.nonce,
+            timestamp=excluded.timestamp,
+            merkle_root=excluded.merkle_root,
+            chainwork=excluded.chainwork,
+            version=excluded.version,
+            status=excluded.status
+        """
+
+        rows = [
+            (
+                h.hash,
+                h.prev_hash,
+                int(h.height),
+                int(h.bits),
+                int(h.nonce),
+                int(h.timestamp),
+                h.merkle_root,
+                str(h.chainwork),
+                int(h.version),
+                int(h.status),
+            )
+            for h in headers
+        ]
+
+        def _write(conn: sqlite3.Connection) -> None:
+            conn.executemany(sql, rows)
+
+        self._enqueue_write(_write)
+
+
     def set_best_tip(self, block_hash: str, height: int) -> None:
         self._ensure_open()
         def _update(conn: sqlite3.Connection) -> None:
