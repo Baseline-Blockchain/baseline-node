@@ -652,7 +652,8 @@ class P2PServer:
         if self.sync.header_peer is peer:
             self.sync.header_peer = None
             self.sync.header_sync_active = False
-        self.sync.try_start_header_sync()
+        if not self._stop_event.is_set():
+            self.sync.try_start_header_sync()
 
     def best_height(self) -> int:
         try:

@@ -78,6 +78,8 @@ class SyncManager:
 
     # Header sync
     def maybe_start_header_sync(self, peer) -> None:
+        if self.server._stop_event.is_set():
+            return
         if self.header_sync_active or not peer.remote_version:
             return
         cooldown_until = self._header_peer_cooldowns.get(peer.peer_id)
@@ -102,9 +104,11 @@ class SyncManager:
             remote_height,
             local_height,
         )
-        self.server._fire_and_forget(self.send_getheaders(peer))
+        self.server._schedule(self.send_getheaders(peer))
 
     def try_start_header_sync(self) -> None:
+        if self.server._stop_event.is_set():
+            return
         if self.header_sync_active:
             return
         peers = list(self.server.peers.values())
@@ -126,6 +130,8 @@ class SyncManager:
         await peer.send_message(protocol.getheaders_payload(locator))
 
     def complete_header_sync(self, peer) -> None:
+        if self.server._stop_event.is_set():
+            return
         self.header_sync_active = False
         self.header_peer = None
         if self._header_received == 0 and self.sync_remote_height > self.server.best_height():
@@ -141,6 +147,8 @@ class SyncManager:
             self.server._allow_non_seed_outbound = True
 
     def handle_header_timeout(self) -> None:
+        if self.server._stop_event.is_set():
+            return
         now = time.time()
         if self.header_sync_active and now - self._header_last_time > self._header_timeout:
             self.server.log.warning("Header sync stalled; restarting")
@@ -220,6 +228,8 @@ class SyncManager:
         return f"{host}:{port}"
 
     def start_block_sync(self, peer) -> None:
+        if self.server._stop_event.is_set():
+            return
         if self.sync_active or not peer.remote_version:
             return
         key = self._sync_cooldown_key(peer)
@@ -260,6 +270,8 @@ class SyncManager:
 
     def rotate_sync_peer(self, reason: str, cooldown: float = 90.0) -> None:
         """Drop the current sync peer and try another source."""
+        if self.server._stop_event.is_set():
+            return
         if self.sync_peer:
             self.server.log.info("Rotating sync peer from %s: %s", self.sync_peer.peer_id, reason)
             key = self._sync_cooldown_key(self.sync_peer)
@@ -272,22 +284,30 @@ class SyncManager:
         self.try_start_header_sync()
 
     def handle_block_timeout(self) -> None:
+        if self.server._stop_event.is_set():
+            return
         now = time.time()
         if self.sync_active and now - self._block_last_time > self._block_timeout:
             self.server.log.warning("Block sync stalled; restarting header sync")
             self.rotate_sync_peer("stall detected", cooldown=60.0)
 
     def request_block_inventory(self, peer) -> None:
+        if self.server._stop_event.is_set():
+            return
         if peer.closed:
             return
         if self.sync_active and self._sync_inv_requested:
             return
         if self.sync_active:
             self._sync_inv_requested = True
-        self.server._fire_and_forget(self.server._send_getblocks(peer))
+        self.server._schedule(self.server._send_getblocks(peer))
 
     def maybe_request_more_inventory(self, peer) -> None:
+        if self.server._stop_event.is_set():
+            return
         self._maybe_request_more_inventory(peer)
 
     async def pump_block_downloads(self, peer) -> None:
+        if self.server._stop_event.is_set():
+            return
         await self._pump_block_downloads(peer)
