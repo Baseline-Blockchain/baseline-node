@@ -631,10 +631,10 @@ class P2PServer:
         if peer.outbound:
             self.discovery.address_book.record_success(addr.host, addr.port)
         rv = peer.remote_version or {}
-        if rv.get("network_id") != self.network_id:
+        if rv.get("network") != self.network_id:
             self.log.info(
-                "Disconnecting %s: wrong network_id remote=%r local=%r",
-                peer.peer_id, rv.get("network_id"), self.network_id
+                "Disconnecting %s: wrong network remote=%r local=%r",
+                peer.peer_id, rv.get("network"), self.network_id
             )
             await peer.close()
             return
@@ -975,6 +975,11 @@ class P2PServer:
             height = result.get("height")
             if isinstance(height, int):
                 self._on_block_connected(height)
+
+            # After a reorganization, refresh the cached tip from the DB so
+            # handshake/reporting paths don't advertise a stale height/hash.
+            if status == "reorganized" and not self._stop_event.is_set():
+                self._schedule(self._refresh_best_tip_cache())
 
             if block_hash:
                 await self.broadcast_inv("block", block_hash, exclude={peer.peer_id})
@@ -1482,9 +1487,10 @@ class P2PServer:
         await peer.send_message(protocol.getheaders_payload(locator))
 
     def _on_block_connected(self, height: int) -> None:
-        # update cache cheaply
-        if height > self._best_height_cache:
-            self._best_height_cache = int(height)
+        # Update cache cheaply.
+        # Note: reorganizations can move the tip to a lower height; don't assume
+        # monotonically increasing.
+        self._best_height_cache = int(height)
         self.sync.on_block_connected(height)
 
     def _complete_header_sync(self, peer: Peer) -> None:

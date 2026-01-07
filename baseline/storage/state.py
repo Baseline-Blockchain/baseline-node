@@ -299,31 +299,45 @@ class StateDB:
                 ),
             )
         )
-        try:
-            self._maybe_promote_best_tip(header.hash, int(header.height), str(header.chainwork))
-        except Exception:
-            pass
+        # Only main-chain headers should ever move the node's active tip.
+        # Side-chain (header-sync) data must not overwrite best_hash/best_height.
+        if int(getattr(header, "status", 0) or 0) == 0:
+            try:
+                self._maybe_promote_best_tip(header.hash, int(header.height), str(header.chainwork))
+            except Exception:
+                pass
 
     def _maybe_promote_best_tip(self, new_hash: str, new_height: int, new_chainwork: str) -> None:
-        """
-        Promote best tip (meta.best_hash/best_height) if new_chainwork > current best chainwork.
-        Expects new_chainwork to be int-like (stored as TEXT is fine).
+        """Promote meta.best_* if the new MAIN-chain header is heavier.
+
+        Important: this must only be called for main-chain headers (status=0).
         """
         self._ensure_open()
         new_work = int(new_chainwork or 0)
 
         def _write(conn: sqlite3.Connection) -> None:
-            # Read current best hash/height from meta in the SAME transaction.
-            row = conn.execute("SELECT value FROM meta WHERE key='best_hash'").fetchone()
-            cur_best_hash = row[0] if row else None
+            # Prefer meta.best_work if present (keeps the trio consistent).
+            row = conn.execute("SELECT value FROM meta WHERE key='best_work'").fetchone()
             cur_work = -1
-            if cur_best_hash:
-                r2 = conn.execute("SELECT chainwork FROM headers WHERE hash=?", (cur_best_hash,)).fetchone()
-                if r2 and r2[0] is not None:
-                    try:
-                        cur_work = int(r2[0])
-                    except Exception:
-                        cur_work = -1
+            if row and row[0] is not None:
+                try:
+                    cur_work = int(row[0])
+                except Exception:
+                    cur_work = -1
+            else:
+                # Fallback: derive from current best_hash header.
+                row2 = conn.execute("SELECT value FROM meta WHERE key='best_hash'").fetchone()
+                cur_best_hash = row2[0] if row2 else None
+                if cur_best_hash:
+                    r3 = conn.execute(
+                        "SELECT chainwork FROM headers WHERE hash=? AND status=0",
+                        (cur_best_hash,),
+                    ).fetchone()
+                    if r3 and r3[0] is not None:
+                        try:
+                            cur_work = int(r3[0])
+                        except Exception:
+                            cur_work = -1
 
             if new_work <= cur_work:
                 return
@@ -331,12 +345,17 @@ class StateDB:
             conn.execute(
                 "INSERT INTO meta(key, value) VALUES('best_hash', ?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-               (new_hash,),
+                (new_hash,),
             )
             conn.execute(
-               "INSERT INTO meta(key, value) VALUES('best_height', ?) "
+                "INSERT INTO meta(key, value) VALUES('best_height', ?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (str(int(new_height)),),
+            )
+            conn.execute(
+                "INSERT INTO meta(key, value) VALUES('best_work', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (str(int(new_work)),),
             )
 
         self._enqueue_write(_write)
@@ -401,29 +420,28 @@ class StateDB:
             for h in headers
         ]
 
-         # Candidate: pick the highest chainwork header in the batch as the new tip candidate.
-        # (In a continuous getheaders response, this will typically be the last header.)
-        best_h = max(headers, key=lambda h: int(getattr(h, "chainwork", 0) or 0))
-        best_hash = best_h.hash
-        best_height = int(best_h.height)
-        best_work = int(getattr(best_h, "chainwork", 0) or 0)
+        # Only main-chain headers may move the active best tip.
+        main_candidates = [h for h in headers if int(getattr(h, "status", 0) or 0) == 0]
+        best_h = max(main_candidates, key=lambda h: int(getattr(h, "chainwork", 0) or 0)) if main_candidates else None
+        best_hash = best_h.hash if best_h else None
+        best_height = int(best_h.height) if best_h else None
+        best_work = int(getattr(best_h, "chainwork", 0) or 0) if best_h else None
 
         def _write(conn: sqlite3.Connection) -> None:
             conn.executemany(sql, rows)
 
-            # Compare against current best chainwork and promote if heavier.
-            row = conn.execute("SELECT value FROM meta WHERE key='best_hash'").fetchone()
-            cur_best_hash = row[0] if row else None
+            if best_hash is None:
+                return
+            # Compare against meta.best_work (if present) and promote if heavier.
+            row = conn.execute("SELECT value FROM meta WHERE key='best_work'").fetchone()
             cur_work = -1
-            if cur_best_hash:
-                r2 = conn.execute("SELECT chainwork FROM headers WHERE hash=?", (cur_best_hash,)).fetchone()
-                if r2 and r2[0] is not None:
-                    try:
-                        cur_work = int(r2[0])
-                    except Exception:
-                        cur_work = -1
+            if row and row[0] is not None:
+                try:
+                    cur_work = int(row[0])
+                except Exception:
+                    cur_work = -1
 
-            if best_work > cur_work:
+            if int(best_work or 0) > cur_work:
                 conn.execute(
                     "INSERT INTO meta(key, value) VALUES('best_hash', ?) "
                     "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -432,7 +450,12 @@ class StateDB:
                 conn.execute(
                     "INSERT INTO meta(key, value) VALUES('best_height', ?) "
                     "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                    (str(best_height),),
+                    (str(int(best_height or 0)),),
+                )
+                conn.execute(
+                    "INSERT INTO meta(key, value) VALUES('best_work', ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (str(int(best_work or 0)),),
                 )
 
         self._enqueue_write(_write)

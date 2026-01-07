@@ -143,9 +143,12 @@ class OrphanBlockManager:
 class ForkDetector:
     """Detect and handle blockchain forks."""
 
-    def __init__(self, block_store: BlockStore, state_db: StateDB):
+    def __init__(self, block_store: BlockStore, state_db: StateDB, *, chain: Any | None = None):
         self.block_store = block_store
         self.state_db = state_db
+        # Optional reference to the Chain (or a shim) so we can detect sync mode.
+        # This must NEVER be required for consensus-critical logic.
+        self.chain = chain
         self.orphan_manager = OrphanBlockManager()
         self.log = logging.getLogger("baseline.fork_detector")
 
@@ -320,11 +323,23 @@ class ForkDetector:
     def _is_syncing(self) -> bool:
         """
         Best-effort: during initial sync we may want to relax reorg rate limits.
-        Assumes Chain optionally has `network` pointing at P2PServer (or similar)
-        that exposes `sync_active`.
+        We keep this deliberately defensive: not all deployments attach the
+        networking layer to the Chain.
         """
-        net = getattr(self.chain, "network", None)
-        return bool(getattr(net, "sync_active", False))
+        chain = getattr(self, "chain", None)
+        if chain is None:
+            return False
+
+        # Option A: Chain.network points at the P2P server (or similar).
+        net = getattr(chain, "network", None)
+        if net is not None:
+            return bool(
+                getattr(net, "sync_active", False)
+                or getattr(net, "header_sync_active", False)
+            )
+
+        # Option B: some callers attach flags directly.
+        return bool(getattr(chain, "sync_active", False))
 
 class ChainReorganizer:
     """Handle chain reorganizations safely using the existing chain infrastructure."""
@@ -369,11 +384,18 @@ class ForkManager:
     def __init__(self, chain):
         """Initialize with a reference to the main Chain object."""
         self.chain = chain
-        self.detector = ForkDetector(chain.block_store, chain.state_db)
+        self.detector = ForkDetector(chain.block_store, chain.state_db, chain=chain)
         self.reorganizer = ChainReorganizer(chain, self.detector)
         self.log = logging.getLogger("baseline.fork_manager")
         # Track the best fork tip that could not be adopted immediately due to rate limiting.
         self.pending_reorg_tip: str | None = None
+
+    def _is_syncing(self) -> bool:
+        """Delegate to the detector's best-effort sync check."""
+        try:
+            return bool(self.detector._is_syncing())
+        except Exception:
+            return False
 
     def handle_new_block(self, block: Block) -> tuple[bool, bool, bool]:
         """
