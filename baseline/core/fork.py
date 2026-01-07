@@ -157,7 +157,7 @@ class ForkDetector:
         self.max_reorgs_per_hour = 10
         self._last_rate_limit_log = 0.0
 
-    def detect_fork(self, new_block: Block) -> ForkInfo | None:
+    def detect_fork(self, new_block: Block, *, syncing: bool = False) -> ForkInfo | None:
         """Detect if a new block creates a fork."""
         block_hash = new_block.block_hash()
         prev_hash = new_block.header.prev_hash
@@ -196,7 +196,7 @@ class ForkDetector:
 
         # Determine if we should reorganize with rate limiting
         should_reorganize = fork_chain_work > main_chain_work and self._can_reorganize(
-            fork_chain_work, main_chain_work
+            fork_chain_work, main_chain_work, syncing=syncing
         )
 
         return ForkInfo(
@@ -278,15 +278,12 @@ class ForkDetector:
 
         return connected_blocks
 
-    def _can_reorganize(self, fork_work: int, main_work: int) -> bool:
+    def _can_reorganize(self, fork_work: int, main_work: int, *, syncing: bool = False) -> bool:
         """Check if reorganization is allowed based on rate limits."""
         import time
         current_time = time.time()
 
         # If syncing or the fork has dramatically more work (e.g., >2x), bypass the cooldown.
-        syncing = getattr(getattr(self, "chain", None), "mempool", None) is None or getattr(
-            getattr(self, "chain", None), "network", None
-        ) is not None and getattr(self.chain.network, "sync_active", False)
         if syncing or (main_work > 0 and fork_work >= 2 * main_work):
             return True
 
@@ -320,6 +317,14 @@ class ForkDetector:
         """Periodic cleanup of stale data."""
         self.orphan_manager.cleanup_orphans()
 
+    def _is_syncing(self) -> bool:
+        """
+        Best-effort: during initial sync we may want to relax reorg rate limits.
+        Assumes Chain optionally has `network` pointing at P2PServer (or similar)
+        that exposes `sync_active`.
+        """
+        net = getattr(self.chain, "network", None)
+        return bool(getattr(net, "sync_active", False))
 
 class ChainReorganizer:
     """Handle chain reorganizations safely using the existing chain infrastructure."""
@@ -439,8 +444,6 @@ class ForkManager:
             return False
 
         pending_tip = self.pending_reorg_tip
-        if not self.detector._can_reorganize():
-            return False
 
         current_tip_info = self.chain.state_db.get_best_tip()
         if not current_tip_info:
@@ -465,6 +468,11 @@ class ForkManager:
         fork_work = self.detector._calculate_chain_work_from_height(pending_tip, fork_height)
         if fork_work <= main_work:
             self.pending_reorg_tip = None
+            return False
+
+        # Now that we know the work delta, enforce (or bypass) rate limiting properly.
+        if not self.detector._can_reorganize(fork_work, main_work, syncing=self._is_syncing()):
+            # Keep it pending; we can retry later.
             return False
 
         fork_info = ForkInfo(

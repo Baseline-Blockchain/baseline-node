@@ -299,6 +299,47 @@ class StateDB:
                 ),
             )
         )
+        try:
+            self._maybe_promote_best_tip(header.hash, int(header.height), str(header.chainwork))
+        except Exception:
+            pass
+
+    def _maybe_promote_best_tip(self, new_hash: str, new_height: int, new_chainwork: str) -> None:
+        """
+        Promote best tip (meta.best_hash/best_height) if new_chainwork > current best chainwork.
+        Expects new_chainwork to be int-like (stored as TEXT is fine).
+        """
+        self._ensure_open()
+        new_work = int(new_chainwork or 0)
+
+        def _write(conn: sqlite3.Connection) -> None:
+            # Read current best hash/height from meta in the SAME transaction.
+            row = conn.execute("SELECT value FROM meta WHERE key='best_hash'").fetchone()
+            cur_best_hash = row[0] if row else None
+            cur_work = -1
+            if cur_best_hash:
+                r2 = conn.execute("SELECT chainwork FROM headers WHERE hash=?", (cur_best_hash,)).fetchone()
+                if r2 and r2[0] is not None:
+                    try:
+                        cur_work = int(r2[0])
+                    except Exception:
+                        cur_work = -1
+
+            if new_work <= cur_work:
+                return
+
+            conn.execute(
+                "INSERT INTO meta(key, value) VALUES('best_hash', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+               (new_hash,),
+            )
+            conn.execute(
+               "INSERT INTO meta(key, value) VALUES('best_height', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (str(int(new_height)),),
+            )
+
+        self._enqueue_write(_write)
 
     def get_header(self, block_hash: str) -> HeaderData | None:
         self._ensure_open()
@@ -360,8 +401,39 @@ class StateDB:
             for h in headers
         ]
 
+         # Candidate: pick the highest chainwork header in the batch as the new tip candidate.
+        # (In a continuous getheaders response, this will typically be the last header.)
+        best_h = max(headers, key=lambda h: int(getattr(h, "chainwork", 0) or 0))
+        best_hash = best_h.hash
+        best_height = int(best_h.height)
+        best_work = int(getattr(best_h, "chainwork", 0) or 0)
+
         def _write(conn: sqlite3.Connection) -> None:
             conn.executemany(sql, rows)
+
+            # Compare against current best chainwork and promote if heavier.
+            row = conn.execute("SELECT value FROM meta WHERE key='best_hash'").fetchone()
+            cur_best_hash = row[0] if row else None
+            cur_work = -1
+            if cur_best_hash:
+                r2 = conn.execute("SELECT chainwork FROM headers WHERE hash=?", (cur_best_hash,)).fetchone()
+                if r2 and r2[0] is not None:
+                    try:
+                        cur_work = int(r2[0])
+                    except Exception:
+                        cur_work = -1
+
+            if best_work > cur_work:
+                conn.execute(
+                    "INSERT INTO meta(key, value) VALUES('best_hash', ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (best_hash,),
+                )
+                conn.execute(
+                    "INSERT INTO meta(key, value) VALUES('best_height', ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (str(best_height),),
+                )
 
         self._enqueue_write(_write)
 
@@ -1060,7 +1132,7 @@ class StateDB:
         conn = self._reader_conn()
         rows = conn.execute(
             "SELECT hash, prev_hash, height, bits, nonce, timestamp, merkle_root, chainwork, version, status "
-            "FROM headers WHERE height BETWEEN ? AND ? ORDER BY height ASC",
+            "FROM headers WHERE status=0 AND height BETWEEN ? AND ? ORDER BY height ASC",
             (start_height, end_height),
         ).fetchall()
         return [

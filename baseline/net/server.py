@@ -630,7 +630,20 @@ class P2PServer:
         self.discovery.address_book.add_address(addr)
         if peer.outbound:
             self.discovery.address_book.record_success(addr.host, addr.port)
+        rv = peer.remote_version or {}
+        if rv.get("network_id") != self.network_id:
+            self.log.info(
+                "Disconnecting %s: wrong network_id remote=%r local=%r",
+                peer.peer_id, rv.get("network_id"), self.network_id
+            )
+            await peer.close()
+            return
 
+        # optional extra hard check if you include this in version:
+        if rv.get("genesis_hash") and rv["genesis_hash"] != self.chain.genesis_hash:
+            self.log.info("Disconnecting %s: wrong genesis_hash", peer.peer_id)
+            await peer.close()
+            return
         self.log.info("Peer %s connected (addr=%s:%s outbound=%s)", peer.peer_id, host, port, peer.outbound)
         await self._send_addr(peer)
         await self._request_addr(peer)
@@ -1152,27 +1165,22 @@ class P2PServer:
                 self._complete_header_sync(peer)
             return
 
-        # Anchor on current best tip (off-thread DB)
-        try:
-            best = await self._db(self.chain.state_db.get_best_tip)
-        except Exception:
-            best = None
-
-        if not best:
-            self.log.warning("No best tip available; cannot validate headers")
-            self.sync.rotate_sync_peer("no local best tip", cooldown=60.0)
+        # Anchor on the connection point the peer is extending (Bitcoin-style getheaders).
+        first_prev = headers[0].get("prev_hash")
+        if not isinstance(first_prev, str):
+            self.sync.rotate_sync_peer("malformed headers (no prev_hash)", cooldown=120.0)
             return
-
-        parent_hash, _parent_height = best
-
         try:
-            parent = await self._db(self.chain.state_db.get_header, parent_hash)
+            parent = await self._db(self.chain.state_db.get_header, first_prev)
         except Exception:
             parent = None
-
         if parent is None:
-            self.log.warning("Best tip header missing (%s); rotating", parent_hash)
-            self.sync.rotate_sync_peer("missing local tip header", cooldown=60.0)
+            self.log.warning(
+                "Peer %s sent headers that don't connect to our chain (unknown prev=%s)",
+                peer.peer_id,
+                first_prev,
+            )
+            self.sync.rotate_sync_peer("headers do not connect", cooldown=180.0)
             return
 
         expected_prev = parent.hash
@@ -1276,7 +1284,7 @@ class P2PServer:
         self.sync.record_headers_received(len(batch))
         self.sync.sync_remote_height = max(self.sync.sync_remote_height, height)
 
-        if len(headers) < self.sync.sync.sync_header_batch:
+        if len(headers) < self.sync.sync_header_batch:
             self._complete_header_sync(peer)
         else:
             if not self._stop_event.is_set():
@@ -1481,6 +1489,16 @@ class P2PServer:
 
     def _complete_header_sync(self, peer: Peer) -> None:
         self.sync.complete_header_sync(peer)
+
+        async def _reanchor() -> None:
+            try:
+                await asyncio.to_thread(self.chain.state_db.reanchor_main_chain)
+                await self._refresh_best_tip_cache()
+            except Exception as exc:
+                self.log.debug("reanchor_main_chain failed: %s", exc)
+
+        if not self._stop_event.is_set():
+            self._schedule(_reanchor())
 
     # -------------------------------------------------------------------------
     # Best-effort header repair (runs off-thread, never blocks responses)
