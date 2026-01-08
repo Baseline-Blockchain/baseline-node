@@ -17,10 +17,10 @@ This document captures the normative behavior implemented by the current Baselin
 
 ### Validation Rules
 
-1. No transaction may create money: sum(outputs) ≤ sum(inputs).
+1. No transaction may create money: sum(outputs) <= sum(inputs).
 2. Coinbase transaction must include the block height as the first push in `scriptSig` (BIP34-style).
 3. Coinbase outputs mature after `coinbase_maturity` (=20) blocks. Spending them earlier is invalid.
-4. Maximum serialized transaction size enforced by policy is 100 kB; scripts ≥1,650 bytes (`scriptSig`) or ≥10 kB (`scriptPubKey`) are rejected by the mempool.
+4. Maximum serialized transaction size enforced by policy is 100 kB; scripts > 1,650 bytes (`scriptSig`) or > 10 kB (`scriptPubKey`) are rejected by the mempool.
 5. Script execution follows Bitcoin's stack machine with standard P2PKH validation.
 6. Non-coinbase and coinbase transactions must satisfy lock-time finality at the block's height/time or the block is invalid.
 
@@ -37,7 +37,7 @@ This document captures the normative behavior implemented by the current Baselin
 ## 4. Blocks
 
 - Header fields: `version (int32)`, `prev_hash (32 B)`, `merkle_root (32 B)`, `timestamp (uint32)`, `bits (uint32 compact)`, `nonce (uint32)`.
-- Block weight limit: `4_000_000` (no witness, so weight ≈ serialized size * 4 ⇒ 1 MB max).
+- Block weight limit: `4_000_000` (no witness, so `weight == size * 4` and the max serialized block size is 1,000,000 bytes).
 - Mainnet genesis (consensus-critical):
   - `timestamp`: `1766880000` (2025-12-28T00:00:00Z)
   - `bits`: `0x207fffff` (PoW limit / easiest allowed)
@@ -48,7 +48,7 @@ This document captures the normative behavior implemented by the current Baselin
 - Timestamp constraints:
   - Must be strictly greater than the median of the previous 11 blocks (`median_time_past`).
 - Must not exceed `synchronized_time + 3 minutes`.
-- Proof-of-work: header hash interpreted as uint256 must be ≤ target encoded by `bits`.
+- Proof-of-work: header hash interpreted as uint256 must be <= target encoded by `bits`.
 - Difficulty adjusts every block using a linearly weighted moving average (LWMA) window over prior blocks:
 
 ```
@@ -63,10 +63,10 @@ For each new block at height h:
   LWMA = sum_{i=1..window}(solvetime_i * i) / (window*(window+1)/2)
   avg_target = average(target(bits_i)) over the last `window` blocks
   new_target = avg_target * LWMA / T
-  new_target ≤ max_target (set by genesis bits 0x207fffff)
+  new_target <= max_target (set by genesis bits 0x207fffff)
 ```
 
-- Coinbase reward limit: sum of coinbase outputs ≤ subsidy(height) + total fees from non-coinbase txs.
+- Coinbase reward limit: sum of coinbase outputs <= subsidy(height) + total fees from non-coinbase txs.
 - Duplicate coinbase transactions or missing coinbase transactions invalidate the block.
 - Finality: each non-coinbase transaction must be final with respect to block height/time (see lock_time rule above) or the block is rejected.
 - Fork choice: the active chain is the highest-work chain; headers on the active chain are stored with `status=0` and side chains with `status=1`. Reorganizations detach old-branch blocks and attach the higher-work branch.
@@ -117,7 +117,7 @@ For each new block at height h:
 - Optional NTP client queries up to 3 servers on each sync (from the configured server list) every 300 seconds with a 5-second UDP timeout.
 - The node maintains an in-process time offset (it does not adjust the system clock).
 - Offsets greater than 60 seconds trigger warnings.
-- `synchronized_time_int()` uses the node’s NTP-derived offset and is used for mining template timestamps and the “future block” validation check.
+- `synchronized_time_int()` uses the node's NTP-derived offset and is used for mining template timestamps and the "future block" validation check.
 - RPC `gettimesyncinfo` reports time-sync status including offset, last_sync, time_since_sync, drift_rate, servers, system_time, and synchronized_time.
 
 ## 10. Upgrades & Version Bits

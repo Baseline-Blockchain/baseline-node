@@ -68,7 +68,7 @@ No extra pip packages are required; the stdlib is enough. The GUI uses Tkinter (
    baseline-node --config config.json --log-level info
    ```
    The runner initializes the append-only block store + SQLite chainstate, and starts P2P sync, wallet, and the authenticated JSON-RPC server. If a pool private key is configured it also spins up the payout tracker and Stratum listener. Use Ctrl+C (or SIGTERM) for graceful shutdown.
-   Point a browser or `curl` at `http://127.0.0.1:8832/` (with your RPC username/password) to view the built-in status panel—it summarizes height, peers, mempool size, and uptime at a glance.
+   Point a browser or `curl` at `http://127.0.0.1:8832/` to view the built-in status panel (unauthenticated but rate-limited)-it summarizes height, peers, mempool size, and uptime at a glance.
 
 **TIP: Need to resync from scratch?** Stop the node and run:
 ```bash

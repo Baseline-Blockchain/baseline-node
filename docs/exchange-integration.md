@@ -54,11 +54,11 @@ These commands behave like their Bitcoin Core counterparts:
   - `getmempoolinfo`, `getrawmempool` - populate pending-deposit queues.
 
 - **Wallet / withdrawals**
-  - `getnewaddress` – allocate deposit and change addresses.
-  - `listunspent` – build withdrawal inputs.
-  - `sendtoaddress` / `sendmany` (via wallet CLI) – broadcast withdrawals; they accept the same parameters and error codes you use on Bitcoin.
+  - `getnewaddress` - allocate deposit and change addresses.
+  - `listunspent` - build withdrawal inputs.
+  - `sendtoaddress` - broadcast withdrawals. (There is no `sendmany` RPC/CLI batching helper today; batch withdrawals by issuing multiple `sendtoaddress` calls or by building/signing a transaction externally and broadcasting via `sendrawtransaction`.)
   - `walletpassphrase`, `walletlock` - unlock/lock the wallet; the wallet uses PBKDF2-encrypted seeds with integrity checks.
-  - `dumpwallet`, `importwallet`, `importprivkey` – cold/offline backups and recovery.
+  - `dumpwallet`, `importwallet`, `importprivkey` - cold/offline backups and recovery.
 
 - **Operations**
   - `getnetworkinfo`, `getpeerinfo` – monitor connectivity.
@@ -76,7 +76,7 @@ Baseline ships a deterministic HD wallet (`baseline-wallet`). Best practices for
 3. Use `dumpwallet` for cold backups; store WIF exports offline.
 4. For cold storage, generate addresses with `baseline-wallet generate-key`, record them in your custody system, and sweep manually when needed.
 
-If you bring your own signing stack, you can disable the built-in wallet and rely on raw transaction RPCs (`createrawtransaction` + `sendrawtransaction` pattern). The node’s mempool/validation logic is independent of the wallet.
+If you bring your own signing stack, you can disable the built-in wallet and still use the node for validation/broadcast. Baseline currently exposes `sendrawtransaction` for broadcast, but does not (yet) expose the full Bitcoin Core raw-tx construction RPC set (`createrawtransaction`, `signrawtransaction*`, `decoderawtransaction`), so external signers should build/sign transactions client-side and then push hex via `sendrawtransaction`.
 
 ## Deposit Flow Pattern
 
@@ -88,13 +88,13 @@ If you bring your own signing stack, you can disable the built-in wallet and rel
 ## Withdrawal Flow Pattern
 
 1. Aggregate pending withdrawals; compute desired fee rate (use `estimatesmartfee` or your own policy).
-2. Call `sendtoaddress` (single) or craft a batched transaction via `baseline-wallet send --batch`.
+2. Call `sendtoaddress` for each withdrawal (or craft a batched transaction externally and broadcast it via `sendrawtransaction`).
 3. Monitor returned TXIDs via `gettransaction` / `getrawtransaction` for status; surface to customer support dashboards.
-4. If a transaction gets stuck, use RBF by recreating it with a higher fee (Baseline enforces standardness rules similar to Bitcoin; fee bumping is manual for now).
+4. Baseline does not currently implement opt-in RBF in the mempool. If a transaction is underpriced, it must confirm naturally or be handled manually; avoid this by using conservative fee rates and monitoring mempool conditions.
 
 ## Monitoring & Alerting
 
-- Scrape the RPC status panel (`GET /` with Basic Auth) for quick metrics (height, peers, mempool, wallet sync).
+- Scrape the RPC status panel (`GET /`) for quick metrics (height, peers, mempool, wallet sync). (The status panel is unauthenticated but rate-limited; keep RPC on trusted networks.)
 - Parse logs in `data_dir/logs/node.log`; metrics include sync state, peer bans, and mempool issues.
 - Set up alerts for:
   - `getblockchaininfo.initialblockdownload = true` for unexpected IBD.

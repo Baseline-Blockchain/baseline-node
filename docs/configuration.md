@@ -38,7 +38,7 @@ Baseline loads `config.json`, fills in deterministic defaults from `NodeConfig`,
     "min_difficulty": 1.0,
     "vardiff_window": 30,
     "session_timeout": 120,
-    "max_jobs": 12
+    "max_jobs": 8
   },
   "mining": {
     "coinbase_maturity": 20,

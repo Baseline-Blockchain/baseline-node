@@ -5,8 +5,9 @@ Baseline exposes a Bitcoin-like JSON-RPC server over HTTP. The server listens on
 ## Authentication
 
 - Status panel: `GET /` is unauthenticated but rate-limited; keep it on trusted networks.
-- JSON-RPC: these read-only/public methods are served without Basic Auth: `getblockcount`, `getbestblockhash`, `getblockchaininfo`, `getblockhash`, `getblockheader`, `getblock`, `getrawtransaction`, `gettxout`, `getrichlist`, `getaddressutxos`, `getaddressbalance`, `getaddresstxids`, `estimatesmartfee`, `getmempoolinfo`, `sendrawtransaction`, `listscheduledtx`, `getschedule`, `getpoolstats`, `getpoolworkers`, `getpoolpendingblocks`, `getpoolmatured`, `getpoolpayoutpreview`, `getstratumsessions`. Any other method—or any batch containing a non-public method—requires Basic Auth (`rpc.username` / `rpc.password`).
-- Wallet and mutating methods always require Basic Auth.
+- JSON-RPC: these read-only/public methods are served without Basic Auth: `getblockcount`, `getbestblockhash`, `getblockchaininfo`, `getblockhash`, `getblockheader`, `getblock`, `getrawtransaction`, `gettxout`, `getrichlist`, `getaddressutxos`, `getaddressbalance`, `getaddresstxids`, `estimatesmartfee`, `getmempoolinfo`, `sendrawtransaction`, `listscheduledtx`, `getschedule`, `getpoolstats`, `getpoolworkers`, `getpoolpendingblocks`, `getpoolmatured`, `getpoolpayoutpreview`, `getstratumsessions`. Any other method-or any batch containing a non-public method-requires Basic Auth (`rpc.username` / `rpc.password`).
+- Wallet methods and most mutating methods require Basic Auth.
+- Note: `sendrawtransaction` is in the public list (so it is unauthenticated by default). Treat the RPC port as trusted/internal and firewall it accordingly.
 
 ## Status Panel
 
