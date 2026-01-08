@@ -90,8 +90,16 @@ class SyncManager:
         self._record_remote_height(remote_height)
         if self._is_peer_stale(remote_height, peer):
             return
+        local_header_height: int | None = None
+        try:
+            header_tip = self.server.chain.state_db.get_highest_chainwork_header()
+        except Exception:
+            header_tip = None
+        if header_tip is not None:
+            local_header_height = int(header_tip.height)
         local_height = self.server.best_height()
-        if remote_height <= local_height:
+        compare_height = local_header_height if local_header_height is not None else local_height
+        if remote_height <= compare_height:
             return
         self.header_peer = peer
         self.header_sync_active = True

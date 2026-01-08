@@ -1159,7 +1159,16 @@ class P2PServer:
             return
 
         if not headers:
-            if self.sync.sync_remote_height > self.best_height():
+            local_header_height: int | None = None
+            try:
+                header_tip = await self._db(self.chain.state_db.get_highest_chainwork_header)
+            except Exception:
+                header_tip = None
+            if header_tip is not None:
+                local_header_height = int(header_tip.height)
+            local_height = self.best_height()
+            compare_height = local_header_height if local_header_height is not None else local_height
+            if self.sync.sync_remote_height > compare_height:
                 self.log.warning(
                     "Peer %s advertised height %s but returned no headers; rotating",
                     peer.peer_id,
