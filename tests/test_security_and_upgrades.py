@@ -2,7 +2,6 @@
 Tests for P2P security enhancements and upgrade mechanisms.
 """
 
-import asyncio
 import logging
 import tempfile
 import time
@@ -12,6 +11,7 @@ from pathlib import Path
 from baseline.core.block import BlockHeader
 from baseline.core.upgrade import UpgradeDefinition, UpgradeManager, UpgradeState
 from baseline.net.discovery import AddressBook, DNSSeeder, PeerAddress
+from baseline.net.peer import Peer
 from baseline.net.security import (
     BanManager,
     ConnectionLimiter,
@@ -21,7 +21,6 @@ from baseline.net.security import (
     RateLimiter,
 )
 from baseline.storage.state import HeaderData, StateDB
-from baseline.net.peer import Peer
 
 
 class SecurityTests(unittest.TestCase):

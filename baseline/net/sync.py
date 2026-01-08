@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import time
 from collections import deque
-from typing import Any
 
 from . import protocol
 
@@ -55,8 +54,7 @@ class SyncManager:
                 height = int(peer.remote_version.get("height", 0))
             except Exception:
                 continue
-            if height > best:
-                best = height
+            best = max(best, height)
         return best
 
     def _is_peer_stale(self, remote_height: int, peer=None) -> bool:

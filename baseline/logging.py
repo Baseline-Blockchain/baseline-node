@@ -5,12 +5,11 @@ Logging helpers for the Baseline node.
 from __future__ import annotations
 
 import logging
+import queue
 import sys
 import time
-import queue
 from logging.handlers import QueueHandler, QueueListener, RotatingFileHandler
 from pathlib import Path
-
 
 _LOG_LISTENER: QueueListener | None = None
 
@@ -30,7 +29,7 @@ class UTCFormatter(logging.Formatter):
 def setup_logging(log_file: Path, *, level: int = logging.INFO) -> logging.Logger:
     """Configure root logger with stdout + rotating file sinks."""
 
-    global _LOG_LISTENER
+    global _LOG_LISTENER  # noqa: PLW0603
     if _LOG_LISTENER:
         _LOG_LISTENER.stop()
         _LOG_LISTENER = None
@@ -64,7 +63,7 @@ def setup_logging(log_file: Path, *, level: int = logging.INFO) -> logging.Logge
 
 def shutdown_logging() -> None:
     """Flush and stop the background logging thread."""
-    global _LOG_LISTENER
+    global _LOG_LISTENER  # noqa: PLW0603
     if _LOG_LISTENER:
         _LOG_LISTENER.stop()
         _LOG_LISTENER = None

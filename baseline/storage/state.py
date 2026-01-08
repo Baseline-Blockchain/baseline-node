@@ -304,7 +304,7 @@ class StateDB:
         if int(getattr(header, "status", 0) or 0) == 0:
             try:
                 self._maybe_promote_best_tip(header.hash, int(header.height), str(header.chainwork))
-            except Exception:
+            except Exception:  # noqa: S110
                 pass
 
     def _maybe_promote_best_tip(self, new_hash: str, new_height: int, new_chainwork: str) -> None:

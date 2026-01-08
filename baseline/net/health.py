@@ -5,7 +5,6 @@ Peer health and connection tracking helpers.
 from __future__ import annotations
 
 import time
-from typing import Dict, Tuple
 
 
 class PeerHealthManager:
@@ -13,15 +12,15 @@ class PeerHealthManager:
 
     def __init__(self, log):
         self.log = log
-        self.invalid_blocks: Dict[str, float] = {}
-        self.bad_block_counts: Dict[str, int] = {}
-        self.missing_parent_counts: Dict[str, int] = {}
-        self.inv_flood_counts: Dict[str, int] = {}
-        self.inv_rate: Dict[str, Tuple[float, int]] = {}
-        self.invalid_inv_counts: Dict[str, int] = {}
-        self.address_cooldowns: Dict[Tuple[str, int], float] = {}
-        self.handshake_failures: Dict[str, Tuple[int, float]] = {}
-        self.orphan_log_state: Dict[str, Tuple[float, int]] = {}
+        self.invalid_blocks: dict[str, float] = {}
+        self.bad_block_counts: dict[str, int] = {}
+        self.missing_parent_counts: dict[str, int] = {}
+        self.inv_flood_counts: dict[str, int] = {}
+        self.inv_rate: dict[str, tuple[float, int]] = {}
+        self.invalid_inv_counts: dict[str, int] = {}
+        self.address_cooldowns: dict[tuple[str, int], float] = {}
+        self.handshake_failures: dict[str, tuple[int, float]] = {}
+        self.orphan_log_state: dict[str, tuple[float, int]] = {}
 
     def reset_peer(self, peer_id: str) -> None:
         self.bad_block_counts.pop(peer_id, None)

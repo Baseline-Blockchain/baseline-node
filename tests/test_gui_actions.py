@@ -1,7 +1,6 @@
 from datetime import datetime
 
 import pytest
-import pytest
 
 # Skip GUI actions tests if tkinter is unavailable in this environment.
 pytest.importorskip("tkinter")

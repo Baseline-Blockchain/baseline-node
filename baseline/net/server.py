@@ -20,10 +20,10 @@ import contextlib
 import ipaddress
 import json
 import logging
-import random
 import time
+from collections.abc import Callable
 from dataclasses import asdict
-from typing import Any, Callable, Iterable
+from typing import Any
 
 from ..config import NodeConfig
 from ..core import difficulty
@@ -31,7 +31,7 @@ from ..core.block import Block, BlockHeader
 from ..core.chain import Chain, ChainError
 from ..core.tx import Transaction
 from ..mempool import Mempool, MempoolError
-from ..storage import BlockStoreError, HeaderData, StateDBError
+from ..storage import BlockStoreError, HeaderData
 from . import protocol
 from .address import PeerAddress
 from .discovery import PeerDiscovery
@@ -1208,7 +1208,7 @@ class P2PServer:
 
         def expected_bits_lwma(height: int, parent_header: HeaderData) -> int:
             # same logic as Chain._expected_bits_lwma but using get_hdr()
-            from ..core.chain import LWMA_WINDOW, LWMA_SOLVETIME_CLAMP_FACTOR
+            from ..core.chain import LWMA_SOLVETIME_CLAMP_FACTOR, LWMA_WINDOW
 
             if height <= 1:
                 return self.chain.config.mining.initial_bits
@@ -1358,9 +1358,8 @@ class P2PServer:
 
         if len(headers) < self.sync.sync_header_batch:
             self._complete_header_sync(peer)
-        else:
-            if not self._stop_event.is_set():
-                self._schedule(self._send_getheaders(peer))
+        elif not self._stop_event.is_set():
+            self._schedule(self._send_getheaders(peer))
 
     # -------------------------------------------------------------------------
     # Broadcast: bounded tasks
@@ -1436,7 +1435,7 @@ class P2PServer:
         try:
             if self.chain.block_store.has_block(block_hash):
                 return False
-        except Exception:
+        except Exception:  # noqa: S110
             pass
         return self.health.is_block_invalid(block_hash)
 
@@ -1623,11 +1622,11 @@ class P2PServer:
         # Avoid stacking a bunch of repair jobs
         if getattr(self, "_repair_inflight", False):
             return
-        setattr(self, "_repair_inflight", True)
+        self._repair_inflight = True
         try:
             await asyncio.to_thread(_work)
         finally:
-            setattr(self, "_repair_inflight", False)
+            self._repair_inflight = False
 
     # -------------------------------------------------------------------------
 

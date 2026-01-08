@@ -7,6 +7,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import math
+import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -19,7 +20,6 @@ from .block import MAX_BLOCK_WEIGHT, Block, BlockHeader, merkle_root_hash
 from .fork import ForkManager
 from .tx import COIN, Transaction, TxInput, TxOutput
 from .upgrade import UpgradeManager
-import threading
 
 
 class ChainError(Exception):
