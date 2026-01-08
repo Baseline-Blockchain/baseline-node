@@ -1359,7 +1359,10 @@ class P2PServer:
 
     async def _bounded_send_with_release(self, peer: Peer, payload: dict[str, Any]) -> None:
         try:
-            await peer.send_message(payload)
+            await asyncio.wait_for(peer.send_message(payload), timeout=self.write_timeout)
+        except Exception:
+            self.log.debug("Failed to broadcast to peer %s payload %s", peer.peer_id, payload)
+            pass
         finally:
             self._broadcast_sem.release()
 
@@ -1368,7 +1371,7 @@ class P2PServer:
             return
 
         payload = protocol.inv_payload([{"type": obj_type, "hash": obj_hash}])
-
+        dropped = 0
         for peer in list(self.peers.values()):
             if exclude and peer.peer_id in exclude:
                 continue
@@ -1378,11 +1381,16 @@ class P2PServer:
                 continue
 
             try:
-                await asyncio.wait_for(self._broadcast_sem.acquire(), timeout=0.0)
+                await self._broadcast_sem.acquire()
+                self.log.debug("broadcast_inv acquired sem for peer %s (sem=%s)", peer.peer_id, self._broadcast_sem._value)
             except TimeoutError:
+                dropped += 1
+                if dropped % 100 == 0:
+                    self.log.debug("broadcast_inv dropped=%d (sem=%s)", dropped, self._broadcast_sem._value)
                 continue
-
+            self.log.debug("Broadcasting inv %s to peer %s", obj_hash, peer.peer_id)
             peer.known_inventory.add(obj_hash)
+
             asyncio.create_task(self._bounded_send_with_release(peer, payload))
 
     def _on_local_tx(self, tx: Transaction) -> None:
