@@ -269,6 +269,8 @@ class RealNetworkIntegrationTests(unittest.TestCase):
                         height = result.get("height")
                         if status in {"connected", "reorganized"} and isinstance(height, int):
                             miner.network.announce_block(block_hash)
+                            miner.network._best_hash_cache = block_hash
+                            miner.network._best_height_cache = height
                             return block, height
                 timestamp = max(timestamp + 1, int(time.time()))
             extranonce1 = os.urandom(miner.template_builder.extranonce1_size)

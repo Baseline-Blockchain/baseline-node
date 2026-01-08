@@ -246,8 +246,8 @@ class PeerDiscoveryTests(unittest.TestCase):
         addr.record_success()
         addr.record_failure()
 
-        # Score should be 2/3 = 0.667
-        self.assertAlmostEqual(addr.reliability_score(), 2/3, places=2)
+        # Score should be (2 + 2) / (2 + 1 + 4) = 4/7 ≈ 0.571
+        self.assertAlmostEqual(addr.reliability_score(), 4/7, places=2)
 
     def test_address_book_persistence(self):
         """Test address book persistence."""

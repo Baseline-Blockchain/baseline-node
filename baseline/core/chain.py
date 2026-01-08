@@ -319,20 +319,19 @@ class Chain:
         with self._add_block_lock:
             block_hash = block.block_hash()
             existing_header = self.state_db.get_header(block_hash)
-            if existing_header is not None and self.block_store.has_block(block_hash):
-                return {"status": "duplicate", "hash": block_hash}
-
-            if existing_header is not None and not self.block_store.has_block(block_hash):
+            if existing_header is not None:
+                if (
+                    existing_header.prev_hash != block.header.prev_hash
+                    or existing_header.bits != block.header.bits
+                    or existing_header.merkle_root != block.header.merkle_root
+                    or existing_header.timestamp != block.header.timestamp
+                ):
+                    raise ChainError("Block header mismatch for stored header")
+                if self.block_store.has_block(block_hash):
+                    return {"status": "duplicate", "hash": block_hash}
                 if existing_header.status == 0:
                     if raw_block is None:
                         raw_block = block.serialize()
-                    if (
-                        existing_header.prev_hash != block.header.prev_hash
-                        or existing_header.bits != block.header.bits
-                        or existing_header.merkle_root != block.header.merkle_root
-                        or existing_header.timestamp != block.header.timestamp
-                    ):
-                        raise ChainError("Block header mismatch for stored header")
                     if not difficulty.check_proof_of_work(block_hash, block.header.bits):
                         raise ChainError("Invalid proof of work")
                     self.block_store.append_block(bytes.fromhex(block_hash), raw_block)
@@ -370,7 +369,11 @@ class Chain:
                 status=1,
             )
 
-            # Store raw + header (cheap, and needed for later)
+            # Validate before persisting so invalid blocks cannot be cached as duplicates.
+            view = self._build_view_for_parent(prev_hash)
+            validation = self._validate_block(block, height, parent_header, view)
+
+            # Store raw + header (needed for fork detection + later lookup)
             self.block_store.append_block(bytes.fromhex(block_hash), raw_block)
             self.state_db.store_header(header)
 
@@ -391,11 +394,8 @@ class Chain:
             best_work = int(self.state_db.get_meta("best_work") or "0")
             extends_best = bool(best and prev_hash == best[0])
 
-            # ✅ Only now do the expensive stuff, and only if it matters.
+            # Only process upgrades/connectivity steps if this could affect the best chain.
             if extends_best or chainwork_int > best_work:
-                view = self._build_view_for_parent(prev_hash)
-                validation = self._validate_block(block, height, parent_header, view)
-
                 # Only process upgrades for blocks we actually validated as connectable/candidate-best
                 self.upgrade_manager.process_new_block(block.header, height)
 
@@ -408,7 +408,7 @@ class Chain:
                 self._reorganize_to(block_hash)
                 return {"status": "reorganized", "hash": block_hash, "height": height}
 
-            # Not extending best and not a best-chain candidate => don't waste CPU validating now.
+            # Valid side-chain block that does not affect the best chain.
             return {"status": "side", "hash": block_hash, "height": height}
 
 

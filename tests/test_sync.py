@@ -1,3 +1,4 @@
+import asyncio
 import tempfile
 import time
 import unittest
@@ -48,6 +49,9 @@ class SyncTests(unittest.IsolatedAsyncioTestCase):
             block = self._mine_block(prev)
             self.chain.add_block(block, block.serialize())
             prev = block.block_hash()
+
+    async def asyncSetUp(self) -> None:
+        self.server.loop = asyncio.get_running_loop()
 
     def tearDown(self) -> None:
         self.state_db.close()
@@ -115,8 +119,8 @@ class SyncTests(unittest.IsolatedAsyncioTestCase):
         best = self.state_db.get_best_tip()[0]
         self.assertIn(best, hashes)
 
-    def test_block_locator_includes_tip(self) -> None:
-        locator = self.server._build_block_locator()
+    async def test_block_locator_includes_tip(self) -> None:
+        locator = await self.server._build_block_locator_async()
         best = self.state_db.get_best_tip()[0]
         self.assertEqual(locator[0], best)
         self.assertIn(self.chain.genesis_hash, locator)
@@ -236,7 +240,7 @@ class SyncTests(unittest.IsolatedAsyncioTestCase):
 
         await self.server.handle_block(peer, payload)
 
-        self.assertTrue(self.server._is_block_invalid(block.block_hash()))
+        self.assertTrue(self.server._is_block_invalid_fast(block.block_hash()))
         self.assertIn(peer.peer_id, self.server._bad_block_counts)
 
     async def test_ephemeral_outbound_skipped(self) -> None:
@@ -309,7 +313,7 @@ class SyncTests(unittest.IsolatedAsyncioTestCase):
         await self.server.handle_block(peer, payload)
 
         self.assertNotIn(peer.peer_id, self.server._bad_block_counts)
-        self.assertFalse(self.server._is_block_invalid(block.block_hash()))
+        self.assertFalse(self.server._is_block_invalid_fast(block.block_hash()))
 
     async def test_missing_referenced_output_does_not_ban_peer(self) -> None:
         peer = DummyPeer()
