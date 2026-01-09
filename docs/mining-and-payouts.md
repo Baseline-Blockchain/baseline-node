@@ -12,8 +12,11 @@ Baseline ships with a Stratum v1 server plus a payout tracker so you can operate
 ### Connecting Miners
 
 ```
-# cpuminer-multi (https://github.com/tpruvot/cpuminer-multi) using SHA256d
-cpuminer-multi -a sha256d -o stratum+tcp://pool.example.org:3333 -u NExampleAddr.worker01 -p x
+# Install baseline-miner (CPU Stratum miner)
+python -m pip install git+https://github.com/Baseline-Blockchain/baseline-miner.git
+
+# Connect
+baseline-miner --host pool.example.org --port 3333 --address NExampleAddr --worker worker01
 ```
 
 If your hardware or proxy cannot include the address in the username, set the username to a worker label (for example `worker01`) and pass the payout address via the Stratum password (`-p NExampleAddr`). The server tests both fields and authorizes only when it finds a valid Baseline address.

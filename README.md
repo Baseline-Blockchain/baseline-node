@@ -106,12 +106,14 @@ baseline-wallet --config config.json --help
 1. Launch the node with your configured payout key. The Stratum listener will come up automatically whenever that key is present.
 2. Point miners:
    ```bash
-   # Local Solo Miner
-   # cpuminer-multi (https://github.com/tpruvot/cpuminer-multi) with SHA256d
-   cpuminer-multi -a sha256d -o stratum+tcp://127.0.0.1:3333 -u YOURRECEIVERADDRESS.worker1 -p x
+   # Install baseline-miner (CPU Stratum miner)
+   python -m pip install git+https://github.com/Baseline-Blockchain/baseline-miner.git
+
+   # Local Solo Miner (connect to your own node's Stratum server)
+   baseline-miner --host 127.0.0.1 --port 3333 --address YOURRECEIVERADDRESS --worker worker1
 
    # Public pool (replace pool.example.org, open TCP/3333, ensure config.json has stratum.host = 0.0.0.0)
-   cpuminer-multi -a sha256d -o stratum+tcp://pool.example.org:3333 -u YOURRECEIVERADDRESS.worker1 -p x
+   baseline-miner --host pool.example.org --port 3333 --address YOURRECEIVERADDRESS --worker worker1
    ```
    Workers are tracked by username for payouts; shares accrue until coinbase rewards mature (20 blocks), then the payout tracker crafts and broadcasts the payment transaction..
 
