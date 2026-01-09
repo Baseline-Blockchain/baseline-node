@@ -87,7 +87,7 @@ class RPCConfig:
 class StratumConfig:
     host: str = "0.0.0.0"
     port: int = 3333
-    min_difficulty: float = 1.0
+    min_difficulty: float = 4.0
     vardiff_window: int = 30
     session_timeout: float = 120.0
     max_jobs: int = 8

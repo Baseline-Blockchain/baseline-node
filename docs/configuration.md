@@ -35,7 +35,7 @@ Baseline loads `config.json`, fills in deterministic defaults from `NodeConfig`,
   "stratum": {
     "host": "0.0.0.0",
     "port": 3333,
-    "min_difficulty": 1.0,
+    "min_difficulty": 4.0,
     "vardiff_window": 30,
     "session_timeout": 120,
     "max_jobs": 8
