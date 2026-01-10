@@ -37,6 +37,7 @@ MIN_VARDIFF_INTERVAL = 30.0  # seconds between difficulty changes
 MAX_VARDIFF_STEP = 2.0
 MIN_VARDIFF_STEP = 0.5
 MIN_DIFF_FLOOR = 0.01  # Absolute floor to avoid absurdly tiny share targets
+MAX_VARDIFF_SAMPLES = 4096  # Cap share samples per session to bound memory/CPU
 
 
 @dataclass(slots=True)
@@ -68,8 +69,9 @@ class StratumSession:
         self.closed = False
         self.sent_jobs: dict[str, set[str]] = {}
         self.vardiff_window = max(10.0, float(server.config.stratum.vardiff_window))
-        self.share_times: deque[float] = deque()
-        self.last_diff_update = time.time()
+        self.share_times: deque[float] = deque(maxlen=MAX_VARDIFF_SAMPLES)
+        # Allow an immediate first vardiff adjustment once enough shares are observed.
+        self.last_diff_update = 0.0
 
     async def run(self) -> None:
         try:
