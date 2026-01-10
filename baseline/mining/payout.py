@@ -87,10 +87,16 @@ class PayoutTracker:
         script = script_from_address(address)
         with self.lock:
             existing = self.workers.get(worker_id)
-            if existing and existing.address == address:
+            if existing:
+                if existing.address and existing.address != address:
+                    return
+                if existing.address == address and existing.script == script:
+                    return
+                existing.address = address
+                existing.script = script
+                self._save()
                 return
-            balance = existing.balance if existing else 0
-            self.workers[worker_id] = WorkerState(address=address, script=script, balance=balance)
+            self.workers[worker_id] = WorkerState(address=address, script=script, balance=0)
             self._save()
 
     def record_share(self, worker_id: str, address: str, difficulty: float) -> None:

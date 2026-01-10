@@ -307,6 +307,11 @@ class StratumServer:
         if address is None:
             await session.send_response(msg_id, False)
             return
+        with self.payouts.lock:
+            existing = self.payouts.workers.get(worker_name)
+            if existing and existing.address and existing.address != address:
+                await session.send_response(msg_id, False)
+                return
         session.worker_id = worker_name
         session.worker_address = address
         session.authorized = True

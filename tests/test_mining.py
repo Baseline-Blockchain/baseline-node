@@ -211,6 +211,17 @@ class PayoutTrackerTests(unittest.TestCase):
         self.assertEqual(self.tracker.workers["worker-2"].balance, 0)
         self.assertEqual(len(self.tracker.matured_utxos), 0)
 
+    def test_worker_address_is_locked_after_registration(self) -> None:
+        self.tracker.register_worker(self.worker_id, self.worker_address)
+        self.tracker.workers[self.worker_id].balance = 123
+        original_script = self.tracker.workers[self.worker_id].script
+        other_pub = crypto.generate_pubkey(9)
+        other_address = crypto.address_from_pubkey(other_pub)
+        self.tracker.register_worker(self.worker_id, other_address)
+        self.assertEqual(self.tracker.workers[self.worker_id].address, self.worker_address)
+        self.assertEqual(self.tracker.workers[self.worker_id].script, original_script)
+        self.assertEqual(self.tracker.workers[self.worker_id].balance, 123)
+
     def test_missing_utxo_is_retained_for_future_payout(self) -> None:
         subsidy = 50 * COIN
         foundation = (subsidy + 99) // 100

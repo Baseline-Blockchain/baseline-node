@@ -7,6 +7,7 @@ Baseline ships with a Stratum v1 server plus a payout tracker so you can operate
 - Enabled automatically when `mining.pool_private_key` is configured; leave it `null` to run a validation-only node.
 - Listens on `stratum.host:stratum.port` (defaults to `0.0.0.0:3333`).
 - Requires each worker to provide a valid Baseline address (payout target) either as the username, the prefix of `username.worker`, or in the password field. Authorization fails if no address can be parsed. The remaining portion of the username (after `.` or `:`) is used purely for accounting.
+- Worker ids are not authenticated. Once a worker id is registered, its payout address is locked (use a new worker id to change payout address).
 - Implements vardiff: `stratum.min_difficulty`, `vardiff_window`, and `session_timeout` control share targets and session expiry. The node samples accepted shares over the last `vardiff_window` seconds and retunes per-worker difficulty toward a ~15 second share interval (with bounded step sizes) so low-hashrate workers stay connected without spamming the server.
 
 ### Connecting Miners
