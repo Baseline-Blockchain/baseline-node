@@ -14,7 +14,7 @@
   "stratum": {
     "host": "0.0.0.0",
     "port": 3333,
-    "min_difficulty": 0.0001,
+    "min_difficulty": 1000,
     "session_timeout": 120,
     "max_jobs": 8
   },
