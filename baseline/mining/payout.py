@@ -48,6 +48,8 @@ class PayoutTracker:
         self.pending_blocks: list[dict[str, object]] = []
         self.matured_utxos: list[dict[str, object]] = []
         self.pool_balance = 0
+        self.payout_history: list[dict[str, object]] = []
+        self._max_payout_history = 50
         self.min_fee_rate = MIN_RELAY_FEE_RATE
         # 1 byte len + sig (<=73) + 1 byte len + pubkey length
         self._script_sig_estimate = len(self.pool_pubkey) + 75
@@ -69,6 +71,9 @@ class PayoutTracker:
         self.pending_blocks = data.get("pending_blocks", [])
         self.matured_utxos = data.get("matured_utxos", [])
         self.pool_balance = data.get("pool_balance", 0)
+        history = data.get("payout_history", [])
+        if isinstance(history, list):
+            self.payout_history = history
 
     def _save(self) -> None:
         data = {
@@ -80,6 +85,7 @@ class PayoutTracker:
             "pending_blocks": self.pending_blocks,
             "matured_utxos": self.matured_utxos,
             "pool_balance": self.pool_balance,
+            "payout_history": self.payout_history[-self._max_payout_history :],
         }
         self.path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
@@ -245,8 +251,27 @@ class PayoutTracker:
             result = self._build_payout(payees, spendable)
             if result is None:
                 return None
-            tx, final_payees, consumed_infos, _fee, _change, _size = result
+            tx, final_payees, consumed_infos, fee, change, estimated_size = result
             self._sign_transaction(tx)
+            paid_total = sum(amount for _worker_id, _state, amount in final_payees)
+            self.payout_history.append(
+                {
+                    "time": time.time(),
+                    "txid": tx.txid(),
+                    "payees": [
+                        {"worker_id": worker_id, "address": state.address, "amount": amount}
+                        for worker_id, state, amount in final_payees
+                    ],
+                    "total_paid": paid_total,
+                    "fee": fee,
+                    "change": change,
+                    "estimated_size": estimated_size,
+                    "inputs": len(tx.inputs),
+                    "outputs": len(tx.outputs),
+                }
+            )
+            if len(self.payout_history) > self._max_payout_history:
+                self.payout_history = self.payout_history[-self._max_payout_history :]
             for _worker_id, state, amount in final_payees:
                 state.balance -= amount
             for info in consumed_infos:
