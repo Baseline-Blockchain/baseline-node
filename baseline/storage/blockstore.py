@@ -9,10 +9,13 @@ import struct
 import threading
 from pathlib import Path
 
+from ..core import crypto
+
 __all__ = ["BlockStore", "BlockStoreError"]
 
 LEN_STRUCT = struct.Struct(">I")
 INDEX_STRUCT = struct.Struct(">32sQI")
+_MAX_BLOCK_BYTES = 16 * 1024 * 1024  # sanity cap for index recovery
 
 
 class BlockStoreError(Exception):
@@ -28,13 +31,15 @@ class BlockStore:
     append to protect against crashes mid-write.
     """
 
-    def __init__(self, directory: Path):
+    def __init__(self, directory: Path, *, fsync_interval: int = 1):
         self.directory = directory
         self.directory.mkdir(parents=True, exist_ok=True)
         self.data_path = self.directory / "blocks.dat"
         self.index_path = self.directory / "blocks.idx"
         self._lock = threading.RLock()
         self._index: dict[str, tuple[int, int]] = {}
+        self._fsync_interval = max(1, int(fsync_interval))
+        self._appends_since_fsync = 0
         self._init_files()
         self._load_index()
 
@@ -45,6 +50,7 @@ class BlockStore:
 
     def _load_index(self) -> None:
         size = self.data_path.stat().st_size
+        truncate_index_to: int | None = None
         with self.index_path.open("rb") as idx:
             pos = 0
             while True:
@@ -52,17 +58,81 @@ class BlockStore:
                 if not chunk:
                     break
                 if len(chunk) != INDEX_STRUCT.size:
-                    raise BlockStoreError(f"Corrupt block index at offset {pos}")
+                    truncate_index_to = pos
+                    break
                 block_hash, offset, length = INDEX_STRUCT.unpack(chunk)
-                if offset + 4 + length > size:
-                    raise BlockStoreError(f"Index entry exceeds data file for hash {block_hash.hex()}")
+                if offset + LEN_STRUCT.size + length > size:
+                    truncate_index_to = pos
+                    break
                 hex_hash = block_hash.hex()
-                self._index[hex_hash] = (offset, length)
+                self._index[hex_hash] = (int(offset), int(length))
                 pos += INDEX_STRUCT.size
+
+        if truncate_index_to is not None:
+            with self.index_path.open("r+b") as idx:
+                idx.truncate(truncate_index_to)
+
+        indexed_end = 0
+        if self._index:
+            indexed_end = max(offset + LEN_STRUCT.size + length for offset, length in self._index.values())
+
+        if size > indexed_end:
+            added, new_end = self._scan_data_for_index(indexed_end, size)
+            if new_end < size:
+                with self.data_path.open("r+b") as fh:
+                    fh.truncate(new_end)
+                size = new_end
+            if added:
+                with self.index_path.open("ab") as idx:
+                    for hex_hash, offset, length in added:
+                        idx.write(INDEX_STRUCT.pack(bytes.fromhex(hex_hash), offset, length))
+                    self._fsync(idx)
+
+    def _scan_data_for_index(self, start: int, size: int) -> tuple[list[tuple[str, int, int]], int]:
+        added: list[tuple[str, int, int]] = []
+        end = start
+        with self.data_path.open("rb") as data_fh:
+            data_fh.seek(start)
+            pos = start
+            while pos + LEN_STRUCT.size <= size:
+                prefix = data_fh.read(LEN_STRUCT.size)
+                if len(prefix) != LEN_STRUCT.size:
+                    break
+                (length,) = LEN_STRUCT.unpack(prefix)
+                if length <= 0 or length > _MAX_BLOCK_BYTES:
+                    break
+                payload_start = pos + LEN_STRUCT.size
+                payload_end = payload_start + length
+                if payload_end > size:
+                    break
+                data_fh.seek(payload_start)
+                header = data_fh.read(80)
+                if len(header) != 80:
+                    break
+                block_hash = crypto.sha256d(header)[::-1].hex()
+                if block_hash not in self._index:
+                    added.append((block_hash, pos, length))
+                    self._index[block_hash] = (pos, length)
+                pos = payload_end
+                data_fh.seek(pos)
+                end = pos
+        return added, end
 
     def _fsync(self, fh) -> None:
         fh.flush()
         os.fsync(fh.fileno())
+
+    def flush(self) -> None:
+        with self._lock:
+            for path in (self.data_path, self.index_path):
+                with path.open("rb") as fh:
+                    os.fsync(fh.fileno())
+            self._appends_since_fsync = 0
+
+    def set_fsync_interval(self, interval: int) -> None:
+        with self._lock:
+            self._fsync_interval = max(1, int(interval))
+            self._appends_since_fsync = 0
 
     def _normalize_hash(self, block_hash: bytes | str) -> bytes:
         if isinstance(block_hash, str):
@@ -93,15 +163,25 @@ class BlockStore:
         with self._lock:
             if hex_hash in self._index:
                 raise BlockStoreError(f"Block {hex_hash} already stored")
+            self._appends_since_fsync += 1
+            do_fsync = self._appends_since_fsync >= self._fsync_interval
+            if do_fsync:
+                self._appends_since_fsync = 0
             with self.data_path.open("r+b") as data_fh:
                 data_fh.seek(0, os.SEEK_END)
                 offset = data_fh.tell()
                 data_fh.write(LEN_STRUCT.pack(payload_len))
                 data_fh.write(payload)
-                self._fsync(data_fh)
+                if do_fsync:
+                    self._fsync(data_fh)
+                else:
+                    data_fh.flush()
             with self.index_path.open("ab") as index_fh:
                 index_fh.write(INDEX_STRUCT.pack(block_hash_bytes, offset, payload_len))
-                self._fsync(index_fh)
+                if do_fsync:
+                    self._fsync(index_fh)
+                else:
+                    index_fh.flush()
             self._index[hex_hash] = (offset, payload_len)
 
     def get_block(self, block_hash: bytes | str) -> bytes:

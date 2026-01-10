@@ -60,13 +60,14 @@ class HeaderData:
 class StateDB:
     """Wraps a SQLite DB that tracks headers, chain tips, and the UTXO set."""
 
-    def __init__(self, db_path: Path):
+    def __init__(self, db_path: Path, *, synchronous: str = "FULL"):
         self.db_path = db_path
+        self._synchronous = str(synchronous).upper()
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(db_path, timeout=30, isolation_level=None, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA synchronous=FULL")
+        self._conn.execute(f"PRAGMA synchronous={self._synchronous}")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.row_factory = sqlite3.Row
         self._reader_local = threading.local()
@@ -81,6 +82,23 @@ class StateDB:
         self._closed = False
         self._init_schema()
         self.run_startup_checks()
+
+    @property
+    def synchronous(self) -> str:
+        return self._synchronous
+
+    def set_synchronous(self, mode: str) -> None:
+        self._ensure_open()
+        normalized = str(mode).upper()
+        with self._lock:
+            self._synchronous = normalized
+            self._conn.execute(f"PRAGMA synchronous={normalized}")
+
+    def checkpoint_wal(self, mode: str = "PASSIVE") -> None:
+        self._ensure_open()
+        normalized = str(mode).upper()
+        with self._lock:
+            self._conn.execute(f"PRAGMA wal_checkpoint({normalized})")
 
     def close(self) -> None:
         if not self._closed:
@@ -208,6 +226,7 @@ class StateDB:
             return conn
         conn = sqlite3.connect(self.db_path, timeout=30, isolation_level=None, check_same_thread=False)
         conn.row_factory = sqlite3.Row
+        conn.execute(f"PRAGMA synchronous={self._synchronous}")
         conn.execute("PRAGMA foreign_keys=ON")
         with self._reader_lock:
             self._reader_conns.add(conn)

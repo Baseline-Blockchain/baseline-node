@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 
 from .config import NodeConfig, parse_pool_private_key
 from .core import crypto
@@ -32,8 +33,8 @@ class BaselineNode:
         self._started = False
         blocks_dir = self.config.data_dir / "blocks"
         chainstate_path = self.config.data_dir / "chainstate" / "state.sqlite3"
-        self.block_store = BlockStore(blocks_dir)
-        self.state_db = StateDB(chainstate_path)
+        self.block_store = BlockStore(blocks_dir, fsync_interval=self.config.storage.blockstore_fsync_interval)
+        self.state_db = StateDB(chainstate_path, synchronous=self.config.storage.sqlite_synchronous)
         self.chain = None
         self.mempool = None
         self.network = None
@@ -81,6 +82,7 @@ class BaselineNode:
         self._tasks["payouts"] = asyncio.create_task(self._payout_task(), name="payouts")
         self._tasks["wallet-maint"] = asyncio.create_task(self._wallet_task(), name="wallet-maint")
         self._tasks["time-monitor"] = asyncio.create_task(self._time_monitor_task(), name="time-monitor")
+        self._tasks["ibd-tune"] = asyncio.create_task(self._ibd_tune_task(), name="ibd-tune")
 
     async def stop(self) -> None:
         if not self._started:
@@ -113,6 +115,8 @@ class BaselineNode:
             await self.network.stop()
         if self.mempool:
             self.mempool.close()
+        with contextlib.suppress(Exception):
+            self.block_store.flush()
         self._started = False
 
     def close(self) -> None:
@@ -143,6 +147,78 @@ class BaselineNode:
             return True
         except TimeoutError:
             return False
+
+    def _set_storage_mode(self, *, fast: bool, reason: str) -> None:
+        if fast:
+            sqlite_mode = self.config.storage.fast_sqlite_synchronous
+            fsync_interval = self.config.storage.fast_blockstore_fsync_interval
+        else:
+            sqlite_mode = self.config.storage.sqlite_synchronous
+            fsync_interval = self.config.storage.blockstore_fsync_interval
+
+        self.state_db.set_synchronous(sqlite_mode)
+        self.block_store.set_fsync_interval(fsync_interval)
+        if not fast:
+            with contextlib.suppress(Exception):
+                self.state_db.checkpoint_wal("PASSIVE")
+            with contextlib.suppress(Exception):
+                self.block_store.flush()
+        self.log.info(
+            "Storage mode=%s (%s): sqlite_synchronous=%s blockstore_fsync_interval=%s",
+            "fast-ibd" if fast else "safe",
+            reason,
+            sqlite_mode,
+            fsync_interval,
+        )
+
+    def _best_peer_height(self) -> int:
+        if not self.network:
+            return 0
+        best = 0
+        for peer in self.network.peers.values():
+            rv = peer.remote_version
+            if not rv:
+                continue
+            try:
+                height = int(rv.get("height", 0))
+            except Exception:
+                continue
+            best = max(best, height)
+        best = max(best, int(getattr(self.network.sync, "max_seen_remote_height", 0) or 0))
+        best = max(best, int(getattr(self.network.sync, "sync_remote_height", 0) or 0))
+        return best
+
+    async def _ibd_tune_task(self) -> None:
+        if not getattr(self.config.storage, "auto_fast_ibd", False):
+            return
+        fast_enabled = False
+        last_toggle = 0.0
+        check_every = float(self.config.storage.auto_fast_ibd_check_interval)
+        enable_delta = int(self.config.storage.auto_fast_ibd_enable_delta)
+        disable_delta = int(self.config.storage.auto_fast_ibd_disable_delta)
+        min_toggle = float(self.config.storage.auto_fast_ibd_min_seconds_between_toggles)
+        while True:
+            should_stop = await self._wait_or_stop(check_every)
+            if should_stop:
+                return
+            if not self.network:
+                continue
+            local_height = int(self.network.best_height())
+            remote_height = int(self._best_peer_height())
+            if remote_height <= 0:
+                continue
+            delta = remote_height - local_height
+            now = time.time()
+            if now - last_toggle < min_toggle:
+                continue
+            if not fast_enabled and delta >= enable_delta and enable_delta > 0:
+                self._set_storage_mode(fast=True, reason=f"ibd delta={delta}")
+                fast_enabled = True
+                last_toggle = now
+            elif fast_enabled and delta <= disable_delta:
+                self._set_storage_mode(fast=False, reason=f"caught up delta={delta}")
+                fast_enabled = False
+                last_toggle = now
 
     async def _payout_task(self) -> None:
         try:

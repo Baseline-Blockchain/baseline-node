@@ -128,6 +128,49 @@ class NTPConfig:
             raise ConfigError("At least one NTP server must be configured")
 
 
+@dataclass(slots=True)
+class StorageConfig:
+    # Durability/performance tradeoffs (defaults are safest, but slower for IBD).
+    # - blockstore_fsync_interval=N fsyncs every N appended blocks
+    # - sqlite_synchronous: OFF | NORMAL | FULL | EXTRA
+    blockstore_fsync_interval: int = 1
+    sqlite_synchronous: str = "FULL"
+    # Automatically speed up initial sync by temporarily relaxing durability settings
+    # while the node is far behind the best seen peer height, then restoring them.
+    auto_fast_ibd: bool = True
+    fast_blockstore_fsync_interval: int = 50
+    fast_sqlite_synchronous: str = "NORMAL"
+    auto_fast_ibd_check_interval: float = 5.0
+    auto_fast_ibd_enable_delta: int = 200
+    auto_fast_ibd_disable_delta: int = 10
+    auto_fast_ibd_min_seconds_between_toggles: float = 30.0
+
+    def validate(self) -> None:
+        if self.blockstore_fsync_interval <= 0:
+            raise ConfigError("storage.blockstore_fsync_interval must be > 0")
+        if self.fast_blockstore_fsync_interval <= 0:
+            raise ConfigError("storage.fast_blockstore_fsync_interval must be > 0")
+        if self.auto_fast_ibd_check_interval <= 0:
+            raise ConfigError("storage.auto_fast_ibd_check_interval must be > 0")
+        if self.auto_fast_ibd_enable_delta < 0:
+            raise ConfigError("storage.auto_fast_ibd_enable_delta must be >= 0")
+        if self.auto_fast_ibd_disable_delta < 0:
+            raise ConfigError("storage.auto_fast_ibd_disable_delta must be >= 0")
+        if self.auto_fast_ibd_min_seconds_between_toggles < 0:
+            raise ConfigError("storage.auto_fast_ibd_min_seconds_between_toggles must be >= 0")
+        if self.auto_fast_ibd_disable_delta > self.auto_fast_ibd_enable_delta and self.auto_fast_ibd_enable_delta > 0:
+            raise ConfigError("storage.auto_fast_ibd_disable_delta must be <= storage.auto_fast_ibd_enable_delta")
+
+        mode = str(self.sqlite_synchronous).upper()
+        if mode not in {"OFF", "NORMAL", "FULL", "EXTRA"}:
+            raise ConfigError("storage.sqlite_synchronous must be one of OFF, NORMAL, FULL, EXTRA")
+        self.sqlite_synchronous = mode
+        fast_mode = str(self.fast_sqlite_synchronous).upper()
+        if fast_mode not in {"OFF", "NORMAL", "FULL", "EXTRA"}:
+            raise ConfigError("storage.fast_sqlite_synchronous must be one of OFF, NORMAL, FULL, EXTRA")
+        self.fast_sqlite_synchronous = fast_mode
+
+
 DEFAULT_FOUNDATION_ADDRESS = "NMUrmCNAH5VUrjLSvM4ULu7eNtD1i8qcyK"
 
 
@@ -178,6 +221,7 @@ class NodeConfig:
     stratum: StratumConfig = field(default_factory=StratumConfig)
     mining: MiningConfig = field(default_factory=MiningConfig)
     ntp: NTPConfig = field(default_factory=NTPConfig)
+    storage: StorageConfig = field(default_factory=StorageConfig)
     data_dir: Path = field(default_factory=default_data_dir)
     log_file: Path | None = None
 
@@ -194,6 +238,7 @@ class NodeConfig:
         self.stratum.validate()
         self.mining.validate()
         self.ntp.validate()
+        self.storage.validate()
         if not isinstance(self.data_dir, Path):
             raise ConfigError("data_dir must be a Path")
 
@@ -252,7 +297,7 @@ def _apply_dict(obj: Any, data: dict[str, Any]) -> None:
         current = getattr(obj, key)
         if isinstance(current, Path):
             setattr(obj, key, _expand_path(str(value)))
-        elif isinstance(current, (P2PConfig, RPCConfig, StratumConfig, MiningConfig, NTPConfig)):
+        elif isinstance(current, (P2PConfig, RPCConfig, StratumConfig, MiningConfig, NTPConfig, StorageConfig)):
             if not isinstance(value, dict):
                 raise ConfigError(f"{key} must be a mapping")
             _apply_dict(current, value)
