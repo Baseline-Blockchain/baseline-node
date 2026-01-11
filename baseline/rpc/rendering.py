@@ -14,6 +14,7 @@ class DashboardRenderer:
         self._template_cache = None
         self._css_cache = None
         self._logo_b64_cache = None
+        self._base_html_cache = None
 
     def _load_assets(self):
         if self._template_cache is None:
@@ -27,6 +28,12 @@ class DashboardRenderer:
         if self._logo_b64_cache is None:
             with open(self.logo_path, "rb") as f:
                 self._logo_b64_cache = base64.b64encode(f.read()).decode("utf-8")
+        
+        if self._base_html_cache is None and self._template_cache is not None and self._css_cache is not None:
+            html = self._template_cache
+            html = html.replace("/* CSS_INJECTION_POINT */", self._css_cache)
+            html = html.replace("{{ logo_b64 }}", self._logo_b64_cache) # Replaces all occurrences
+            self._base_html_cache = html
 
     def render(self, handlers: Any, request_path: Any, request_host: str | None = None) -> bytes:
         self._load_assets()
@@ -180,9 +187,7 @@ class DashboardRenderer:
                 workers_rows += f"<tr><td>{name}</td><td><span class='hash'>{short_addr}</span></td><td>{immature:.8f}</td><td>{mature:.8f}</td></tr>"
 
         # --- Replacement ---
-        html = self._template_cache
-        html = html.replace("/* CSS_INJECTION_POINT */", self._css_cache)
-        html = html.replace("{{ logo_b64 }}", self._logo_b64_cache)
+        html = self._base_html_cache
         
         # Metrics
         html = html.replace("{{ pool_hashrate }}", pool_hash_fmt)
