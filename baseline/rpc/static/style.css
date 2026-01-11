@@ -1,0 +1,391 @@
+:root {
+  --bg: #11131a;
+  --panel: #1b1f2d;
+  --accent: #47c2ff;
+  --muted: #8892b0;
+  --text: #f8fbff;
+  font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  margin: 0;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.top-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1.5rem 3rem;
+  background: #0c0e14;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  flex: 1;
+  min-width: 320px;
+}
+
+.main-nav {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.2rem;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 999px;
+}
+
+.main-nav a {
+  color: rgba(248, 251, 255, 0.9);
+  padding: 0.55rem 0.85rem;
+  border-radius: 999px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.main-nav a:hover {
+  text-decoration: none;
+  background: rgba(71, 194, 255, 0.12);
+}
+
+.main-nav a.active {
+  background: rgba(71, 194, 255, 0.22);
+  border: 1px solid rgba(71, 194, 255, 0.35);
+}
+
+.nav-toggle {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.nav-toggle-label {
+  display: none;
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 5px;
+  cursor: pointer;
+}
+
+.nav-toggle-label span {
+  display: block;
+  width: 18px;
+  height: 2px;
+  background: rgba(248, 251, 255, 0.9);
+  border-radius: 999px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+}
+
+.brand h1 {
+  margin: 0;
+  font-size: 1.6rem;
+  color: var(--text);
+}
+
+.subtitle {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.search {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.search input {
+  background: var(--panel);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--text);
+  padding: 0.5rem 0.8rem;
+  border-radius: 6px;
+  min-width: 280px;
+}
+
+.search button {
+  background: var(--accent);
+  border: none;
+  color: #041019;
+  font-weight: 600;
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.search button:active {
+  transform: translateY(1px);
+}
+
+.content {
+  padding: 2rem 3rem 4rem;
+  flex: 1;
+}
+
+.grid {
+  display: grid;
+  gap: 1.5rem;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.card {
+  background: var(--panel);
+  padding: 1.2rem 1.4rem;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.card h2 {
+  margin-top: 0;
+  margin-bottom: 0.5rem;
+  font-size: 1rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.value {
+  font-size: 2rem;
+  margin: 0.25rem 0 0.5rem;
+  font-weight: 600;
+}
+
+.card p {
+  margin: 0.2rem 0;
+  font-size: 1.2rem;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--panel);
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+th,
+td {
+  padding: 0.8rem 1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  text-align: left;
+}
+
+th {
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+tr:last-child td {
+  border-bottom: none;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+footer {
+  text-align: center;
+  padding: 1rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.tx-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 1rem;
+}
+
+.tx-section {
+  background: var(--panel);
+  border-radius: 10px;
+  padding: 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.badge {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  background: rgba(71, 194, 255, 0.15);
+  color: var(--accent);
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.table-scroll {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.table-scroll table {
+  min-width: 640px;
+}
+
+.hash {
+  font-family: "Consolas", "SFMono-Regular", monospace;
+  word-break: break-all;
+  white-space: nowrap;
+}
+
+/* Hashes inside cards (summary panels) should wrap gracefully on small screens. */
+.card .hash,
+.card a.hash {
+  white-space: normal;
+  word-break: break-word;
+}
+
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.8rem;
+  flex-wrap: wrap;
+  margin: 1.5rem 0;
+}
+
+.pagination a,
+.pagination span {
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  padding: 0.35rem 0.9rem;
+  font-size: 0.9rem;
+}
+
+.pagination a {
+  background: rgba(71, 194, 255, 0.16);
+  color: var(--text);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.pagination a:hover:not(.disabled) {
+  border-color: rgba(71, 194, 255, 0.4);
+}
+
+.pagination span {
+  color: var(--muted);
+}
+
+.pagination .disabled {
+  border-color: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.3);
+}
+
+@media (max-width: 900px) {
+  .top-bar {
+    padding: 1.1rem 1rem;
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .brand img {
+    height: 46px;
+  }
+
+  .header-actions {
+    min-width: 0;
+    width: 100%;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 0.6rem;
+  }
+
+  .nav-toggle-label {
+    display: inline-flex;
+  }
+
+  .main-nav {
+    display: none;
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.25rem;
+    border-radius: 14px;
+    padding: 0.6rem;
+  }
+
+  .main-nav a {
+    border-radius: 12px;
+    padding: 0.75rem 0.85rem;
+  }
+
+  .nav-toggle:checked ~ .main-nav {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .search {
+    width: 100%;
+    order: 3;
+    justify-content: flex-start;
+    margin-top: 0.35rem;
+  }
+
+  .search input {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .content {
+    padding: 1.25rem 1rem 3rem;
+  }
+}
+
+/* Prevent table cells (esp. TXIDs) from wrapping on small screens; rely on horizontal scroll instead. */
+.table-scroll th,
+.table-scroll td {
+  white-space: nowrap;
+  word-break: keep-all;
+}
+
+/* Mobile tweaks for long hashes: allow breaking if no scroll is available. */
+@media (max-width: 600px) {
+  .table-scroll {
+    overflow-x: auto;
+  }
+  .hash {
+    word-break: break-all;
+    white-space: normal;
+  }
+  th,
+  td {
+    word-break: break-word;
+  }
+}

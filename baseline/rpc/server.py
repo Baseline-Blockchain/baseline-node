@@ -19,6 +19,7 @@ from urllib.parse import parse_qs, urlsplit
 from ..config import NodeConfig
 from ..core.tx import COIN
 from .handlers import RPCError, RPCHandlers
+from .rendering import DashboardRenderer
 
 
 class _TokenBucket:
@@ -65,6 +66,7 @@ class RPCServer:
         self._executor: ThreadPoolExecutor | None = None
         self._rate_limits: dict[str, _TokenBucket] = {}
         self._body_chunk = 64 * 1024
+        self.dashboard_renderer = DashboardRenderer()
         self.public_methods = {
             "getblockcount",
             "getbestblockhash",
@@ -158,7 +160,7 @@ class RPCServer:
                         b"OK",
                         panel,
                         keep_alive=client_keep_alive,
-                        content_type="text/plain; charset=utf-8",
+                        content_type="text/html; charset=utf-8" if path == "/pool" else "text/plain; charset=utf-8",
                     )
                     if not client_keep_alive:
                         break
@@ -448,256 +450,7 @@ class RPCServer:
         return panel.encode("utf-8")
 
     def _render_pool_panel(self, parsed_path, request_host: str | None = None) -> bytes:
-        if not getattr(self.handlers, "stratum", None):
-            return (
-                "Stratum disabled\n"
-                "\n"
-                "To enable mining + payouts:\n"
-                "- Set mining.pool_private_key in config.json (then restart the node)\n"
-            ).encode("utf-8")
-        query = parse_qs(parsed_path.query)
-        worker_filter = (query.get("worker") or [""])[0].strip()
-        addr_filter = (query.get("address") or [""])[0].strip()
-
-        def to_bline(value: Any) -> float:
-            return (value or 0) / COIN
-        tracker = getattr(self.handlers, "payout_tracker", None)
-        if tracker:
-            with contextlib.suppress(Exception):
-                tracker.prune_stale_entries(self.handlers.state_db)
-        try:
-            stats = self.handlers.getpoolstats()
-            workers = self.handlers.getpoolworkers(0, 200, include_zero=True)
-            pending = self.handlers.getpoolpendingblocks()
-            matured = self.handlers.getpoolmatured()
-            preview = self.handlers.getpoolpayoutpreview() or {}
-        except Exception as exc:  # pragma: no cover - defensive
-            return f"Failed to render pool panel: {exc}\n".encode("utf-8")
-
-        entries = workers.get("workers", [])
-        if worker_filter:
-            entries = [w for w in entries if worker_filter.lower() in w["worker_id"].lower()]
-        if addr_filter:
-            entries = [w for w in entries if addr_filter.lower() in w["address"].lower()]
-
-        best_height: int | None = None
-        with contextlib.suppress(Exception):
-            if getattr(self.handlers, "state_db", None):
-                best = self.handlers.state_db.get_best_tip()
-                if best:
-                    best_height = int(best[1])
-
-        min_payout_liners = int(stats.get("min_payout", 0) or 0)
-        maturity_blocks = int(stats.get("coinbase_maturity", 0) or 0)
-        all_entries = workers.get("workers", [])
-        eligible_all = [w for w in all_entries if w.get("balance_liners", 0) >= min_payout_liners]
-        qualifying_workers = [w for w in eligible_all if w.get("balance_liners", 0) >= min_payout_liners]
-
-        spendable_count = 0
-        spendable_total = 0
-        state_db = getattr(self.handlers, "state_db", None)
-        if state_db:
-            for utxo in matured:
-                rec = state_db.get_utxo(utxo.get("txid", ""), int(utxo.get("vout", 0)))
-                if rec:
-                    spendable_count += 1
-                    spendable_total += rec.amount
-
-        lines: list[str] = []
-        lines.append("Baseline Pool Dashboard")
-        lines.append("=======================")
-        if maturity_blocks:
-            lines.append(
-                f"Payouts         : after {maturity_blocks} block maturity and once balance >= "
-                f"{to_bline(min_payout_liners):.8f} BLINE"
-            )
-        lines.append(f"Pool fee        : {stats.get('pool_fee_percent', 0):.2f}%")
-        lines.append(f"Min payout      : {to_bline(stats.get('min_payout')):.8f} BLINE")
-        lines.append(
-            f"Payout balance  : {to_bline(spendable_total):.8f} BLINE "
-            f"(spendable UTXOs: {spendable_count}/{len(matured)})"
-        )
-        owed_total = sum(w.get("balance_liners", 0) for w in workers.get("workers", []))
-        lines.append(f"Worker balances : {to_bline(owed_total):.8f} BLINE (owed to payees)")
-        lines.append(
-            f"Pool fee pot    : {to_bline(stats.get('pool_balance_liners')):.8f} BLINE "
-            "(fees/rounding; not used for worker payouts)"
-        )
-        lines.append(f"Pending blocks  : {stats.get('pending_blocks', 0)}")
-        stratum = stats.get("stratum", {})
-        stratum_host = str(stratum.get("host") or "")
-        stratum_port = int(stratum.get("port") or 0)
-        connect_host = ""
-        if stratum_host and stratum_host not in {"0.0.0.0", "::", "127.0.0.1", "localhost"}:
-            connect_host = stratum_host
-        elif request_host:
-            host = request_host.strip()
-            if host.startswith("[") and "]" in host:
-                connect_host = host[1 : host.index("]")]
-            else:
-                connect_host = host.split(":", 1)[0]
-        if not connect_host:
-            connect_host = "POOL_HOST"
-        lines.append(
-            f"Stratum         : on ({stratum_host}:{stratum_port or 3333}, "
-            f"sessions={stratum.get('sessions', 0)})"
-        )
-        pool_hash = float(stratum.get("pool_hashrate", 0.0) or 0.0)
-        lines.append(f"Pool Hashrate   : {self._format_hashrate(pool_hash)}")
-        lines.append(f"Connect         : {connect_host}:{stratum_port or 3333}")
-        if best_height is not None:
-            lines.append(f"Chain height    : {best_height}")
-
-        if tracker and getattr(tracker, "payout_history", None):
-            last = tracker.payout_history[-1]
-            ts = float(last.get("time", 0.0) or 0.0)
-            when = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(ts)) if ts else "unknown"
-            txid = last.get("txid", "")
-            paid = int(last.get("total_paid", 0) or 0)
-            lines.append(
-                f"Last payout     : {when} txid {txid} paid {to_bline(paid):.8f} BLINE"
-            )
-            
-        lines.append("")
-        lines.append("How to Mine (baseline-miner)")
-        lines.append("- Miners connect to Stratum TCP (not this HTTP endpoint).")
-        lines.append("")
-        lines.append("Windows:")
-        lines.append("  git clone https://github.com/Baseline-Blockchain/baseline-miner.git")
-        lines.append("  cd baseline-miner")
-        lines.append("  py -3 -m venv .venv")
-        lines.append("  .venv\\Scripts\\activate")
-        lines.append("  pip install -e .")
-        lines.append(
-            f"  baseline-miner --host {connect_host} --port {stratum_port or 3333} --address YOURADDRESS --worker UNIQUE_WORKER_NAME"
-        )
-        lines.append("")
-        lines.append("macOS / Linux:")
-        lines.append("  git clone https://github.com/Baseline-Blockchain/baseline-miner.git")
-        lines.append("  cd baseline-miner")
-        lines.append("  python3 -m venv .venv")
-        lines.append("  source .venv/bin/activate")
-        lines.append("  pip install -e .")
-        lines.append(
-            f"  baseline-miner --host {connect_host} --port {stratum_port or 3333} --address YOURADDRESS --worker UNIQUE_WORKER_NAME"
-        )
-        lines.append("")
-
-        lines.append("")
-        lines.append("Payout Status")
-        payees = preview.get("payees") or []
-        if payees:
-            total_next = sum(int(p.get("amount_liners", 0) or 0) for p in payees)
-            lines.append(
-                f"- READY: next payout would pay {len(payees)} worker(s) totaling {to_bline(total_next):.8f} BLINE"
-            )
-            lines.append("- The node attempts payouts automatically every few seconds when ready.")
-        elif not matured:
-            lines.append("- Waiting: no matured block rewards yet.")
-        elif not eligible_all:
-            lines.append(
-                f"- Waiting: no workers above min payout ({to_bline(min_payout_liners):.8f} BLINE)."
-            )
-        elif spendable_total <= 0:
-            lines.append("- Waiting: matured rewards not spendable in chainstate yet (still syncing?).")
-        else:
-            pending_total = sum(w.get("balance_liners", 0) for w in eligible_all)
-            lines.append(
-                "- Waiting: payout not yet assemblable (fee/UTXO constraints); try again shortly."
-            )
-            lines.append(
-                f"- Spendable {to_bline(spendable_total):.8f} BLINE vs eligible balances {to_bline(pending_total):.8f} BLINE"
-            )
-
-        if addr_filter:
-            addr_balance = sum(w.get("balance_liners", 0) for w in entries)
-            addr_needed = max(0, min_payout_liners - int(addr_balance))
-            lines.append("")
-            lines.append(f"Address View: {addr_filter}")
-            lines.append(f"- Balance    : {to_bline(addr_balance):.8f} BLINE")
-            if addr_balance >= min_payout_liners:
-                lines.append("- Eligible   : yes (above min payout)")
-            else:
-                lines.append(f"- Eligible   : no (needs {to_bline(addr_needed):.8f} BLINE more)")
-            if payees:
-                addr_next = sum(
-                    int(p.get("amount_liners", 0) or 0)
-                    for p in payees
-                    if str(p.get("address", "")).lower() in addr_filter.lower()
-                )
-                if addr_next:
-                    lines.append(f"- Next payout : {to_bline(addr_next):.8f} BLINE (if broadcast soon)")
-                else:
-                    lines.append("- Next payout : not included in current payout preview")
-
-        lines.append("")
-        lines.append("Workers (balance BLINE | to min | round shares)")
-        if entries:
-            for worker in entries:
-                balance_liners = int(worker.get("balance_liners", 0) or 0)
-                needed_liners = max(0, min_payout_liners - balance_liners)
-                lines.append(
-                    f"- {worker['worker_id']}: {to_bline(balance_liners):.8f} | "
-                    f"{to_bline(needed_liners):.8f} | "
-                    f"{worker['round_shares']:.2f} ({worker['address']})"
-                )
-        else:
-            lines.append("- none")
-        lines.append("")
-        lines.append("Pending Blocks")
-        if pending:
-            for blk in pending:
-                matures_in = None
-                if best_height is not None and maturity_blocks:
-                    confirms = max(0, best_height - int(blk["height"]))
-                    matures_in = max(0, maturity_blocks - confirms)
-                lines.append(
-                    f"- height {blk['height']} txid {blk['txid']} "
-                    f"dist {to_bline(blk['distributable']):.8f} fee {to_bline(blk['pool_fee']):.8f}"
-                    + (f" (matures in {matures_in} blocks)" if matures_in is not None else "")
-                )
-        else:
-            lines.append("- none")
-        lines.append("")
-        lines.append("Payout Preview")
-        if payees:
-            for payee in payees:
-                lines.append(
-                    f"- {payee['worker_id']} -> {payee['address']} amount {payee['amount_liners'] / COIN:.8f} BLINE"
-                )
-            lines.append(f"Fee      : {to_bline(preview.get('fee_liners')):.8f} BLINE")
-            lines.append(f"Change   : {to_bline(preview.get('change_liners')):.8f} BLINE")
-            lines.append(f"Outputs  : {len(payees)}")
-            lines.append(f"Inputs   : {len(preview.get('inputs_used') or [])}")
-            lines.append(f"Size est.: {preview.get('estimated_size', 0)} bytes")
-        elif not matured:
-            lines.append("- none (no matured UTXOs yet)")
-        elif not eligible_all:
-            lines.append(
-                f"- none (no workers above min payout of {to_bline(min_payout_liners):.8f} BLINE)"
-            )
-        elif spendable_total <= 0:
-            lines.append("- none (matured UTXOs not present in chainstate yet; still syncing?)")
-        else:
-            pending_total = sum(w.get("balance_liners", 0) for w in qualifying_workers)
-            if spendable_total >= pending_total:
-                lines.append(
-                    "- waiting for fee headroom to assemble payout "
-                    f"(spendable {to_bline(spendable_total):.8f} BLINE, "
-                    f"pending payouts {to_bline(pending_total):.8f} BLINE)"
-                )
-            else:
-                lines.append(
-                    "- waiting for more matured funds "
-                    f"(spendable {to_bline(spendable_total):.8f} BLINE, "
-                    f"pending payouts {to_bline(pending_total):.8f} BLINE)"
-                )
-
-        if worker_filter or addr_filter:
-            lines.append("")
-            lines.append(f"Filters   : worker='{worker_filter}' address='{addr_filter}'")
-
-        return "\n".join(lines).encode("utf-8")
+        return self.dashboard_renderer.render(self.handlers, parsed_path.path, request_host)
 
     def _collect_status_metrics(self) -> dict[str, Any]:
         state_db = self.handlers.state_db
