@@ -58,15 +58,16 @@ class DashboardRenderer:
         entries = []
         if getattr(handlers, "payout_tracker", None):
              tracker = handlers.payout_tracker
+             # Minimize lock duration: copy needed data
              with tracker.lock:
-                 for worker_id, state in tracker.workers.items():
-                     entries.append({
-                         "worker_id": worker_id,
-                         "address": state.address,
-                         "balance_liners": state.balance,
-                         # "round_shares" retrieval would require more access, but we removed shares column
-                         # If we needed shares, we'd access tracker.round_shares
-                     })
+                 workers_snapshot = tracker.workers.copy()
+             
+             for worker_id, state in workers_snapshot.items():
+                 entries.append({
+                     "worker_id": worker_id,
+                     "address": state.address,
+                     "balance_liners": state.balance,
+                 })
 
         
         # Calculate stats
