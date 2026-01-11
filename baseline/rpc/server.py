@@ -150,10 +150,27 @@ class RPCServer:
                             extra_headers={"Retry-After": "1"},
                         )
                         break
+                    loop = asyncio.get_running_loop()
                     if path == "/pool":
-                        panel = self._render_pool_panel(parsed_path, headers.get("host"))
+                        if self._executor:
+                            panel = await loop.run_in_executor(
+                                self._executor, 
+                                self._render_pool_panel, 
+                                parsed_path, 
+                                headers.get("host")
+                            )
+                        else:
+                             panel = self._render_pool_panel(parsed_path, headers.get("host"))
                     else:
-                        panel = self._render_status_panel()
+                        # Status panel is also somewhat heavy
+                        if self._executor:
+                            panel = await loop.run_in_executor(
+                                self._executor,
+                                self._render_status_panel
+                            )
+                        else:
+                            panel = self._render_status_panel()
+
                     await self._write_response(
                         writer,
                         200,
