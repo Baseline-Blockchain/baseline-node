@@ -436,6 +436,9 @@ class StratumServer:
         ts_int = int(now)
         self.global_shares[ts_int] = self.global_shares.get(ts_int, 0.0) + session.difficulty
         
+        if len(self.global_shares) > 3600:
+            self.global_shares.pop(next(iter(self.global_shares)), None)
+        
         await self._maybe_adjust_difficulty(session)
 
     async def _maybe_adjust_difficulty(self, session: StratumSession) -> None:
