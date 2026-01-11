@@ -308,15 +308,26 @@ class StratumServer:
         if address is None:
             await session.send_response(msg_id, False)
             return
+        
+        # Namespace collision prevention:
+        # If the worker name doesn't contain the address, prepend it.
+        # This allows "Worker1" on AddrA and "Worker1" on AddrB to be distinct.
+        if address and not worker_name.startswith(address):
+             unique_id = f"{address}.{worker_name}"
+        else:
+             unique_id = worker_name
+
         with self.payouts.lock:
-            existing = self.payouts.workers.get(worker_name)
+            existing = self.payouts.workers.get(unique_id)
             if existing and existing.address and existing.address != address:
+                # This should technically be impossible now pending hash collisions
+                # or if the user found a way to spoof the prefix without having the address
                 await session.send_response(msg_id, False)
                 return
-        session.worker_id = worker_name
+        session.worker_id = unique_id
         session.worker_address = address
         session.authorized = True
-        self.payouts.register_worker(worker_name, address)
+        self.payouts.register_worker(unique_id, address)
         await session.send_response(msg_id, True)
         await session.send_notification("mining.set_difficulty", [session.difficulty])
         if self._latest_job:
