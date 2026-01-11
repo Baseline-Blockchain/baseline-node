@@ -542,6 +542,8 @@ class RPCServer:
             f"Stratum         : on ({stratum_host}:{stratum_port or 3333}, "
             f"sessions={stratum.get('sessions', 0)})"
         )
+        pool_hash = float(stratum.get("pool_hashrate", 0.0) or 0.0)
+        lines.append(f"Pool Hashrate   : {self._format_hashrate(pool_hash)}")
         lines.append(f"Connect         : {connect_host}:{stratum_port or 3333}")
         if best_height is not None:
             lines.append(f"Chain height    : {best_height}")
@@ -769,3 +771,18 @@ class RPCServer:
         if not parts:
             parts.append(f"{secs}s")
         return " ".join(parts)
+
+    def _format_hashrate(self, hashes: float) -> str:
+        if hashes >= 1e18:
+            return f"{hashes / 1e18:.2f} EH/s"
+        if hashes >= 1e15:
+            return f"{hashes / 1e15:.2f} PH/s"
+        if hashes >= 1e12:
+            return f"{hashes / 1e12:.2f} TH/s"
+        if hashes >= 1e9:
+            return f"{hashes / 1e9:.2f} GH/s"
+        if hashes >= 1e6:
+            return f"{hashes / 1e6:.2f} MH/s"
+        if hashes >= 1e3:
+            return f"{hashes / 1e3:.2f} kH/s"
+        return f"{hashes:.2f} H/s"

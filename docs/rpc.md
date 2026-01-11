@@ -74,7 +74,7 @@ Pagination notes:
 
 | Method | Description |
 |--------|-------------|
-| `getpoolstats` | Summarize pool mode (fee %, min_payout, coinbase_maturity) plus pool balance, worker counts, pending/matured payouts, and Stratum listener/sessions info. |
+| `getpoolstats` | Summarize pool mode (fee %, min_payout, coinbase_maturity) plus pool balance, worker counts, pending/matured payouts, Stratum listener/sessions info, and global **pool_hashrate** estimate. |
 | `getpoolworkers [offset] [limit] [include_zero]` | List workers with payout address, confirmed balance, and current round shares (paginated). |
 | `getpoolpendingblocks` | Show pending block rewards awaiting maturity (height, txid, distributable, pool_fee, shares snapshot). |
 | `getpoolmatured` | List matured coinbase UTXOs available for payouts (txid/vout/amount). |

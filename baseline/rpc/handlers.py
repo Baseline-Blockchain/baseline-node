@@ -784,6 +784,7 @@ class RPCHandlers(WalletRPCMixin):
                     "min_difficulty": self.stratum.config.stratum.min_difficulty,
                     "last_template_time": last_tpl,
                     "last_template_age": max(0.0, now - last_tpl) if last_tpl else None,
+                    "pool_hashrate": self.stratum.estimate_pool_hashrate(600.0),
                 }
             )
         return {

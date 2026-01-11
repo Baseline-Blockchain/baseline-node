@@ -202,6 +202,7 @@ class StratumServer:
         self._tasks: list[asyncio.Task] = []
         self._chain_tip: tuple[str, int] | None = None
         self._last_template_time = 0.0
+        self.global_shares: dict[int, float] = {}
         self.mempool.register_listener(self._on_mempool_tx)
 
     def next_session_id(self) -> int:
@@ -397,8 +398,44 @@ class StratumServer:
         if hash_int <= job.template.target:
             await self._submit_block(block, job)
 
+    def estimate_pool_hashrate(self, window: float = 600.0) -> float:
+        """Estimate hashrate over the last `window` seconds (H/s)."""
+        now = int(time.time())
+        cutoff = now - int(window)
+        total_work = 0.0
+        earliest = now
+        
+        to_del = []
+        found_samples = False
+        
+        for ts, diff in self.global_shares.items():
+            if ts < cutoff:
+                to_del.append(ts)
+                continue
+            
+            total_work += diff
+            if ts < earliest:
+                earliest = ts
+            found_samples = True
+            
+        for ts in to_del:
+            self.global_shares.pop(ts, None)
+            
+        if not found_samples:
+            return 0.0
+            
+        duration = max(1, now - earliest)
+    
+        hashes = total_work * 2.0
+        return hashes / duration
+
     async def _record_share_success(self, session: StratumSession) -> None:
-        session.share_times.append(time.time())
+        now = time.time()
+        session.share_times.append(now)
+        
+        ts_int = int(now)
+        self.global_shares[ts_int] = self.global_shares.get(ts_int, 0.0) + session.difficulty
+        
         await self._maybe_adjust_difficulty(session)
 
     async def _maybe_adjust_difficulty(self, session: StratumSession) -> None:
