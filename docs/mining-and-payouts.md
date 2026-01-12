@@ -2,6 +2,26 @@
 
 Baseline ships with a Stratum v1 server plus a payout tracker so you can operate a pool without extra daemons.
 
+## CPU/GPU Mining — No ASICs
+
+Baseline uses SHA256d proof-of-work but with a **non-standard byte order** for the `prev_hash` and `merkle_root` fields in the block header. While the hashing algorithm itself is identical to Bitcoin, this protocol-level difference means:
+
+- **Existing Bitcoin ASICs cannot mine Baseline** — their firmware expects Bitcoin's byte ordering and will produce invalid shares.
+- **CPU and GPU miners work normally** — the `baseline-miner` handles the correct byte order automatically.
+- **No firmware exists** for Baseline on commodity ASIC hardware, and given the network's size, none is likely to be developed.
+
+This design gives Baseline practical ASIC resistance without the complexity of memory-hard algorithms. Anyone with a CPU or GPU can participate in mining on equal footing.
+
+### Technical Details
+
+In standard Bitcoin:
+- `prev_hash` and `merkle_root` are serialized in "internal byte order" (little-endian hash representation)
+
+In Baseline:
+- `prev_hash` and `merkle_root` use **big-endian digest bytes** (natural hash output order)
+
+The Stratum protocol and share validation are adjusted accordingly. See `baseline/mining/templates.py` and the `baseline-miner` source for implementation details.
+
 ## Stratum Server
 
 - Enabled automatically when `mining.pool_private_key` is configured; leave it `null` to run a validation-only node.
