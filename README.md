@@ -4,6 +4,7 @@
 
 Baseline is a minimalist Bitcoin-style payments chain — but it ships with the stuff operators actually need built-in: fast blocks, Core-ish RPC, a native address index, and a turnkey pool server. No smart contracts, no token zoo, no bloat.
 
+- **CPU/GPU mining — no ASICs**: SHA256d with modified byte order makes existing Bitcoin ASICs incompatible. Mine with your CPU or GPU without specialized hardware competition.
 - **Turnkey mining + pool ops**: built-in Stratum v1 server (vardiff, sessions) + automatic payout tracking/ledger + payout tx builder (run a community pool without extra daemons).
 - **Scheduled Send capability**: Reserve future payments with cancelable and non-cancelable options - just like scheduling a transaction on traditional finance platforms.
 - **Explorer-ready out of the box**: native address index (UTXOs + tx history) exposed via RPC (getaddressutxos, getaddressbalance, getaddresstxids) — no external indexer needed.
@@ -13,7 +14,7 @@ Baseline is a minimalist Bitcoin-style payments chain — but it ships with the 
 
 ## Network Parameters
 
-- **Consensus**: SHA256d proof-of-work, 32-byte block hashes, PoW limit 0x207fffff (used for genesis and height 1), then difficulty adjusts per-block via LWMA.
+- **Consensus**: SHA256d proof-of-work with non-standard byte order (incompatible with Bitcoin ASICs), 32-byte block hashes, PoW limit 0x207fffff (used for genesis and height 1), then difficulty adjusts per-block via LWMA.
 - **Timing**: 20-second block target, per-block LWMA difficulty retarget using a 60-block window to stay responsive without oscillations.
 - **Difficulty** is the target hash threshold miners must beat; lower targets = harder work. Baseline encodes this exactly like Bitcoin in the header `bits` field.
 Every block, the node recomputes a new target from recent block times using a linearly weighted moving average (LWMA). If blocks arrive too fast, the target tightens; too slow and it loosens.
