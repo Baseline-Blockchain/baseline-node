@@ -240,6 +240,7 @@ class StratumServer:
             asyncio.create_task(self._template_loop(), name="stratum-templates"),
             asyncio.create_task(self._tip_monitor_loop(), name="stratum-tip"),
             asyncio.create_task(self._session_gc_loop(), name="stratum-gc"),
+            asyncio.create_task(self._payout_flush_loop(), name="stratum-flush"),
         ]
         self._need_clean = True
         self._template_event.set()
@@ -253,6 +254,8 @@ class StratumServer:
         with contextlib.suppress(Exception):
             await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
+        # Final flush on shutdown
+        await asyncio.to_thread(self.payouts.flush)
         self.server.close()
         await self.server.wait_closed()
         self.server = None
@@ -570,6 +573,17 @@ class StratumServer:
                 await asyncio.sleep(5)
         except asyncio.CancelledError:
             pass
+
+    async def _payout_flush_loop(self) -> None:
+        """Periodically flush payout state to disk to reduce I/O contention."""
+        try:
+            while not self._stop_event.is_set():
+                await asyncio.sleep(5)
+                # Run flush() in a thread to avoid blocking the event loop on disk I/O
+                await asyncio.to_thread(self.payouts.flush)
+        except asyncio.CancelledError:
+            pass
+
 
     async def _submit_block(self, block: Block, job: TemplateJob) -> None:
         def _add_block() -> dict[str, object]:

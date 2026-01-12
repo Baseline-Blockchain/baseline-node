@@ -54,6 +54,7 @@ class PayoutTracker:
         # 1 byte len + sig (<=73) + 1 byte len + pubkey length
         self._script_sig_estimate = len(self.pool_pubkey) + 75
         self.lock = threading.RLock()
+        self._dirty = False
         self._load()
 
     def _load(self) -> None:
@@ -100,16 +101,16 @@ class PayoutTracker:
                     return
                 existing.address = address
                 existing.script = script
-                self._save()
+                self._dirty = True
                 return
             self.workers[worker_id] = WorkerState(address=address, script=script, balance=0)
-            self._save()
+            self._dirty = True
 
     def record_share(self, worker_id: str, address: str, difficulty: float) -> None:
         with self.lock:
             self.register_worker(worker_id, address)
             self.round_shares[worker_id] = self.round_shares.get(worker_id, 0.0) + max(difficulty, 1.0)
-            self._save()
+            self._dirty = True
 
     def record_block(self, height: int, coinbase_txid: str, reward: int, vout: int = 0) -> None:
         with self.lock:
@@ -132,6 +133,7 @@ class PayoutTracker:
                 }
             )
             self.round_shares.clear()
+            # Blocks are critical, save immediately
             self._save()
 
     def process_maturity(self, best_height: int) -> None:
@@ -449,3 +451,10 @@ class PayoutTracker:
                 "applied": bool(apply),
                 "adjustments": adjustments[:50],  # limit response size
             }
+
+    def flush(self) -> None:
+        """Persist state to disk if there are pending changes."""
+        with self.lock:
+            if self._dirty:
+                self._save()
+                self._dirty = False
