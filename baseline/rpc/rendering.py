@@ -1,8 +1,7 @@
 import base64
 import os
 import time
-from typing import Any, Dict, List
-import contextlib
+from typing import Any
 
 from ..core.tx import COIN
 
@@ -43,31 +42,42 @@ class DashboardRenderer:
             return b"<html><body><h1>Stratum mining is disabled on this node.</h1></body></html>"
 
         tracker = getattr(handlers, "payout_tracker", None)
-        if tracker:
-            with contextlib.suppress(Exception):
-                handlers.state_db and tracker.prune_stale_entries(handlers.state_db)
+        if not tracker:
+            return b"<html><body><h1>Pool payout tracker is not configured.</h1></body></html>"
 
+        # Single lock acquisition to get all dashboard data
         try:
-            stats = handlers.getpoolstats()
-            pending = handlers.getpoolpendingblocks()
-            matured = handlers.getpoolmatured()
+            snapshot = tracker.get_dashboard_snapshot()
         except Exception as exc:
             return f"<html><body><h1>Error rendering pool dashboard: {exc}</h1></body></html>".encode("utf-8")
 
-        # Data Collection
+        # Extract data from snapshot
+        pending = snapshot["pending_blocks"]
+        matured = snapshot["matured_utxos"]
+        payout_history = snapshot["payout_history"]
+
+        # Build entries from workers snapshot
         entries = []
-        if getattr(handlers, "payout_tracker", None):
-             tracker = handlers.payout_tracker
-             # Minimize lock duration: copy needed data
-             with tracker.lock:
-                 workers_snapshot = tracker.workers.copy()
-             
-             for worker_id, state in workers_snapshot.items():
-                 entries.append({
-                     "worker_id": worker_id,
-                     "address": state.address,
-                     "balance_liners": state.balance,
-                 })
+        for worker_id, worker_data in snapshot["workers"].items():
+            entries.append({
+                "worker_id": worker_id,
+                "address": worker_data["address"],
+                "balance_liners": worker_data["balance"],
+            })
+
+        # Build stats dict (mimicking getpoolstats output structure)
+        stats = {
+            "pool_fee_percent": snapshot["pool_fee_percent"],
+            "min_payout": snapshot["min_payout"],
+            "coinbase_maturity": snapshot["maturity"],
+            "stratum": {},
+        }
+        if handlers.stratum:
+            stats["stratum"] = {
+                "host": handlers.stratum.config.stratum.host,
+                "port": handlers.stratum.config.stratum.port,
+                "pool_hashrate": handlers.stratum.estimate_pool_hashrate(600.0),
+            }
 
         
         # Calculate stats
@@ -121,16 +131,16 @@ class DashboardRenderer:
              else:
                  sync_state = f"Syncing ({network.sync_remote_height})"
 
-        # Last Payout
+        # Last Payout (using snapshot data to avoid additional lock acquisition)
         total_paid = 0.0 
         last_payout_time = "Never"
-        if tracker and getattr(tracker, "payout_history", None):
-            last = tracker.payout_history[-1]
+        if payout_history:
+            last = payout_history[-1]
             ts = float(last.get("time", 0.0) or 0.0)
             if ts:
                 last_payout_time = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(ts))
             
-            total_paid = sum(p.get('total_paid', 0) for p in tracker.payout_history) / COIN
+            total_paid = sum(p.get('total_paid', 0) for p in payout_history) / COIN
 
 
         pending_rows = ""

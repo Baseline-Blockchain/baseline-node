@@ -362,6 +362,53 @@ class PayoutTracker:
                 self._save()
         return {"stale_pending": stale_pending, "stale_matured": stale_matured}
 
+    def get_dashboard_snapshot(self) -> dict[str, object]:
+        """Return all dashboard-relevant data in a single lock acquisition.
+
+        This avoids multiple sequential lock acquisitions that can cause
+        contention with the stratum share submission path.
+        """
+        with self.lock:
+            workers_snapshot = {
+                worker_id: {
+                    "address": state.address,
+                    "balance": state.balance,
+                }
+                for worker_id, state in self.workers.items()
+            }
+            pending_snapshot = [
+                {
+                    "height": int(entry.get("height", 0)),
+                    "txid": entry.get("txid"),
+                    "total_reward": int(entry.get("total_reward", 0)),
+                    "distributable": int(entry.get("distributable", 0)),
+                    "pool_fee": int(entry.get("pool_fee", 0)),
+                    "vout": int(entry.get("vout", 0)),
+                    "time": float(entry.get("time", 0.0)),
+                    "shares": dict(entry.get("shares", {})),
+                }
+                for entry in self.pending_blocks
+            ]
+            matured_snapshot = [
+                {
+                    "txid": entry.get("txid"),
+                    "vout": int(entry.get("vout", 0)),
+                    "amount": int(entry.get("amount", 0)),
+                }
+                for entry in self.matured_utxos
+            ]
+            return {
+                "workers": workers_snapshot,
+                "pending_blocks": pending_snapshot,
+                "matured_utxos": matured_snapshot,
+                "round_shares": dict(self.round_shares),
+                "pool_balance": self.pool_balance,
+                "pool_fee_percent": self.pool_fee_percent,
+                "min_payout": self.min_payout,
+                "maturity": self.maturity,
+                "payout_history": list(self.payout_history),
+            }
+
     def reconcile_balances(self, state_db: StateDB, *, apply: bool = False) -> dict[str, object]:
         """Scale worker balances down to spendable matured UTXOs when ledger is overcommitted."""
         with self.lock:
