@@ -240,7 +240,7 @@
         <!-- Mining Guide Section -->
         <div id="mining-guide" class="doc-section">
             <h2>How to Mine</h2>
-            <p>To mine on this pool, you need the specialized CPU miner: <strong>baseline-miner</strong>.</p>
+            <p>To mine on this pool, you need the specialized miner: <strong>baseline-miner</strong>.</p>
 
             <p><strong>1. Install</strong></p>
             <pre class="code-block">
@@ -253,7 +253,11 @@ pip install -e .
 
             <p><strong>2. Connect</strong></p>
             <pre class="code-block">
+CPU:
 baseline-miner --host <span style="color: var(--accent);">{{ stratum_host }}</span> --port <span style="color: var(--accent);">{{ stratum_port }}</span> --address YOURADDRESS --worker worker1
+
+GPU (faster):
+baseline-miner --gpu --host <span style="color: var(--accent);">{{ stratum_host }}</span> --port <span style="color: var(--accent);">{{ stratum_port }}</span> --address YOURADDRESS --worker worker1
             </pre>
         </div>
     </main>
