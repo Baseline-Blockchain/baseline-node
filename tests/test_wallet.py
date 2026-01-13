@@ -29,22 +29,31 @@ class WalletTests(unittest.TestCase):
         self.wallet_path = data_dir / "wallet" / "wallet.json"
         miner_pub = crypto.generate_pubkey(4242)
         self.mining_script = b"\x76\xa9\x14" + crypto.hash160(miner_pub) + b"\x88\xac"
+        self._wallets: list[WalletManager] = []
 
     def tearDown(self) -> None:
+        for w in self._wallets:
+            w.stop()
         self.state_db.close()
         self.tmpdir.cleanup()
 
+    def _create_wallet(self, *args, **kwargs) -> WalletManager:
+        w = WalletManager(*args, **kwargs)
+        self._wallets.append(w)
+        return w
+
     def test_addresses_are_deterministic(self) -> None:
-        wallet = WalletManager(self.wallet_path, self.state_db, self.block_store, self.mempool)
+        wallet = self._create_wallet(self.wallet_path, self.state_db, self.block_store, self.mempool)
         addr1 = wallet.get_new_address()
-        wallet = WalletManager(self.wallet_path, self.state_db, self.block_store, self.mempool)
+        wallet.stop()
+        wallet = self._create_wallet(self.wallet_path, self.state_db, self.block_store, self.mempool)
         priv = wallet._lookup_privkey(addr1)
         self.assertTrue(1 <= priv < crypto.SECP_N)
         addr2 = wallet.get_new_address()
         self.assertNotEqual(addr1, addr2)
 
     def test_wallet_encryption_and_autolock(self) -> None:
-        wallet = WalletManager(self.wallet_path, self.state_db, self.block_store, self.mempool)
+        wallet = self._create_wallet(self.wallet_path, self.state_db, self.block_store, self.mempool)
         wallet.get_new_address()
         wallet.encrypt_wallet("secret-pass")
         self.assertTrue(wallet.is_encrypted())
@@ -60,19 +69,19 @@ class WalletTests(unittest.TestCase):
             wallet.get_new_address()
 
     def test_dump_and_import_wallet_roundtrip(self) -> None:
-        wallet = WalletManager(self.wallet_path, self.state_db, self.block_store, self.mempool)
+        wallet = self._create_wallet(self.wallet_path, self.state_db, self.block_store, self.mempool)
         first_addr = wallet.get_new_address()
         backup_path = Path(self.tmpdir.name) / "wallet-backup.json"
         exported_seed = wallet.export_seed()
         wallet.dump_wallet(backup_path)
         imported_path = Path(self.tmpdir.name) / "wallet" / "wallet2.json"
-        wallet_clone = WalletManager(imported_path, self.state_db, self.block_store, self.mempool)
+        wallet_clone = self._create_wallet(imported_path, self.state_db, self.block_store, self.mempool)
         wallet_clone.import_wallet(backup_path, rescan=False)
         self.assertEqual(wallet_clone.export_seed(), exported_seed)
         self.assertIn(first_addr, wallet_clone.data["addresses"])
 
     def test_import_address_creates_watch_only_entry(self) -> None:
-        wallet = WalletManager(self.wallet_path, self.state_db, self.block_store, self.mempool)
+        wallet = self._create_wallet(self.wallet_path, self.state_db, self.block_store, self.mempool)
         pub = crypto.generate_pubkey(12345)
         addr = crypto.address_from_pubkey(pub)
         wallet.import_address(addr, label="watch", rescan=False)
@@ -81,7 +90,7 @@ class WalletTests(unittest.TestCase):
         self.assertEqual(entry["label"], "watch")
 
     def test_wallet_info_tracks_encryption_state(self) -> None:
-        wallet = WalletManager(self.wallet_path, self.state_db, self.block_store, self.mempool)
+        wallet = self._create_wallet(self.wallet_path, self.state_db, self.block_store, self.mempool)
         info = wallet.wallet_info()
         self.assertFalse(info["encrypted"])
         wallet.encrypt_wallet("pass")
@@ -90,7 +99,7 @@ class WalletTests(unittest.TestCase):
         self.assertTrue(info["locked"])
 
     def test_wallet_background_sync_status_transitions(self) -> None:
-        wallet = WalletManager(self.wallet_path, self.state_db, self.block_store, self.mempool)
+        wallet = self._create_wallet(self.wallet_path, self.state_db, self.block_store, self.mempool)
         wallet.start_background_sync()
         try:
             wallet.request_sync()
@@ -111,13 +120,13 @@ class WalletTests(unittest.TestCase):
             wallet.stop_background_sync()
 
     def test_list_addresses_returns_known_entries(self) -> None:
-        wallet = WalletManager(self.wallet_path, self.state_db, self.block_store, self.mempool)
+        wallet = self._create_wallet(self.wallet_path, self.state_db, self.block_store, self.mempool)
         addr = wallet.get_new_address("label-1")
         entries = wallet.list_addresses()
         self.assertTrue(any(entry["address"] == addr and entry["label"] == "label-1" for entry in entries))
 
     def test_address_balances_reports_spendable_and_watch_only(self) -> None:
-        wallet = WalletManager(self.wallet_path, self.state_db, self.block_store, self.mempool)
+        wallet = self._create_wallet(self.wallet_path, self.state_db, self.block_store, self.mempool)
         spend_addr = wallet.get_new_address("spendable")
         watch_pub = crypto.generate_pubkey(9999)
         watch_addr = crypto.address_from_pubkey(watch_pub)
@@ -144,7 +153,7 @@ class WalletTests(unittest.TestCase):
         return crypto.base58check_encode(payload)
 
     def test_import_private_key_plain(self) -> None:
-        wallet = WalletManager(self.wallet_path, self.state_db, self.block_store, self.mempool)
+        wallet = self._create_wallet(self.wallet_path, self.state_db, self.block_store, self.mempool)
         priv = 123456789
         wif = self._make_wif(priv)
         addr = wallet.import_private_key(wif, label="imported", rescan=False)
@@ -155,7 +164,7 @@ class WalletTests(unittest.TestCase):
         self.assertEqual(looked_up, priv)
 
     def test_import_private_key_requires_unlock_when_encrypted(self) -> None:
-        wallet = WalletManager(self.wallet_path, self.state_db, self.block_store, self.mempool)
+        wallet = self._create_wallet(self.wallet_path, self.state_db, self.block_store, self.mempool)
         wallet.encrypt_wallet("secret")
         wif = self._make_wif(987654321, compressed=True)
         with self.assertRaises(WalletLockedError):
@@ -169,7 +178,7 @@ class WalletTests(unittest.TestCase):
         self.assertEqual(wallet._lookup_privkey(addr), 987654321)
 
     def test_send_transaction_preserves_comments_across_sync(self) -> None:
-        wallet = WalletManager(self.wallet_path, self.state_db, self.block_store, self.mempool)
+        wallet = self._create_wallet(self.wallet_path, self.state_db, self.block_store, self.mempool)
         source_addr = wallet.get_new_address("source")
         dest_addr = wallet.get_new_address("dest")
         utxo = UTXORecord(
@@ -190,7 +199,8 @@ class WalletTests(unittest.TestCase):
         self.assertEqual(listed["comment"], "gift memo")
         self.assertEqual(listed["comment_to"], "friend")
         # Ensure persistence across wallet reload
-        reloaded = WalletManager(self.wallet_path, self.state_db, self.block_store, self.mempool)
+        wallet.stop()
+        reloaded = self._create_wallet(self.wallet_path, self.state_db, self.block_store, self.mempool)
         reloaded_entry = reloaded.get_transaction(txid)
         self.assertIsNotNone(reloaded_entry)
         self.assertEqual(reloaded_entry["comment"], "gift memo")
@@ -204,7 +214,7 @@ class WalletTests(unittest.TestCase):
         self.assertEqual(synced_entry["comment_to"], "friend")
 
     def test_create_scheduled_transaction_records_entry(self) -> None:
-        wallet = WalletManager(self.wallet_path, self.state_db, self.block_store, self.mempool)
+        wallet = self._create_wallet(self.wallet_path, self.state_db, self.block_store, self.mempool)
         source_addr = wallet.get_new_address("source")
         dest_addr = wallet.get_new_address("dest")
         utxo = UTXORecord(
@@ -227,7 +237,7 @@ class WalletTests(unittest.TestCase):
         self.assertEqual(fetched["status"], "pending")
 
     def test_cancel_scheduled_transaction_creates_refund(self) -> None:
-        wallet = WalletManager(self.wallet_path, self.state_db, self.block_store, self.mempool)
+        wallet = self._create_wallet(self.wallet_path, self.state_db, self.block_store, self.mempool)
         source_addr = wallet.get_new_address("source")
         dest_addr = wallet.get_new_address("dest")
         utxo = UTXORecord(
@@ -251,7 +261,7 @@ class WalletTests(unittest.TestCase):
         self.assertEqual(refund_entry["category"], "schedule_refund")
 
     def test_schedule_reorg_reverts_confirmation(self) -> None:
-        wallet = WalletManager(self.wallet_path, self.state_db, self.block_store, self.mempool)
+        wallet = self._create_wallet(self.wallet_path, self.state_db, self.block_store, self.mempool)
         source_addr = wallet.get_new_address("source")
         dest_addr = wallet.get_new_address("dest")
         utxo = UTXORecord(
@@ -297,7 +307,7 @@ class WalletTests(unittest.TestCase):
         self.assertEqual(reverted["status"], "pending")
 
     def test_schedule_reorg_reconfirms_on_new_chain(self) -> None:
-        wallet = WalletManager(self.wallet_path, self.state_db, self.block_store, self.mempool)
+        wallet = self._create_wallet(self.wallet_path, self.state_db, self.block_store, self.mempool)
         source_addr = wallet.get_new_address("source")
         dest_addr = wallet.get_new_address("dest")
         utxo = UTXORecord(
@@ -345,7 +355,7 @@ class WalletTests(unittest.TestCase):
         self.assertEqual(reconfirmed["status"], "confirmed")
 
     def test_schedule_deep_reorg_multiple_entries(self) -> None:
-        wallet = WalletManager(self.wallet_path, self.state_db, self.block_store, self.mempool)
+        wallet = self._create_wallet(self.wallet_path, self.state_db, self.block_store, self.mempool)
         source_addr = wallet.get_new_address("source")
         dest_addr = wallet.get_new_address("dest")
         utxo1 = UTXORecord(
@@ -423,7 +433,7 @@ class WalletTests(unittest.TestCase):
         self.assertEqual(reconfirmed_b["status"], "pending")
 
     def test_scheduled_transaction_persists_after_reload(self) -> None:
-        wallet = WalletManager(self.wallet_path, self.state_db, self.block_store, self.mempool)
+        wallet = self._create_wallet(self.wallet_path, self.state_db, self.block_store, self.mempool)
         source_addr = wallet.get_new_address("source")
         dest_addr = wallet.get_new_address("dest")
         utxo = UTXORecord(
@@ -436,13 +446,14 @@ class WalletTests(unittest.TestCase):
         )
         self.state_db.add_utxo(utxo)
         schedule = wallet.create_scheduled_transaction(dest_addr, 1.0, lock_time=0, cancelable=True)
-        reloaded = WalletManager(self.wallet_path, self.state_db, self.block_store, self.mempool)
+        wallet.stop()
+        reloaded = self._create_wallet(self.wallet_path, self.state_db, self.block_store, self.mempool)
         fetched = reloaded.get_schedule(schedule["schedule_id"])
         self.assertEqual(fetched["schedule_id"], schedule["schedule_id"])
         self.assertEqual(fetched["status"], "pending")
 
     def test_scheduled_transaction_marks_confirmed_on_sync(self) -> None:
-        wallet = WalletManager(self.wallet_path, self.state_db, self.block_store, self.mempool)
+        wallet = self._create_wallet(self.wallet_path, self.state_db, self.block_store, self.mempool)
         source_addr = wallet.get_new_address("source")
         dest_addr = wallet.get_new_address("dest")
         utxo = UTXORecord(
@@ -462,7 +473,7 @@ class WalletTests(unittest.TestCase):
         self.assertIsNotNone(confirmed.get("confirmed_height"))
 
     def test_cancel_non_cancelable_schedule_raises(self) -> None:
-        wallet = WalletManager(self.wallet_path, self.state_db, self.block_store, self.mempool)
+        wallet = self._create_wallet(self.wallet_path, self.state_db, self.block_store, self.mempool)
         source_addr = wallet.get_new_address("source")
         dest_addr = wallet.get_new_address("dest")
         utxo = UTXORecord(
@@ -479,7 +490,7 @@ class WalletTests(unittest.TestCase):
             wallet.cancel_scheduled_transaction(schedule["schedule_id"])
 
     def test_schedule_conflicts_with_immediate_spend(self) -> None:
-        wallet = WalletManager(self.wallet_path, self.state_db, self.block_store, self.mempool)
+        wallet = self._create_wallet(self.wallet_path, self.state_db, self.block_store, self.mempool)
         source_addr = wallet.get_new_address("source")
         dest_addr = wallet.get_new_address("dest")
         utxo = UTXORecord(

@@ -59,6 +59,9 @@ class FakePeer:
         self.address = ("127.0.0.1", 0)
         self.closed = False
 
+    def send_message_background(self, payload):
+        self.sent.append(payload)
+
     async def send_message(self, payload):
         self.sent.append(payload)
 

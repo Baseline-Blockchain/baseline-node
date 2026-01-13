@@ -136,6 +136,8 @@ class PayoutTrackerTests(unittest.TestCase):
         self.worker_id = "worker-1"
 
     def tearDown(self) -> None:
+        if hasattr(self, "tracker") and self.tracker:
+            self.tracker.stop()
         self.tmpdir.cleanup()
 
     def test_payout_transaction_created_after_maturity(self) -> None:

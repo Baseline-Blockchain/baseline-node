@@ -12,6 +12,7 @@ import secrets
 import threading
 import time
 from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from decimal import ROUND_DOWN, Decimal
 from pathlib import Path
@@ -98,7 +99,7 @@ class WalletManager:
         self.network = network
         self.log = logging.getLogger("baseline.wallet")
         self.lock = threading.RLock()
-        self._io_lock = threading.Lock()
+        self._wallet_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="WalletWriter")
         self._sync_lock = threading.Lock()
         self._unlocked_seed: bytes | None = None
         self._unlock_until: float | None = None
@@ -125,6 +126,10 @@ class WalletManager:
         if not self.data["addresses"] and not self.is_encrypted():
             self.get_new_address("default")
         self._sync_status["processed_height"] = int(self.data.get("processed_height", -1))
+
+    def stop(self) -> None:
+        """Shut down the writer pool."""
+        self._wallet_executor.shutdown(wait=True)
 
     def _load(self) -> None:
         if not self.path.exists():
@@ -168,10 +173,15 @@ class WalletManager:
         }
 
     def _save(self) -> None:
-        with self._io_lock:
-            tmp = self.path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
-            tmp.replace(self.path)
+        """Schedule wallet state write to disk."""
+        data_str = json.dumps(self.data, indent=2)
+        self._wallet_executor.submit(self._do_write_disk, data_str)
+
+    def _do_write_disk(self, data_str: str) -> None:
+        """Perform proper disk I/O. Runs in background thread."""
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(data_str, encoding="utf-8")
+        tmp.replace(self.path)
 
     def _seed_bytes(self) -> bytes:
         seed_hex = self.data.get("seed")

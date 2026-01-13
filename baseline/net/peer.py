@@ -51,10 +51,16 @@ class Peer:
         self._lock = asyncio.Lock()
         self._ban_notice_sent = False
         self._close_lock = asyncio.Lock()
+        self._outgoing_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=1000)
+        self._write_task: asyncio.Task | None = None
 
     async def run(self) -> None:
         try:
             await self._perform_handshake()
+            
+            # Start the writer loop only after handshake success
+            self._write_task = asyncio.create_task(self._write_loop(), name=f"peer-write-{self.peer_id}")
+            
             await self.manager.on_peer_ready(self)
             while not self.closed:
                 msg, byte_len = await protocol.read_message(
@@ -223,6 +229,40 @@ class Peer:
         self.last_send = time.time()
         self.manager.record_bytes_sent(len(data))
 
+    def send_message_background(self, payload: dict[str, Any]) -> None:
+        """
+        Non-blocking send. Enqueues the message for the background write loop.
+        If the queue is full, the message is dropped (and logged if verbose).
+        """
+        if self.closed:
+            return
+        try:
+            self._outgoing_queue.put_nowait(payload)
+        except asyncio.QueueFull:
+            self.log.debug("Outgoing queue full for %s; dropping message type=%s", self.peer_id, payload.get("type"))
+
+    async def _write_loop(self) -> None:
+        """
+        Background task to drain the outgoing queue and write to the socket.
+        """
+        try:
+            while not self.closed:
+                payload = await self._outgoing_queue.get()
+                try:
+                    await self.send_message(payload)
+                except Exception as exc:
+                   self.log.debug("Write loop error sending to %s: %s", self.peer_id, exc)
+                   # send_message handles closing on error, so we just loop or break if closed
+                   if self.closed:
+                       break
+                finally:
+                    self._outgoing_queue.task_done()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            self.log.exception("Write loop crashed for %s", self.peer_id)
+
+
 
     async def close(self) -> None:
         if self.closed:
@@ -232,6 +272,11 @@ class Peer:
             if self.closed:
                 return
             self.closed = True
+
+            if self._write_task:
+                self._write_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._write_task
 
             # Stop future writes ASAP
             with contextlib.suppress(Exception):

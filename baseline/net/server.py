@@ -75,7 +75,7 @@ class P2PServer:
         self._stop_event = asyncio.Event()
         self.server: asyncio.AbstractServer | None = None
         self.loop: asyncio.AbstractEventLoop | None = None
-        self._broadcast_sem = asyncio.Semaphore(500)  # tune
+
         self.write_timeout = 5.0
         self.known_addresses = self.discovery.address_book.addresses
         self._peer_seq = 0
@@ -1365,21 +1365,12 @@ class P2PServer:
     # Broadcast: bounded tasks
     # -------------------------------------------------------------------------
 
-    async def _bounded_send_with_release(self, peer: Peer, payload: dict[str, Any]) -> None:
-        try:
-            await asyncio.wait_for(peer.send_message(payload), timeout=self.write_timeout)
-        except Exception:
-            self.log.debug("Failed to broadcast to peer %s payload %s", peer.peer_id, payload)
-            pass
-        finally:
-            self._broadcast_sem.release()
-
     async def broadcast_inv(self, obj_type: str, obj_hash: str, exclude: set[str] | None = None) -> None:
         if self._stop_event.is_set():
             return
 
         payload = protocol.inv_payload([{"type": obj_type, "hash": obj_hash}])
-        dropped = 0
+
         for peer in list(self.peers.values()):
             if exclude and peer.peer_id in exclude:
                 continue
@@ -1388,18 +1379,9 @@ class P2PServer:
             if obj_hash in peer.known_inventory:
                 continue
 
-            try:
-                await self._broadcast_sem.acquire()
-                self.log.debug("broadcast_inv acquired sem for peer %s (sem=%s)", peer.peer_id, self._broadcast_sem._value)
-            except TimeoutError:
-                dropped += 1
-                if dropped % 100 == 0:
-                    self.log.debug("broadcast_inv dropped=%d (sem=%s)", dropped, self._broadcast_sem._value)
-                continue
             self.log.debug("Broadcasting inv %s to peer %s", obj_hash, peer.peer_id)
             peer.known_inventory.add(obj_hash)
-
-            asyncio.create_task(self._bounded_send_with_release(peer, payload))
+            peer.send_message_background(payload)
 
     def _on_local_tx(self, tx: Transaction) -> None:
         if not self.loop:

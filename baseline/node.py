@@ -111,6 +111,7 @@ class BaselineNode:
             self.time_manager = None
         if self.wallet:
             self.wallet.stop_background_sync()
+            self.wallet.stop()
         if self.network:
             await self.network.stop()
         if self.mempool:

@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -54,8 +55,37 @@ class PayoutTracker:
         # 1 byte len + sig (<=73) + 1 byte len + pubkey length
         self._script_sig_estimate = len(self.pool_pubkey) + 75
         self.lock = threading.RLock()
+        self._ptr_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="PayoutWriter")
         self._dirty = False
         self._load()
+
+    def stop(self) -> None:
+        """Shut down the writer pool."""
+        self._ptr_executor.shutdown(wait=True)
+
+    def _get_snapshot(self) -> dict[str, object]:
+        """Create a serializable snapshot of the current state. Must be called under lock."""
+        return {
+            "workers": {
+                worker: {"address": ws.address, "script": ws.script.hex(), "balance": ws.balance}
+                for worker, ws in self.workers.items()
+            },
+            "round_shares": self.round_shares.copy(),
+            "pending_blocks": list(self.pending_blocks),
+            "matured_utxos": list(self.matured_utxos),
+            "pool_balance": self.pool_balance,
+            "payout_history": list(self.payout_history),
+        }
+
+    def _write_snapshot(self, data: dict[str, object]) -> None:
+        """Schedule snapshot write to disk."""
+        self._ptr_executor.submit(self._do_write_disk, data)
+
+    def _do_write_disk(self, data: dict[str, object]) -> None:
+        """Perform proper disk I/O. Runs in background thread."""
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        tmp.replace(self.path)
 
     def _load(self) -> None:
         if not self.path.exists():
@@ -76,19 +106,9 @@ class PayoutTracker:
         if isinstance(history, list):
             self.payout_history = history
 
-    def _save(self) -> None:
-        data = {
-            "workers": {
-                worker: {"address": ws.address, "script": ws.script.hex(), "balance": ws.balance}
-                for worker, ws in self.workers.items()
-            },
-            "round_shares": self.round_shares,
-            "pending_blocks": self.pending_blocks,
-            "matured_utxos": self.matured_utxos,
-            "pool_balance": self.pool_balance,
-            "payout_history": self.payout_history[-self._max_payout_history :],
-        }
-        self.path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            self.payout_history = history
+
+    # _save is removed in favor of _get_snapshot + _write_snapshot pattern
 
     def register_worker(self, worker_id: str, address: str) -> None:
         script = script_from_address(address)
@@ -134,10 +154,13 @@ class PayoutTracker:
             )
             self.round_shares.clear()
             # Blocks are critical, save immediately
-            self._save()
+            snapshot = self._get_snapshot()
+        
+        self._write_snapshot(snapshot)
 
     def process_maturity(self, best_height: int) -> None:
         changed = False
+        snapshot = None
         matured: list[dict[str, object]] = []
         with self.lock:
             remaining = []
@@ -168,7 +191,10 @@ class PayoutTracker:
                     {"txid": entry["txid"], "amount": entry["total_reward"], "vout": entry.get("vout", 0)}
                 )
             if changed:
-                self._save()
+                snapshot = self._get_snapshot()
+
+        if snapshot:
+            self._write_snapshot(snapshot)
 
     def _gather_payees(self, max_outputs: int) -> list[tuple[str, WorkerState, int]]:
         payees: list[tuple[str, WorkerState, int]] = []
@@ -249,7 +275,7 @@ class PayoutTracker:
                 if record is None:
                     continue
                 spendable.append((record, utxo_info))
-
+            
             result = self._build_payout(payees, spendable)
             if result is None:
                 return None
@@ -278,8 +304,10 @@ class PayoutTracker:
                 state.balance -= amount
             for info in consumed_infos:
                 self.matured_utxos.remove(info)
-            self._save()
-            return tx
+            snapshot = self._get_snapshot()
+        
+        self._write_snapshot(snapshot)
+        return tx
 
     def preview_payout(self, state_db: StateDB, max_outputs: int = 16) -> dict[str, object] | None:
         """Dry-run payout assembly without mutating balances or UTXOs."""
@@ -342,6 +370,7 @@ class PayoutTracker:
         """Remove pending (and optionally matured) entries that no longer exist in chainstate."""
         stale_pending = 0
         stale_matured = 0
+        snapshot = None
         with self.lock:
             new_pending = []
             for entry in self.pending_blocks:
@@ -361,7 +390,10 @@ class PayoutTracker:
                     new_matured.append(utxo)
                 self.matured_utxos = new_matured
             if stale_pending or (drop_matured and stale_matured):
-                self._save()
+                snapshot = self._get_snapshot()
+        
+        if snapshot:
+            self._write_snapshot(snapshot)
         return {"stale_pending": stale_pending, "stale_matured": stale_matured}
 
     def get_dashboard_snapshot(self) -> dict[str, object]:
@@ -413,6 +445,7 @@ class PayoutTracker:
 
     def reconcile_balances(self, state_db: StateDB, *, apply: bool = False) -> dict[str, object]:
         """Scale worker balances down to spendable matured UTXOs when ledger is overcommitted."""
+        snapshot = None
         with self.lock:
             self.prune_stale_entries(state_db, drop_matured=apply)
             spendable_total = 0
@@ -442,19 +475,27 @@ class PayoutTracker:
                         ws.balance = new_balance
                     running_total += new_balance
                 if apply:
-                    self._save()
-            return {
-                "spendable_total": spendable_total,
-                "owed_total": owed_total,
-                "shortfall": shortfall,
-                "ratio": ratio,
-                "applied": bool(apply),
-                "adjustments": adjustments[:50],  # limit response size
-            }
+                    snapshot = self._get_snapshot()
+        
+        if snapshot:
+            self._write_snapshot(snapshot)
+            
+        return {
+            "spendable_total": spendable_total,
+            "owed_total": owed_total,
+            "shortfall": shortfall,
+            "ratio": ratio,
+            "applied": bool(apply),
+            "adjustments": adjustments[:50],  # limit response size
+        }
 
     def flush(self) -> None:
         """Persist state to disk if there are pending changes."""
+        snapshot = None
         with self.lock:
             if self._dirty:
-                self._save()
+                snapshot = self._get_snapshot()
                 self._dirty = False
+        
+        if snapshot:
+            self._write_snapshot(snapshot)
