@@ -1,8 +1,8 @@
-# Baseline
+# Baseline Cash
 
 ![Baseline Wallet GUI preview showing baseline-wallet-gui](preview.png)
 
-Baseline is a minimalist Bitcoin-style payments chain — but it ships with the stuff operators actually need built-in: fast blocks, Core-ish RPC, a native address index, and a turnkey pool server. No smart contracts, no token zoo, no bloat.
+Baseline Cash is a minimalist Bitcoin-style payments chain — but it ships with the stuff operators actually need built-in: fast blocks, Core-ish RPC, a native address index, and a turnkey pool server. No smart contracts, no token zoo, no bloat.
 
 - **CPU/GPU mining — no ASICs**: SHA256d with modified byte order makes existing Bitcoin ASICs incompatible. Mine with your CPU or GPU without specialized hardware competition.
 - **Turnkey mining + pool ops**: built-in Stratum v1 server (vardiff, sessions) + automatic payout tracking/ledger + payout tx builder (run a community pool without extra daemons).
@@ -16,7 +16,7 @@ Baseline is a minimalist Bitcoin-style payments chain — but it ships with the 
 
 - **Consensus**: SHA256d proof-of-work with non-standard byte order (incompatible with Bitcoin ASICs), 32-byte block hashes, PoW limit 0x207fffff (used for genesis and height 1), then difficulty adjusts per-block via LWMA.
 - **Timing**: 20-second block target, per-block LWMA difficulty retarget using a 60-block window to stay responsive without oscillations.
-- **Difficulty** is the target hash threshold miners must beat; lower targets = harder work. Baseline encodes this exactly like Bitcoin in the header `bits` field.
+- **Difficulty** is the target hash threshold miners must beat; lower targets = harder work. Baseline Cash encodes this exactly like Bitcoin in the header `bits` field.
 Every block, the node recomputes a new target from recent block times using a linearly weighted moving average (LWMA). If blocks arrive too fast, the target tightens; too slow and it loosens.
 - **Premine**: No premine. Mainnet genesis coinbase pays **0** (verified via hardcoded genesis).
 - **Dev fund**: **1%** of the block *subsidy* (not fees) is paid in the coinbase to the consensus-critical foundation address.
@@ -27,7 +27,7 @@ Every block, the node recomputes a new target from recent block times using a li
 
 ### Supply Schedule
 
-![Baseline supply schedule](docs/assets/supply_curve.png)
+![Baseline Cash supply schedule](docs/assets/supply_curve.png)
 
 Subsidy decays exponentially each block with a 4,158,884-block half-life (~2.64 years), so rewards glide downward and asymptotically cap supply at ~300 million BLINE without cliff events.
 
@@ -35,7 +35,7 @@ Subsidy decays exponentially each block with a 4,158,884-block half-life (~2.64 
 
 ### 1. Install Python environment
 
-Baseline targets **Python 3.12 or newer** (3.12/3.13 verified). Confirm Python is available before continuing:
+Baseline Cash targets **Python 3.12 or newer** (3.12/3.13 verified). Confirm Python is available before continuing:
 
 ```bash
 python --version || py -3 --version
@@ -51,7 +51,7 @@ pip install --upgrade pip
 
 No extra pip packages are required; the stdlib is enough. The GUI uses Tkinter (bundled with official Windows/macOS installers); on Linux install your distro's Tk bindings if missing (e.g., `sudo apt-get install python3-tk` or `sudo dnf install python3-tkinter`) before running `baseline-wallet-gui`.
 
-### 2. Install Baseline
+### 2. Install Baseline Cash
    ```bash
    pip install -e .
    ```
@@ -62,7 +62,7 @@ No extra pip packages are required; the stdlib is enough. The GUI uses Tkinter (
   A starter `config.json` lives at the repo root with reasonable defaults. Before launching your node, make these important changes:
 
 - Pick RPC creds: Modify `rpc.username` and `rpc.password` in `config.json` and keep them secret.
-- Set peers: In `network.seeds`, add reachable Baseline nodes as a list to help your node find peers or **leave it empty** to start a private testnet. The current starter config.json has a seed node for the public Baseline mainnet.
+- Set peers: In `network.seeds`, add reachable Baseline Cash nodes as a list to help your node find peers or **leave it empty** to start a private testnet. The current starter config.json has a seed node for the public Baseline Cash mainnet.
 
 ### 4. Launch the node
    ```bash
@@ -101,7 +101,7 @@ baseline-wallet --config config.json --help
   ```
   It prints the 32-byte hex key *and* a WIF string. Replace `mining.pool_private_key` (which defaults to `null`) in `config.json` with the hex value. Keep both hex + WIF offline.
   
-  Import the WIF into any wallet (Baseline or external) whenever you need to manually spend pool-held funds.
+  Import the WIF into any wallet (Baseline Cash Wallet or external) whenever you need to manually spend pool-held funds.
 
 ### 2. Start mining with Stratum
 1. Launch the node with your configured payout key. The Stratum listener will come up automatically whenever that key is present.
@@ -118,7 +118,7 @@ baseline-wallet --config config.json --help
    ```
    Workers are tracked by username for payouts; shares accrue until coinbase rewards mature (20 blocks), then the payout tracker crafts and broadcasts the payment transaction..
 
-- Yes, you can already have community mining pools! Just point miners with proper addresses at a Baseline node with Stratum enabled and the payouts will flow automatically.
+- Yes, you can already have community mining pools! Just point miners with proper addresses at a Baseline Cash node with Stratum enabled and the payouts will flow automatically.
 
 **Pool operator knobs (config.json):**
 - `mining.pool_fee_percent`: percent taken from mined subsidy before distributing to workers.
@@ -134,7 +134,7 @@ baseline-wallet --config config.json --help
 - **Address index**: SQLite maintains per-address UTXOs and history so explorers/wallets can query `getaddress*` RPCs without extra indexers.
 - **Wallet security**: PBKDF2-HMAC-SHA256 passphrase encryption with integrity checks. Locked wallets never hold plaintext on disk; unlock state stays only in RAM and expires automatically.
 - **JSON-RPC & Stratum**: Bitcoin-style error codes, request size limits, and Basic Auth keep RPC friendly for exchanges and explorers. Stratum tracks vardiff, session heartbeats, and bans misbehaving miners to avoid DoS.
-- **Upgrades**: `docs/governance.md` outlines the Baseline Improvement Proposal process and version-bit activation flow; no upgrades are active by default.
+- **Upgrades**: `docs/governance.md` outlines the Baseline Cash Improvement Proposal process and version-bit activation flow; no upgrades are active by default.
 
 ## Documentation
 
@@ -147,7 +147,7 @@ Additional operational docs live under [`docs/`](docs):
 - [`rpc.md`](docs/rpc.md) – JSON-RPC surface area with example calls.
 - [`operations.md`](docs/operations.md) – backups, monitoring, troubleshooting, and upgrade workflows.
 - [`spec.md`](docs/spec.md) – formal protocol specification derived from the current implementation.
-- [`governance.md`](docs/governance.md) – upgrade governance model and Baseline Improvement Proposal process.
+- [`governance.md`](docs/governance.md) – upgrade governance model and Baseline Cash Improvement Proposal process.
 
 ## Code Quality
 
