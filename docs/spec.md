@@ -110,7 +110,6 @@ For each new block at height h:
 - Deterministic HD wallet with PBKDF2-encrypted seeds plus integrity checks.
 - Built-in address index tracks per-address UTXOs and transaction history so RPC methods such as `getaddressutxos`, `getaddressbalance`, and `getaddresstxids` require no external indexer.
 - RPC surface mirrors Bitcoin Core for core methods (`getblockchaininfo`, `sendtoaddress`, etc.) plus Baseline-specific endpoints like `gettimesyncinfo`.
-- Scheduled Send (wallet-level): clients can pre-sign a transaction with a future lock_time and track it in wallet state; cancelable schedules can be refunded before the lock_time via a refund transaction.
 
 ## 9. Time Synchronization
 

@@ -4,10 +4,9 @@
 
 Baseline Cash is a minimalist Bitcoin-style payments chain — but it ships with the stuff operators actually need built-in: fast blocks, Core-ish RPC, a native address index, and a turnkey pool server. No smart contracts, no token zoo, no bloat.
 
-- **CPU/GPU mining — no ASICs**: SHA256d with modified byte order makes existing Bitcoin ASICs incompatible. Mine with your CPU or GPU without specialized hardware competition.
+- **CPU/GPU mining - no ASICs**: SHA256d with modified byte order makes existing Bitcoin ASICs incompatible. Mine with your CPU or GPU without specialized hardware competition.
 - **Turnkey mining + pool ops**: built-in Stratum v1 server (vardiff, sessions) + automatic payout tracking/ledger + payout tx builder (run a community pool without extra daemons).
-- **Scheduled Send capability**: Reserve future payments with cancelable and non-cancelable options - just like scheduling a transaction on traditional finance platforms.
-- **Explorer-ready out of the box**: native address index (UTXOs + tx history) exposed via RPC (getaddressutxos, getaddressbalance, getaddresstxids) — no external indexer needed.
+- **Explorer-ready out of the box**: native address index (UTXOs + tx history) exposed via RPC (getaddressutxos, getaddressbalance, getaddresstxids) - no external indexer needed.
 - **Fast confirmations, stable cadence**: 20s blocks + per-block LWMA difficulty retarget designed to stay responsive without wild oscillation.
 - **Predictable emission (no drama)**: Bitcoin-style JSON-RPC surface for easier exchange/wallet/explorer integration, plus a built-in status panel.
 - **Minimal by design**: Python 3.12+, stdlib only, compact codebase, formal spec, strict linting + tests.
