@@ -56,6 +56,8 @@ class RPCHandlers(WalletRPCMixin):
         self._block_cache_limit = 64
         self._tx_cache: OrderedDict[str, tuple[Transaction, str | None, int | None]] = OrderedDict()
         self._tx_cache_limit = 512
+        self._raw_tx_cache: OrderedDict[tuple[str, str], dict[str, Any]] = OrderedDict()
+        self._raw_tx_cache_limit = self._tx_cache_limit
         self._block_stats_cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._block_stats_limit = 128
         self._methods = {
@@ -279,13 +281,19 @@ class RPCHandlers(WalletRPCMixin):
             raise RPCError(-5, "No such transaction")
         if not verbose:
             return tx.serialize().hex()
+        txid = tx.txid()
         prev_cache: dict[str, Transaction] = {}
         spent_map = self._build_spent_output_map(block_hash)
-        fee_liners = self._transaction_fee(tx, cache=prev_cache, spent_map=spent_map)
         best = self.state_db.get_best_tip()
         confirmations = 0
         if best and height is not None:
             confirmations = max(0, best[1] - height + 1)
+        cached = self._get_cached_raw_tx(txid, block_hash)
+        if cached:
+            response = dict(cached)
+            response["confirmations"] = confirmations
+            return response
+        fee_liners = self._transaction_fee(tx, cache=prev_cache, spent_map=spent_map)
         timestamp = int(time.time())
         if height is not None:
             header = None
@@ -316,8 +324,7 @@ class RPCHandlers(WalletRPCMixin):
                 entry["value"] = value / COIN
             vin_entries.append(entry)
         raw_tx = tx.serialize()
-        txid = tx.txid()
-        return {
+        response = {
             "txid": txid,
             "hash": txid,
             "size": len(raw_tx),
@@ -333,6 +340,8 @@ class RPCHandlers(WalletRPCMixin):
                 for idx, txout in enumerate(tx.outputs)
             ],
         }
+        self._remember_raw_tx(txid, block_hash, response)
+        return response
 
     def gettxout(self, txid: str, vout: int, include_mempool: bool = True) -> dict[str, Any] | None:
         if include_mempool:
@@ -1056,6 +1065,24 @@ class RPCHandlers(WalletRPCMixin):
                 self._tx_cache.move_to_end(txid)
                 return cached
             return None
+
+    def _get_cached_raw_tx(self, txid: str, block_hash: str | None) -> dict[str, Any] | None:
+        key = (txid, block_hash or "")
+        with self._cache_lock:
+            cached = self._raw_tx_cache.get(key)
+            if cached:
+                self._raw_tx_cache.move_to_end(key)
+                return cached
+            return None
+
+    def _remember_raw_tx(self, txid: str, block_hash: str | None, payload: dict[str, Any]) -> None:
+        key = (txid, block_hash or "")
+        with self._cache_lock:
+            cache = self._raw_tx_cache
+            cache[key] = payload
+            cache.move_to_end(key)
+            if len(cache) > self._raw_tx_cache_limit:
+                cache.popitem(last=False)
 
     def _remember_block_stats(self, block_hash: str, stats: dict[str, Any]) -> None:
         with self._cache_lock:
