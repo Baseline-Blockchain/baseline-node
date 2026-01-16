@@ -20,6 +20,9 @@ from .storage import BlockStore, BlockStoreError, StateDB, StateDBError
 from .time_sync import NTPClient, TimeManager, set_time_manager
 from .wallet import WalletManager
 
+LOOP_MONITOR_INTERVAL = 5.0
+LOOP_LAG_WARNING_SECONDS = 0.5
+
 
 class BaselineNode:
     """Coordinates the different networking and chain services."""
@@ -83,6 +86,7 @@ class BaselineNode:
         self._tasks["wallet-maint"] = asyncio.create_task(self._wallet_task(), name="wallet-maint")
         self._tasks["time-monitor"] = asyncio.create_task(self._time_monitor_task(), name="time-monitor")
         self._tasks["ibd-tune"] = asyncio.create_task(self._ibd_tune_task(), name="ibd-tune")
+        self._tasks["loop-monitor"] = asyncio.create_task(self._loop_monitor_task(), name="loop-monitor")
 
     async def stop(self) -> None:
         if not self._started:
@@ -245,6 +249,57 @@ class BaselineNode:
         try:
             while not await self._wait_or_stop(10):
                 self._monitor_time_sync()
+        except asyncio.CancelledError:  # pragma: no cover - shutdown path
+            pass
+
+    async def _loop_monitor_task(self) -> None:
+        loop = asyncio.get_running_loop()
+        try:
+            while not self._stop_event.is_set():
+                start = loop.time()
+                try:
+                    await asyncio.wait_for(self._stop_event.wait(), timeout=LOOP_MONITOR_INTERVAL)
+                    return
+                except TimeoutError:
+                    pass
+                elapsed = loop.time() - start
+                lag = max(0.0, elapsed - LOOP_MONITOR_INTERVAL)
+                task_count = len(asyncio.all_tasks())
+                peers = len(self.network.peers) if self.network else 0
+                stratum_sessions = len(self.stratum.sessions) if self.stratum else 0
+                mempool_stats = "n/a"
+                if self.mempool:
+                    acquired = self.mempool.lock.acquire(timeout=0)
+                    if acquired:
+                        try:
+                            mempool_stats = (
+                                f"{len(self.mempool.entries)} tx ({len(self.mempool.orphans)} orphans) "
+                                f"weight={self.mempool.total_weight}"
+                            )
+                        finally:
+                            self.mempool.lock.release()
+                    else:
+                        mempool_stats = "busy"
+                rpc_state = "up" if self.rpc_server and self.rpc_server.server else "down"
+                self.log.debug(
+                    "Load: lag=%.3fs tasks=%d peers=%d stratum=%d mempool=%s rpc=%s",
+                    lag,
+                    task_count,
+                    peers,
+                    stratum_sessions,
+                    mempool_stats,
+                    rpc_state,
+                )
+                if lag >= LOOP_LAG_WARNING_SECONDS:
+                    self.log.warning(
+                        "Event loop lag %.3fs (tasks=%d peers=%d stratum=%d mempool=%s rpc=%s)",
+                        lag,
+                        task_count,
+                        peers,
+                        stratum_sessions,
+                        mempool_stats,
+                        rpc_state,
+                    )
         except asyncio.CancelledError:  # pragma: no cover - shutdown path
             pass
 

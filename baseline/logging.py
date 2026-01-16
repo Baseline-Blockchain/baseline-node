@@ -53,6 +53,12 @@ def setup_logging(log_file: Path, *, level: int = logging.INFO) -> logging.Logge
     queue_handler.setLevel(level)
     root.addHandler(queue_handler)
 
+    asyncio_logger = logging.getLogger("asyncio")
+    asyncio_logger.setLevel(level)
+    asyncio_logger.handlers.clear()
+    asyncio_logger.addHandler(queue_handler)
+    asyncio_logger.propagate = False
+
     listener = QueueListener(log_queue, stream_handler, file_handler, respect_handler_level=True)
     listener.start()
     _LOG_LISTENER = listener
