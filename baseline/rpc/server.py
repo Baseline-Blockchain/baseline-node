@@ -10,6 +10,7 @@ import contextlib
 import hmac
 import ipaddress
 import json
+import logging
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -20,6 +21,8 @@ from ..config import NodeConfig
 from ..core.tx import COIN
 from .handlers import RPCError, RPCHandlers
 from .rendering import DashboardRenderer
+
+RPC_SLOW_CALL_SECONDS = 1.0
 
 
 class _TokenBucket:
@@ -48,6 +51,7 @@ class RPCServer:
     def __init__(self, config: NodeConfig, handlers: RPCHandlers):
         self.config = config
         self.handlers = handlers
+        self.log = logging.getLogger("baseline.rpc")
         self.log_prefix = "baseline.rpc"
         self.host = config.rpc.host
         self.port = config.rpc.port
@@ -67,6 +71,7 @@ class RPCServer:
         self._rate_limits: dict[str, _TokenBucket] = {}
         self._body_chunk = 64 * 1024
         self.dashboard_renderer = DashboardRenderer()
+        self._inflight = 0
         self.public_methods = {
             "getblockcount",
             "getbestblockhash",
@@ -291,16 +296,36 @@ class RPCServer:
         loop = asyncio.get_running_loop()
         executor = self._executor
         if executor is None:
+            self.log.warning("RPC executor unavailable (method=%s)", method)
             return self._error_response(msg_id, -32603, "RPC executor unavailable")
+        start = time.monotonic()
+        self._inflight += 1
         try:
             future = loop.run_in_executor(executor, self.handlers.dispatch, method, params)
             result = await asyncio.wait_for(future, timeout=self.request_timeout)
         except RPCError as exc:
             return self._error_response(msg_id, exc.code, exc.message)
         except TimeoutError:
+            duration = time.monotonic() - start
+            self.log.warning(
+                "RPC timeout method=%s duration=%.2fs inflight=%d",
+                method,
+                duration,
+                self._inflight,
+            )
             return self._error_response(msg_id, -32603, "RPC handler timed out")
         except Exception as exc:  # pragma: no cover - defensive
             return self._error_response(msg_id, -32603, f"Internal error: {exc}")
+        finally:
+            self._inflight -= 1
+        duration = time.monotonic() - start
+        if duration >= RPC_SLOW_CALL_SECONDS:
+            self.log.debug(
+                "RPC slow method=%s duration=%.2fs inflight=%d",
+                method,
+                duration,
+                self._inflight,
+            )
         return {"jsonrpc": "2.0", "result": result, "error": None, "id": msg_id}
 
     async def _read_line(self, reader: asyncio.StreamReader) -> bytes | None:
