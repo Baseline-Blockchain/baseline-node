@@ -1010,6 +1010,74 @@ class StateDB:
             return None
         return row["block_hash"], row["height"], row["position"]
 
+    def txindex_rebuild_start(self, *, sample_size: int = 20) -> int | None:
+        self._ensure_open()
+        highest = self.get_highest_main_header()
+        if not highest:
+            return None
+        best_height = int(highest.height)
+        conn = self._reader_conn()
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key='txindex_height'",
+        ).fetchone()
+        stored_height = None
+        if row and row["value"] is not None:
+            try:
+                stored_height = int(row["value"])
+            except Exception:
+                stored_height = None
+        mismatch = self._txindex_tail_mismatch(conn, best_height, sample_size)
+        if stored_height is None:
+            if mismatch is None:
+                self.set_meta("txindex_height", str(best_height))
+                return None
+            return 0
+        if stored_height >= best_height and mismatch is None:
+            return None
+        if stored_height < best_height and mismatch is None:
+            self.set_meta("txindex_height", str(best_height))
+            return None
+        if stored_height < best_height:
+            return max(0, stored_height + 1)
+        return 0
+
+    def _txindex_tail_mismatch(
+        self,
+        conn: sqlite3.Connection,
+        best_height: int,
+        sample_size: int,
+    ) -> int | None:
+        sample = max(1, int(sample_size))
+        start = max(0, int(best_height) - sample + 1)
+        for height in range(int(best_height), start - 1, -1):
+            row = conn.execute(
+                "SELECT hash FROM headers WHERE height=? AND status=0 LIMIT 1",
+                (height,),
+            ).fetchone()
+            if not row:
+                return height
+            block_hash = row["hash"]
+            metrics = conn.execute(
+                "SELECT tx_count FROM block_metrics WHERE hash=? LIMIT 1",
+                (block_hash,),
+            ).fetchone()
+            if metrics:
+                expected = int(metrics["tx_count"])
+                existing = conn.execute(
+                    "SELECT COUNT(1) AS cnt FROM tx_index WHERE block_hash=?",
+                    (block_hash,),
+                ).fetchone()
+                if not existing or int(existing["cnt"]) != expected:
+                    return height
+            else:
+                existing = conn.execute(
+                    "SELECT 1 FROM tx_index WHERE block_hash=? LIMIT 1",
+                    (block_hash,),
+                ).fetchone()
+                if not existing:
+                    return height
+        return None
+
     def rebuild_tx_index_from_blocks(
         self,
         block_store,
@@ -1030,6 +1098,7 @@ class StateDB:
             return 0, 0
         blocks_indexed = 0
         txs_indexed = 0
+        last_height = None
         with self.transaction() as conn:
             for height in range(int(start_height), int(end_height) + 1):
                 row = conn.execute(
@@ -1050,6 +1119,7 @@ class StateDB:
                         (block_hash,),
                     ).fetchone()
                     if existing and int(existing["cnt"]) == expected:
+                        last_height = height
                         continue
                     conn.execute("DELETE FROM tx_index WHERE block_hash=?", (block_hash,))
                 else:
@@ -1058,6 +1128,7 @@ class StateDB:
                         (block_hash,),
                     ).fetchone()
                     if existing:
+                        last_height = height
                         continue
                 raw = block_store.get_block(block_hash)
                 block = Block.parse(raw)
@@ -1081,6 +1152,13 @@ class StateDB:
                 )
                 blocks_indexed += 1
                 txs_indexed += len(txids)
+                last_height = height
+            if last_height is not None:
+                conn.execute(
+                    "INSERT INTO meta(key, value) VALUES('txindex_height', ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (str(int(last_height)),),
+                )
         return blocks_indexed, txs_indexed
 
     def record_block_metrics(

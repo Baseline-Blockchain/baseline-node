@@ -401,12 +401,21 @@ class BaselineNode:
         if not self.chain:
             return
         try:
+            start_height = self.state_db.txindex_rebuild_start()
+            if start_height is None:
+                return
             blocks, txs = await asyncio.to_thread(
                 self.state_db.rebuild_tx_index_from_blocks,
                 self.block_store,
+                start_height=start_height,
             )
             if blocks:
-                self.log.info("Tx index backfill complete: blocks=%s txs=%s", blocks, txs)
+                self.log.info(
+                    "Tx index backfill complete: start_height=%s blocks=%s txs=%s",
+                    start_height,
+                    blocks,
+                    txs,
+                )
         except Exception:
             self.log.exception("Tx index sweep failed")
 
