@@ -1010,6 +1010,79 @@ class StateDB:
             return None
         return row["block_hash"], row["height"], row["position"]
 
+    def rebuild_tx_index_from_blocks(
+        self,
+        block_store,
+        *,
+        start_height: int = 0,
+        end_height: int | None = None,
+    ) -> tuple[int, int]:
+        """Backfill tx_index by walking main-chain blocks."""
+        from ..core.block import Block
+
+        self._ensure_open()
+        if end_height is None:
+            highest = self.get_highest_main_header()
+            if not highest:
+                return 0, 0
+            end_height = highest.height
+        if end_height < start_height:
+            return 0, 0
+        blocks_indexed = 0
+        txs_indexed = 0
+        with self.transaction() as conn:
+            for height in range(int(start_height), int(end_height) + 1):
+                row = conn.execute(
+                    "SELECT hash FROM headers WHERE height=? AND status=0 LIMIT 1",
+                    (height,),
+                ).fetchone()
+                if not row:
+                    break
+                block_hash = row["hash"]
+                metrics = conn.execute(
+                    "SELECT tx_count FROM block_metrics WHERE hash=? LIMIT 1",
+                    (block_hash,),
+                ).fetchone()
+                if metrics:
+                    expected = int(metrics["tx_count"])
+                    existing = conn.execute(
+                        "SELECT COUNT(1) AS cnt FROM tx_index WHERE block_hash=?",
+                        (block_hash,),
+                    ).fetchone()
+                    if existing and int(existing["cnt"]) == expected:
+                        continue
+                    conn.execute("DELETE FROM tx_index WHERE block_hash=?", (block_hash,))
+                else:
+                    existing = conn.execute(
+                        "SELECT 1 FROM tx_index WHERE block_hash=? LIMIT 1",
+                        (block_hash,),
+                    ).fetchone()
+                    if existing:
+                        continue
+                raw = block_store.get_block(block_hash)
+                block = Block.parse(raw)
+                txids = [tx.txid() for tx in block.transactions]
+                if not txids:
+                    continue
+                rows = [
+                    (txid, block_hash, height, position)
+                    for position, txid in enumerate(txids)
+                ]
+                conn.executemany(
+                    """
+                    INSERT INTO tx_index(txid, block_hash, height, position)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(txid) DO UPDATE SET
+                        block_hash=excluded.block_hash,
+                        height=excluded.height,
+                        position=excluded.position
+                    """,
+                    rows,
+                )
+                blocks_indexed += 1
+                txs_indexed += len(txids)
+        return blocks_indexed, txs_indexed
+
     def record_block_metrics(
         self,
         block_hash: str,

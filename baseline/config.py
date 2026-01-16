@@ -27,6 +27,16 @@ def default_data_dir() -> Path:
     return _expand_path(str(base))
 
 
+def _default_rpc_worker_threads() -> int:
+    cpu_count = os.cpu_count() or 4
+    return max(8, cpu_count * 2)
+
+
+def _default_rpc_batch_concurrency() -> int:
+    cpu_count = os.cpu_count() or 4
+    return max(8, cpu_count)
+
+
 @dataclass(slots=True)
 class P2PConfig:
     host: str = "0.0.0.0"
@@ -57,9 +67,9 @@ class RPCConfig:
     password: str = "rpcpass"
     max_request_bytes: int = 256_000
     request_timeout: float = 15.0
-    worker_threads: int = 8
+    worker_threads: int = field(default_factory=_default_rpc_worker_threads)
     max_batch_size: int = 32
-    max_batch_concurrency: int = 8
+    max_batch_concurrency: int = field(default_factory=_default_rpc_batch_concurrency)
     # 0 disables rate limiting; wallets tend to burst calls, so keep this high by default.
     max_requests_per_minute: int = 5000
     rate_limit_exempt_loopback: bool = True

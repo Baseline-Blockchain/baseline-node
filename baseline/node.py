@@ -67,6 +67,7 @@ class BaselineNode:
         try:
             self.chain = Chain(self.config, self.state_db, self.block_store)
             self.mempool = Mempool(self.chain)
+            await self._startup_txindex_sweep()
             self.network = P2PServer(self.config, self.chain, self.mempool)
             await self.network.start()
             self._initialize_time_sync()
@@ -395,6 +396,19 @@ class BaselineNode:
         )
         self.rpc_handlers = handlers
         self.rpc_server = RPCServer(self.config, handlers)
+
+    async def _startup_txindex_sweep(self) -> None:
+        if not self.chain:
+            return
+        try:
+            blocks, txs = await asyncio.to_thread(
+                self.state_db.rebuild_tx_index_from_blocks,
+                self.block_store,
+            )
+            if blocks:
+                self.log.info("Tx index backfill complete: blocks=%s txs=%s", blocks, txs)
+        except Exception:
+            self.log.exception("Tx index sweep failed")
 
     async def _run_payout_cycle(self) -> None:
         if not (self.chain and self.payout_tracker and self.mempool):
