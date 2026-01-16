@@ -31,6 +31,7 @@ MAX_SHARE_ERRORS = 8
 JOB_EXPIRY = 15 * 60
 EXPECTED_SOCKET_ERRNOS = {errno.ECONNRESET, errno.EPIPE, errno.ECONNABORTED}
 EXPECTED_WINERRORS = {64, 995}
+REQUIRED_USER_AGENT = "baseline-miner/0.1"
 TARGET_SHARE_INTERVAL = 15.0  # seconds per accepted share
 VARDIFF_TOLERANCE = 0.25  # +/-25% before retuning
 MIN_VARDIFF_INTERVAL = 30.0  # seconds between difficulty changes
@@ -289,6 +290,11 @@ class StratumServer:
     async def _handle_subscribe(self, session: StratumSession, msg_id: object, params: Sequence[object]) -> None:
         if session.subscribed:
             await session.send_error(msg_id, 24, "already subscribed")
+            return
+        user_agent = str(params[0]) if params else ""
+        if user_agent != REQUIRED_USER_AGENT:
+            await session.send_error(msg_id, 20, "unsupported user agent")
+            await session.close()
             return
         result = [
             [["mining.set_difficulty", str(session.session_id)], ["mining.notify", str(session.session_id)]],
