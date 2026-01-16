@@ -13,7 +13,9 @@ import json
 import logging
 import os
 import time
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from itertools import count
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
@@ -23,6 +25,7 @@ from .handlers import RPCError, RPCHandlers
 from .rendering import DashboardRenderer
 
 RPC_SLOW_CALL_SECONDS = 1.0
+RPC_INFLIGHT_SNAPSHOT_LIMIT = 6
 
 
 class _TokenBucket:
@@ -72,6 +75,9 @@ class RPCServer:
         self._body_chunk = 64 * 1024
         self.dashboard_renderer = DashboardRenderer()
         self._inflight = 0
+        self._inflight_methods: Counter[str] = Counter()
+        self._inflight_calls: dict[int, tuple[str, float]] = {}
+        self._call_seq = count(1)
         self.public_methods = {
             "getblockcount",
             "getbestblockhash",
@@ -299,7 +305,10 @@ class RPCServer:
             self.log.warning("RPC executor unavailable (method=%s)", method)
             return self._error_response(msg_id, -32603, "RPC executor unavailable")
         start = time.monotonic()
+        call_id = next(self._call_seq)
         self._inflight += 1
+        self._inflight_methods[method] += 1
+        self._inflight_calls[call_id] = (method, start)
         try:
             future = loop.run_in_executor(executor, self.handlers.dispatch, method, params)
             result = await asyncio.wait_for(future, timeout=self.request_timeout)
@@ -307,26 +316,59 @@ class RPCServer:
             return self._error_response(msg_id, exc.code, exc.message)
         except TimeoutError:
             duration = time.monotonic() - start
+            inflight_methods, inflight_calls = self._snapshot_inflight()
             self.log.warning(
-                "RPC timeout method=%s duration=%.2fs inflight=%d",
+                "RPC timeout method=%s duration=%.2fs inflight=%d methods=%s calls=%s",
                 method,
                 duration,
                 self._inflight,
+                inflight_methods,
+                inflight_calls,
             )
             return self._error_response(msg_id, -32603, "RPC handler timed out")
         except Exception as exc:  # pragma: no cover - defensive
             return self._error_response(msg_id, -32603, f"Internal error: {exc}")
         finally:
             self._inflight -= 1
+            if self._inflight_methods[method] <= 1:
+                self._inflight_methods.pop(method, None)
+            else:
+                self._inflight_methods[method] -= 1
+            self._inflight_calls.pop(call_id, None)
         duration = time.monotonic() - start
         if duration >= RPC_SLOW_CALL_SECONDS:
+            inflight_methods, inflight_calls = self._snapshot_inflight()
             self.log.debug(
-                "RPC slow method=%s duration=%.2fs inflight=%d",
+                "RPC slow method=%s duration=%.2fs inflight=%d methods=%s calls=%s",
                 method,
                 duration,
                 self._inflight,
+                inflight_methods,
+                inflight_calls,
             )
         return {"jsonrpc": "2.0", "result": result, "error": None, "id": msg_id}
+
+    def _snapshot_inflight(self) -> tuple[str, str]:
+        if not self._inflight_methods:
+            methods = "none"
+        else:
+            parts = sorted(self._inflight_methods.items(), key=lambda item: (-item[1], item[0]))
+            methods = ",".join(f"{name}={count}" for name, count in parts)
+        if not self._inflight_calls:
+            calls = "none"
+        else:
+            now = time.monotonic()
+            items = sorted(
+                self._inflight_calls.items(),
+                key=lambda item: now - item[1][1],
+                reverse=True,
+            )
+            slices = []
+            for _, (method, start) in items[:RPC_INFLIGHT_SNAPSHOT_LIMIT]:
+                age = now - start
+                slices.append(f"{method}:{age:.2f}s")
+            calls = ",".join(slices)
+        return methods, calls
 
     async def _read_line(self, reader: asyncio.StreamReader) -> bytes | None:
         try:
