@@ -280,7 +280,8 @@ class RPCHandlers(WalletRPCMixin):
         if not verbose:
             return tx.serialize().hex()
         prev_cache: dict[str, Transaction] = {}
-        fee_liners = self._transaction_fee(tx, cache=prev_cache)
+        spent_map = self._build_spent_output_map(block_hash)
+        fee_liners = self._transaction_fee(tx, cache=prev_cache, spent_map=spent_map)
         best = self.state_db.get_best_tip()
         confirmations = 0
         if best and height is not None:
@@ -299,7 +300,12 @@ class RPCHandlers(WalletRPCMixin):
             if vin.prev_txid == "00" * 32 and vin.prev_vout == 0xFFFFFFFF:
                 vin_entries.append({"coinbase": vin.script_sig.hex(), "sequence": vin.sequence})
                 continue
-            value = self._resolve_prev_output_value(vin.prev_txid, vin.prev_vout, prev_cache)
+            value = self._resolve_prev_output_value(
+                vin.prev_txid,
+                vin.prev_vout,
+                prev_cache,
+                spent_map=spent_map,
+            )
             entry: dict[str, Any] = {
                 "txid": vin.prev_txid,
                 "vout": vin.prev_vout,
@@ -309,11 +315,13 @@ class RPCHandlers(WalletRPCMixin):
                 entry["value_liners"] = value
                 entry["value"] = value / COIN
             vin_entries.append(entry)
+        raw_tx = tx.serialize()
+        txid = tx.txid()
         return {
-            "txid": tx.txid(),
-            "hash": tx.txid(),
-            "size": len(tx.serialize()),
-            "hex": tx.serialize().hex(),
+            "txid": txid,
+            "hash": txid,
+            "size": len(raw_tx),
+            "hex": raw_tx.hex(),
             "blockhash": block_hash,
             "confirmations": confirmations,
             "fee": fee_liners / COIN,
@@ -1136,10 +1144,24 @@ class RPCHandlers(WalletRPCMixin):
             raw = self.block_store.get_block(current_hash)
             block = Block.parse(raw)
             self._remember_block(current_hash, block, header)
+            txids: list[str] = []
+            matched: Transaction | None = None
             for tx in block.transactions:
-                if tx.txid() == txid:
-                    self._remember_tx(tx, current_hash, header.height)
-                    return tx, current_hash, header.height
+                candidate_txid = tx.txid()
+                txids.append(candidate_txid)
+                if candidate_txid == txid:
+                    matched = tx
+            if matched:
+                try:
+                    self.state_db.index_block_transactions(current_hash, header.height, txids)
+                except Exception:
+                    logging.getLogger("baseline.rpc").debug(
+                        "Failed to backfill tx index for %s",
+                        current_hash,
+                        exc_info=True,
+                    )
+                self._remember_tx(matched, current_hash, header.height)
+                return matched, current_hash, header.height
             if header.prev_hash is None:
                 break
             current_hash = header.prev_hash
@@ -1150,7 +1172,13 @@ class RPCHandlers(WalletRPCMixin):
         prev_txid: str,
         prev_vout: int,
         cache: dict[str, Transaction],
+        *,
+        spent_map: dict[tuple[str, int], int] | None = None,
     ) -> int | None:
+        if spent_map is not None:
+            value = spent_map.get((prev_txid, prev_vout))
+            if value is not None:
+                return value
         utxo = self.state_db.get_utxo(prev_txid, prev_vout)
         if utxo:
             return utxo.amount
@@ -1163,7 +1191,13 @@ class RPCHandlers(WalletRPCMixin):
             return prev_tx.outputs[prev_vout].value
         return None
 
-    def _transaction_fee(self, tx: Transaction, *, cache: dict[str, Transaction] | None = None) -> int:
+    def _transaction_fee(
+        self,
+        tx: Transaction,
+        *,
+        cache: dict[str, Transaction] | None = None,
+        spent_map: dict[tuple[str, int], int] | None = None,
+    ) -> int:
         """Derive the fee for a transaction by summing referenced outputs."""
         if tx.is_coinbase():
             return 0
@@ -1171,7 +1205,12 @@ class RPCHandlers(WalletRPCMixin):
         input_sum = 0
         prev_cache: dict[str, Transaction] = cache if cache is not None else {}
         for vin in tx.inputs:
-            value = self._resolve_prev_output_value(vin.prev_txid, vin.prev_vout, prev_cache)
+            value = self._resolve_prev_output_value(
+                vin.prev_txid,
+                vin.prev_vout,
+                prev_cache,
+                spent_map=spent_map,
+            )
             if value is None:
                 logging.warning(
                     "Unable to resolve input %s:%s while computing fee for %s",
@@ -1182,6 +1221,17 @@ class RPCHandlers(WalletRPCMixin):
                 continue
             input_sum += value
         return max(0, input_sum - output_sum)
+
+    def _build_spent_output_map(self, block_hash: str | None) -> dict[tuple[str, int], int] | None:
+        if not block_hash:
+            return None
+        try:
+            undo = self.state_db.load_undo_data(block_hash)
+        except Exception:
+            return None
+        if not undo:
+            return None
+        return {(record.txid, record.vout): record.amount for record in undo}
 
     def gettimesyncinfo(self) -> dict[str, Any]:
         """Get time synchronization status and information."""
