@@ -79,6 +79,8 @@ class StateDB:
         self._writer_stop = threading.Event()
         self._writer_thread = threading.Thread(target=self._writer_loop, name="state-writer", daemon=True)
         self._writer_thread.start()
+        self._address_txids_ready = False
+        self._address_received_ready = False
         self._closed = False
         self._init_schema()
         self.run_startup_checks()
@@ -182,6 +184,20 @@ class StateDB:
                 );
                 CREATE INDEX IF NOT EXISTS address_history_addr_height_idx
                     ON address_history(address, height);
+
+                CREATE TABLE IF NOT EXISTS address_txids (
+                    address TEXT NOT NULL,
+                    txid TEXT NOT NULL,
+                    height INTEGER NOT NULL,
+                    PRIMARY KEY(address, txid)
+                );
+                CREATE INDEX IF NOT EXISTS address_txids_addr_height_idx
+                    ON address_txids(address, height DESC);
+
+                CREATE TABLE IF NOT EXISTS address_received (
+                    address TEXT PRIMARY KEY,
+                    received INTEGER NOT NULL
+                );
 
                 CREATE TABLE IF NOT EXISTS address_utxos (
                     address TEXT NOT NULL,
@@ -842,6 +858,8 @@ class StateDB:
                 if header is None:
                     raise StateDBError("Best tip header missing from headers table")
             self._ensure_address_balances()
+            self._ensure_address_received()
+            self._ensure_address_txids()
             self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
 
     def _ensure_address_balances(self) -> None:
@@ -871,6 +889,64 @@ class StateDB:
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value"
         )
 
+    def _ensure_address_received(self) -> None:
+        row = self._conn.execute(
+            "SELECT value FROM meta WHERE key='address_received_ready'"
+        ).fetchone()
+        if row and row["value"] == "1":
+            self._address_received_ready = True
+            return
+        has_received = self._conn.execute(
+            "SELECT 1 FROM address_received LIMIT 1"
+        ).fetchone()
+        if not has_received:
+            has_history = self._conn.execute(
+                "SELECT 1 FROM address_history LIMIT 1"
+            ).fetchone()
+            if has_history:
+                self._conn.execute(
+                    """
+                    INSERT INTO address_received(address, received)
+                    SELECT address, COALESCE(SUM(amount), 0) AS received
+                    FROM address_history
+                    GROUP BY address
+                    """
+                )
+        self._conn.execute(
+            "INSERT INTO meta(key, value) VALUES('address_received_ready', '1') "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+        )
+        self._address_received_ready = True
+
+    def _ensure_address_txids(self) -> None:
+        row = self._conn.execute(
+            "SELECT value FROM meta WHERE key='address_txids_ready'"
+        ).fetchone()
+        if row and row["value"] == "1":
+            self._address_txids_ready = True
+            return
+        has_entries = self._conn.execute(
+            "SELECT 1 FROM address_txids LIMIT 1"
+        ).fetchone()
+        if not has_entries:
+            has_history = self._conn.execute(
+                "SELECT 1 FROM address_history LIMIT 1"
+            ).fetchone()
+            if has_history:
+                self._conn.execute(
+                    """
+                    INSERT INTO address_txids(address, txid, height)
+                    SELECT address, txid, MIN(height) AS height
+                    FROM address_history
+                    GROUP BY address, txid
+                    """
+                )
+        self._conn.execute(
+            "INSERT INTO meta(key, value) VALUES('address_txids_ready', '1') "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+        )
+        self._address_txids_ready = True
+
     def vacuum(self) -> None:
         self._ensure_open()
         with self._lock:
@@ -881,6 +957,8 @@ class StateDB:
     def index_block_addresses(self, block: Block, height: int) -> None:
         self._ensure_open()
         entries: list[tuple[str, str, int, int, int]] = []
+        txid_entries: set[tuple[str, str, int]] = set()
+        received_totals: dict[str, int] = {}
         for tx in block.transactions:
             txid = tx.txid()
             for vout, txout in enumerate(tx.outputs):
@@ -888,6 +966,8 @@ class StateDB:
                 if not address:
                     continue
                 entries.append((address, txid, vout, txout.value, height))
+                txid_entries.add((address, txid, height))
+                received_totals[address] = received_totals.get(address, 0) + txout.value
         if not entries:
             return
         def _write(conn: sqlite3.Connection) -> None:
@@ -899,6 +979,24 @@ class StateDB:
                     """,
                     (address, txid, vout, amount, h),
                 )
+            for address, txid, h in txid_entries:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO address_txids(address, txid, height)
+                    VALUES (?, ?, ?)
+                    """,
+                    (address, txid, h),
+                )
+            for address, delta in received_totals.items():
+                conn.execute(
+                    """
+                    INSERT INTO address_received(address, received)
+                    VALUES (?, ?)
+                    ON CONFLICT(address) DO UPDATE SET
+                        received = received + excluded.received
+                    """,
+                    (address, delta),
+                )
         self._enqueue_write(_write)
 
     def remove_block_address_index(self, block: Block) -> None:
@@ -907,8 +1005,32 @@ class StateDB:
         if not txids:
             return
         def _write(conn: sqlite3.Connection) -> None:
-            for txid in txids:
-                conn.execute("DELETE FROM address_history WHERE txid=?", (txid,))
+            placeholders = ",".join("?" for _ in txids)
+            rows = conn.execute(
+                f"SELECT address, amount FROM address_history WHERE txid IN ({placeholders})",
+                tuple(txids),
+            ).fetchall()
+            received_totals: dict[str, int] = {}
+            for row in rows:
+                address = row["address"]
+                received_totals[address] = received_totals.get(address, 0) + int(row["amount"])
+            conn.execute(
+                f"DELETE FROM address_history WHERE txid IN ({placeholders})",
+                tuple(txids),
+            )
+            conn.execute(
+                f"DELETE FROM address_txids WHERE txid IN ({placeholders})",
+                tuple(txids),
+            )
+            for address, delta in received_totals.items():
+                conn.execute(
+                    "UPDATE address_received SET received = received - ? WHERE address=?",
+                    (delta, address),
+                )
+                conn.execute(
+                    "DELETE FROM address_received WHERE address=? AND received <= 0",
+                    (address,),
+                )
         self._enqueue_write(_write)
 
     def get_address_utxos(self, addresses: Sequence[str], *, limit: int | None = None, offset: int = 0) -> list[dict[str, Any]]:
@@ -995,10 +1117,16 @@ class StateDB:
             balance = int(row["balance"] or 0)
             matured = balance
             immature = 0
-        received_row = conn.execute(
-            f"SELECT COALESCE(SUM(amount), 0) as total FROM address_history WHERE address IN ({placeholders})",
-            tuple(addr_list),
-        ).fetchone()
+        if self._address_received_ready:
+            received_row = conn.execute(
+                f"SELECT COALESCE(SUM(received), 0) as total FROM address_received WHERE address IN ({placeholders})",
+                tuple(addr_list),
+            ).fetchone()
+        else:
+            received_row = conn.execute(
+                f"SELECT COALESCE(SUM(amount), 0) as total FROM address_history WHERE address IN ({placeholders})",
+                tuple(addr_list),
+            ).fetchone()
         received = int(received_row["total"] or 0)
         return int(balance or 0), int(received or 0), int(matured or 0), int(immature or 0)
 
@@ -1013,6 +1141,60 @@ class StateDB:
         offset: int = 0,
     ) -> list[Any]:
         self._ensure_open()
+        if not addresses:
+            return []
+        if not self._address_txids_ready:
+            return self._get_address_txids_from_history(
+                addresses,
+                start=start,
+                end=end,
+                include_height=include_height,
+                limit=limit,
+                offset=offset,
+            )
+        placeholders = ",".join("?" for _ in addresses)
+        params: list[Any] = list(addresses)
+        query = f"SELECT txid, height FROM address_txids WHERE address IN ({placeholders})"
+        if start is not None:
+            query += " AND height >= ?"
+            params.append(int(start))
+        if end is not None:
+            query += " AND height <= ?"
+            params.append(int(end))
+        query += " ORDER BY height DESC, txid DESC"
+        if limit is not None:
+            query += " LIMIT ? OFFSET ?"
+            params.extend([int(limit), int(offset)])
+        conn = self._reader_conn()
+        rows = conn.execute(query, tuple(params)).fetchall()
+        if not include_height:
+            return [row["txid"] for row in rows]
+        heights = sorted({int(row["height"]) for row in rows})
+        height_map: dict[int, str | None] = {}
+        if heights:
+            placeholders = ",".join("?" for _ in heights)
+            header_rows = conn.execute(
+                f"SELECT height, hash FROM headers WHERE status=0 AND height IN ({placeholders})",
+                tuple(heights),
+            ).fetchall()
+            height_map = {int(row["height"]): row["hash"] for row in header_rows}
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            height = int(row["height"])
+            block_hash = height_map.get(height)
+            results.append({"txid": row["txid"], "height": height, "blockhash": block_hash})
+        return results
+
+    def _get_address_txids_from_history(
+        self,
+        addresses: Sequence[str],
+        start: int | None = None,
+        end: int | None = None,
+        *,
+        include_height: bool = False,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[Any]:
         if not addresses:
             return []
         placeholders = ",".join("?" for _ in addresses)
@@ -1035,11 +1217,19 @@ class StateDB:
         rows = conn.execute(query, tuple(params)).fetchall()
         if not include_height:
             return [row["txid"] for row in rows]
+        heights = sorted({int(row["height"]) for row in rows})
+        height_map: dict[int, str | None] = {}
+        if heights:
+            placeholders = ",".join("?" for _ in heights)
+            header_rows = conn.execute(
+                f"SELECT height, hash FROM headers WHERE status=0 AND height IN ({placeholders})",
+                tuple(heights),
+            ).fetchall()
+            height_map = {int(row["height"]): row["hash"] for row in header_rows}
         results: list[dict[str, Any]] = []
         for row in rows:
-            height = row["height"]
-            header = self.get_main_header_at_height(height)
-            block_hash = header.hash if header else None
+            height = int(row["height"])
+            block_hash = height_map.get(height)
             results.append({"txid": row["txid"], "height": height, "blockhash": block_hash})
         return results
 
@@ -1638,6 +1828,7 @@ class StateDB:
                 (tip_hdr.chainwork,),
             )
         return len(path), path[-1].height
+    
     def _enqueue_write(self, fn: Callable[[sqlite3.Connection], Any]) -> None:
         if self._closed:
             raise StateDBError("StateDB connection is closed")
