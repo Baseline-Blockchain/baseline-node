@@ -196,13 +196,15 @@ class PayoutTracker:
         if snapshot:
             self._write_snapshot(snapshot)
 
-    def _gather_payees(self, max_outputs: int) -> list[tuple[str, WorkerState, int]]:
-        payees: list[tuple[str, WorkerState, int]] = []
-        for worker_id, state in self.workers.items():
-            if state.balance >= self.min_payout:
-                payees.append((worker_id, state, state.balance))
-            if len(payees) >= max_outputs:
-                break
+    def _gather_payees(self, max_outputs: int | None) -> list[tuple[str, WorkerState, int]]:
+        payees = [
+            (worker_id, state, state.balance)
+            for worker_id, state in self.workers.items()
+            if state.balance >= self.min_payout
+        ]
+        payees.sort(key=lambda item: (-item[2], item[0]))
+        if max_outputs and max_outputs > 0:
+            return payees[:max_outputs]
         return payees
 
     def _scale_payees(self, payees: list[tuple[str, WorkerState, int]], available: int) -> list[tuple[str, WorkerState, int]]:
@@ -262,7 +264,7 @@ class PayoutTracker:
             fee = new_fee
         return None
 
-    def create_payout_transaction(self, state_db: StateDB, max_outputs: int = 16) -> Transaction | None:
+    def create_payout_transaction(self, state_db: StateDB, max_outputs: int | None = None) -> Transaction | None:
         with self.lock:
             self.prune_stale_entries(state_db)
             payees = self._gather_payees(max_outputs)
@@ -309,7 +311,7 @@ class PayoutTracker:
         self._write_snapshot(snapshot)
         return tx
 
-    def preview_payout(self, state_db: StateDB, max_outputs: int = 16) -> dict[str, object] | None:
+    def preview_payout(self, state_db: StateDB, max_outputs: int | None = None) -> dict[str, object] | None:
         """Dry-run payout assembly without mutating balances or UTXOs."""
         with self.lock:
             self.prune_stale_entries(state_db)

@@ -886,12 +886,12 @@ class RPCHandlers(WalletRPCMixin):
             for entry in matured
         ]
 
-    def getpoolpayoutpreview(self, max_outputs: int = 16) -> Any:
+    def getpoolpayoutpreview(self, max_outputs: int = 0) -> Any:
         tracker = self._require_pool_tracker()
         max_outputs = int(max_outputs)
-        if max_outputs <= 0:
-            raise RPCError(-8, "max_outputs must be > 0")
-        preview = tracker.preview_payout(self.state_db, max_outputs=max_outputs)
+        if max_outputs < 0:
+            raise RPCError(-8, "max_outputs must be >= 0")
+        preview = tracker.preview_payout(self.state_db, max_outputs=max_outputs or None)
         if preview is None:
             return None
         return {
