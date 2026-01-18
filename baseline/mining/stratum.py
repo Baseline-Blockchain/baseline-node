@@ -39,6 +39,8 @@ MAX_VARDIFF_STEP = 2.0
 MIN_VARDIFF_STEP = 0.5
 MIN_DIFF_FLOOR = 0.01  # Absolute floor to avoid absurdly tiny share targets
 MAX_VARDIFF_SAMPLES = 4096  # Cap share samples per session to bound memory/CPU
+SNAPSHOT_TIMEOUT = 2.0
+JOB_SEND_TIMEOUT = 2.0
 
 
 @dataclass(slots=True)
@@ -209,6 +211,30 @@ class StratumServer:
     def next_session_id(self) -> int:
         self._session_seq += 1
         return self._session_seq
+
+    def _call_on_loop(self, fn, default):
+        loop = self._loop
+        if not loop:
+            try:
+                return fn()
+            except Exception:
+                return default
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            return fn()
+
+        async def _runner():
+            return fn()
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(_runner(), loop)
+            return future.result(timeout=SNAPSHOT_TIMEOUT)
+        except Exception:
+            self.log.debug("Failed to capture stratum snapshot", exc_info=True)
+            return default
 
     def difficulty_to_target(self, difficulty_value: float) -> int:
         difficulty_value = self._clamp_difficulty(difficulty_value)
@@ -420,6 +446,10 @@ class StratumServer:
 
     def estimate_pool_hashrate(self, window: float = 600.0) -> float:
         """Estimate hashrate over the last `window` seconds (H/s)."""
+        return self._call_on_loop(lambda: self._estimate_pool_hashrate(window), 0.0)
+
+    def _estimate_pool_hashrate(self, window: float = 600.0) -> float:
+        """Estimate hashrate over the last `window` seconds (H/s)."""
         now = int(time.time())
         cutoff = now - int(window)
         total_work = 0.0
@@ -448,6 +478,61 @@ class StratumServer:
     
         hashes = total_work * 2.0
         return hashes / duration
+
+    def snapshot_stats(self) -> dict[str, object]:
+        def _capture() -> dict[str, object]:
+            now = time.time()
+            last_tpl = self._last_template_time
+            return {
+                "sessions": len(self.sessions),
+                "host": self.config.stratum.host,
+                "port": self.config.stratum.port,
+                "min_difficulty": self.config.stratum.min_difficulty,
+                "last_template_time": last_tpl,
+                "last_template_age": max(0.0, now - last_tpl) if last_tpl else None,
+                "pool_hashrate": self._estimate_pool_hashrate(600.0),
+            }
+
+        default = {
+            "sessions": 0,
+            "host": self.config.stratum.host,
+            "port": self.config.stratum.port,
+            "min_difficulty": self.config.stratum.min_difficulty,
+            "last_template_time": None,
+            "last_template_age": None,
+            "pool_hashrate": 0.0,
+        }
+        return self._call_on_loop(_capture, default)
+
+    def snapshot_sessions(self) -> list[dict[str, object]]:
+        def _capture() -> list[dict[str, object]]:
+            now = time.time()
+            sessions = []
+            for session in list(self.sessions.values()):
+                rate = 0.0
+                if len(session.share_times) >= 2:
+                    elapsed = session.share_times[-1] - session.share_times[0]
+                    if elapsed > 0:
+                        rate = (len(session.share_times) - 1) / elapsed
+                sessions.append(
+                    {
+                        "session_id": session.session_id,
+                        "worker_id": session.worker_id,
+                        "address": session.worker_address,
+                        "difficulty": session.difficulty,
+                        "last_activity": session.last_activity,
+                        "idle_seconds": max(0.0, now - session.last_activity),
+                        "stale_shares": session.stale_shares,
+                        "invalid_shares": session.invalid_shares,
+                        "authorized": session.authorized,
+                        "subscribed": session.subscribed,
+                        "share_rate_per_min": rate * 60 if rate else 0.0,
+                        "remote": session.address,
+                    }
+                )
+            return sessions
+
+        return self._call_on_loop(_capture, [])
 
     async def _record_share_success(self, session: StratumSession) -> None:
         now = time.time()
@@ -519,19 +604,30 @@ class StratumServer:
         except asyncio.CancelledError:
             pass
 
+    async def _send_job_safe(self, session: StratumSession, job: TemplateJob, clean: bool) -> bool:
+        try:
+            await asyncio.wait_for(session.send_job(job, clean), timeout=JOB_SEND_TIMEOUT)
+            return True
+        except Exception:
+            return False
+
     async def _broadcast_job(self, job: TemplateJob, clean: bool) -> None:
-        to_remove: list[int] = []
-        for session_id, session in self.sessions.items():
+        session_ids: list[int] = []
+        tasks: list[asyncio.Task] = []
+        for session_id, session in list(self.sessions.items()):
             if session.closed or not session.authorized:
                 continue
-            try:
-                await session.send_job(job, clean)
-            except Exception:
-                to_remove.append(session_id)
-        for session_id in to_remove:
-            session = self.sessions.pop(session_id, None)
-            if session:
-                await session.close()
+            session_ids.append(session_id)
+            tasks.append(asyncio.create_task(self._send_job_safe(session, job, clean)))
+        if not tasks:
+            return
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for session_id, result in zip(session_ids, results):
+            ok = isinstance(result, bool) and result
+            if not ok:
+                session = self.sessions.pop(session_id, None)
+                if session:
+                    await session.close()
 
     def _trim_jobs(self) -> None:
         while len(self._jobs) > self.config.stratum.max_jobs:

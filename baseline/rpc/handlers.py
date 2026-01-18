@@ -485,23 +485,42 @@ class RPCHandlers(WalletRPCMixin):
         }
 
     def getnetworkinfo(self) -> dict[str, Any]:
-        peers = getattr(self.network, "peers", {}) or {}
-        connections = len(peers)
-        inbound = sum(1 for peer in peers.values() if not getattr(peer, "outbound", False))
-        outbound = connections - inbound
+        snapshot = None
+        if self.network and hasattr(self.network, "snapshot_network_state"):
+            try:
+                snapshot = self.network.snapshot_network_state()
+            except Exception as exc:
+                logging.getLogger("baseline.rpc").debug("network snapshot failed: %s", exc)
+
+        if snapshot:
+            connections = int(snapshot.get("connections", 0) or 0)
+            inbound = int(snapshot.get("inbound", 0) or 0)
+            outbound = int(snapshot.get("outbound", 0) or 0)
+            localaddresses = list(snapshot.get("localaddresses", []) or [])
+            networkactive = bool(snapshot.get("networkactive", False))
+        else:
+            peers = getattr(self.network, "peers", {}) or {}
+            connections = len(peers)
+            inbound = sum(1 for peer in peers.values() if not getattr(peer, "outbound", False))
+            outbound = connections - inbound
+            localaddresses = []
+            known = getattr(self.network, "known_addresses", {}) if self.network else {}
+            for addr in list(known.values())[:5]:
+                localaddresses.append({"address": addr.host, "port": addr.port, "score": 1})
+            networkactive = bool(self.network)
+            stop_event = getattr(self.network, "_stop_event", None)
+            if stop_event is not None and hasattr(stop_event, "is_set"):
+                try:
+                    networkactive = not stop_event.is_set()
+                except Exception as exc:
+                    logging.getLogger("baseline.rpc").debug("stop_event check failed: %s", exc)
+
         timeoffset = 0
         if self.time_manager and hasattr(self.time_manager, "get_offset"):
             try:
                 timeoffset = float(self.time_manager.get_offset())  # type: ignore[attr-defined]
             except Exception:
                 timeoffset = 0
-        networkactive = bool(self.network)
-        stop_event = getattr(self.network, "_stop_event", None)
-        if stop_event is not None and hasattr(stop_event, "is_set"):
-            try:
-                networkactive = not stop_event.is_set()
-            except Exception as exc:
-                logging.getLogger("baseline.rpc").debug("stop_event check failed: %s", exc)
 
         # Build networks array (simplified)
         networks = [
@@ -520,11 +539,6 @@ class RPCHandlers(WalletRPCMixin):
                 "proxy_randomize_credentials": False
             }
         ]
-        localaddresses: list[dict[str, Any]] = []
-        known = getattr(self.network, "known_addresses", {}) if self.network else {}
-        for addr in list(known.values())[:5]:
-            localaddresses.append({"address": addr.host, "port": addr.port, "score": 1})
-
         return {
             "version": 10000,  # Version number format similar to Bitcoin Core
             "subversion": "/Baseline:0.1.0/",
@@ -716,35 +730,58 @@ class RPCHandlers(WalletRPCMixin):
     def getpeerinfo(self) -> list[dict[str, Any]]:
         if not self.network:
             return []
-        peers = getattr(self.network, "peers", {}) or {}
+        if hasattr(self.network, "snapshot_peers"):
+            try:
+                peers = self.network.snapshot_peers()
+            except Exception as exc:
+                logging.getLogger("baseline.rpc").debug("peer snapshot failed: %s", exc)
+                peers = []
+        else:
+            peers = []
+            peers_dict = getattr(self.network, "peers", {}) or {}
+            for peer in peers_dict.values():
+                peers.append(
+                    {
+                        "peer_id": peer.peer_id,
+                        "address": peer.address,
+                        "outbound": peer.outbound,
+                        "last_send": peer.last_send,
+                        "last_message": peer.last_message,
+                        "bytes_sent": peer.bytes_sent,
+                        "bytes_received": peer.bytes_received,
+                        "latency": peer.latency,
+                        "remote_version": peer.remote_version or {},
+                    }
+                )
         best = self.state_db.get_best_tip()
         tip_height = best[1] if best else 0
         local_addr = f"{self.network.host}:{self.network.listen_port}"
         results: list[dict[str, Any]] = []
-        for peer in peers.values():
-            peer_id = peer.peer_id
+        for peer in peers:
+            address = peer.get("address") or ("", 0)
+            peer_id = peer.get("peer_id", "")
             try:
                 numeric_id = int(peer_id.lstrip("P"))
             except ValueError:
                 numeric_id = 0
-            remote = peer.remote_version or {}
+            remote = peer.get("remote_version") or {}
             info = {
                 "id": numeric_id,
-                "addr": f"{peer.address[0]}:{peer.address[1]}",
+                "addr": f"{address[0]}:{address[1]}",
                 "addrlocal": local_addr,
                 "services": remote.get("services", 0),
                 "relaytxes": True,
-                "lastsend": int(peer.last_send),
-                "lastrecv": int(peer.last_message),
-                "bytessent": peer.bytes_sent,
-                "bytesrecv": peer.bytes_received,
-                "conntime": remote.get("timestamp", int(peer.last_message)),
+                "lastsend": int(peer.get("last_send", 0) or 0),
+                "lastrecv": int(peer.get("last_message", 0) or 0),
+                "bytessent": peer.get("bytes_sent", 0) or 0,
+                "bytesrecv": peer.get("bytes_received", 0) or 0,
+                "conntime": remote.get("timestamp", int(peer.get("last_message", 0) or 0)),
                 "timeoffset": 0,
-                "pingtime": peer.latency or 0,
-                "minping": peer.latency or 0,
+                "pingtime": peer.get("latency", 0) or 0,
+                "minping": peer.get("latency", 0) or 0,
                 "version": remote.get("version", 0),
                 "subver": remote.get("agent", ""),
-                "inbound": not peer.outbound,
+                "inbound": not peer.get("outbound", False),
                 "startingheight": remote.get("height", 0),
                 "synced_blocks": tip_height,
                 "synced_headers": tip_height,
@@ -780,7 +817,6 @@ class RPCHandlers(WalletRPCMixin):
 
     def getpoolstats(self) -> dict[str, Any]:
         tracker = self._require_pool_tracker()
-        now = time.time()
         with tracker.lock:
             pending = len(tracker.pending_blocks)
             matured = len(tracker.matured_utxos)
@@ -792,18 +828,10 @@ class RPCHandlers(WalletRPCMixin):
             maturity = tracker.maturity
         stratum_info: dict[str, Any] = {"enabled": bool(self.stratum)}
         if self.stratum:
-            last_tpl = self.stratum._last_template_time
-            stratum_info.update(
-                {
-                    "sessions": len(self.stratum.sessions),
-                    "host": self.stratum.config.stratum.host,
-                    "port": self.stratum.config.stratum.port,
-                    "min_difficulty": self.stratum.config.stratum.min_difficulty,
-                    "last_template_time": last_tpl,
-                    "last_template_age": max(0.0, now - last_tpl) if last_tpl else None,
-                    "pool_hashrate": self.stratum.estimate_pool_hashrate(600.0),
-                }
-            )
+            try:
+                stratum_info.update(self.stratum.snapshot_stats())
+            except Exception as exc:
+                logging.getLogger("baseline.rpc").debug("stratum snapshot failed: %s", exc)
         return {
             "enabled": True,
             "pool_fee_percent": pool_fee_percent,
@@ -928,30 +956,7 @@ class RPCHandlers(WalletRPCMixin):
     def getstratumsessions(self) -> dict[str, Any]:
         self._require_pool_tracker(require_stratum=True)
         assert self.stratum
-        now = time.time()
-        sessions = []
-        for session in list(self.stratum.sessions.values()):
-            rate = 0.0
-            if len(session.share_times) >= 2:
-                elapsed = session.share_times[-1] - session.share_times[0]
-                if elapsed > 0:
-                    rate = (len(session.share_times) - 1) / elapsed
-            sessions.append(
-                {
-                    "session_id": session.session_id,
-                    "worker_id": session.worker_id,
-                    "address": session.worker_address,
-                    "difficulty": session.difficulty,
-                    "last_activity": session.last_activity,
-                    "idle_seconds": max(0.0, now - session.last_activity),
-                    "stale_shares": session.stale_shares,
-                    "invalid_shares": session.invalid_shares,
-                    "authorized": session.authorized,
-                    "subscribed": session.subscribed,
-                    "share_rate_per_min": rate * 60 if rate else 0.0,
-                    "remote": session.address,
-                }
-            )
+        sessions = self.stratum.snapshot_sessions()
         return {"count": len(sessions), "sessions": sessions}
 
     def poolreconcile(self, apply: bool = False) -> dict[str, Any]:

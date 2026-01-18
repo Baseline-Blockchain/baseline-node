@@ -1,6 +1,5 @@
 import base64
 import os
-import time
 from typing import Any
 
 from ..core.tx import COIN
@@ -54,7 +53,6 @@ class DashboardRenderer:
         # Extract data from snapshot
         pending = snapshot["pending_blocks"]
         matured = snapshot["matured_utxos"]
-        payout_history = snapshot["payout_history"]
 
         # Build entries from workers snapshot
         entries = []
@@ -73,11 +71,10 @@ class DashboardRenderer:
             "stratum": {},
         }
         if handlers.stratum:
-            stats["stratum"] = {
-                "host": handlers.stratum.config.stratum.host,
-                "port": handlers.stratum.config.stratum.port,
-                "pool_hashrate": handlers.stratum.estimate_pool_hashrate(600.0),
-            }
+            try:
+                stats["stratum"] = handlers.stratum.snapshot_stats()
+            except Exception:
+                stats["stratum"] = {}
 
         
         # Calculate stats
@@ -93,11 +90,14 @@ class DashboardRenderer:
         active_miners = 0
         active_worker_ids = set()
         if getattr(handlers, "stratum", None):
-             sessions = handlers.stratum.sessions
+             try:
+                 sessions = handlers.stratum.snapshot_sessions()
+             except Exception:
+                 sessions = []
              active_miners = len(sessions)
-             for session in sessions.values():
-                 if session.authorized and session.worker_id:
-                     active_worker_ids.add(session.worker_id)
+             for session in sessions:
+                 if session.get("authorized") and session.get("worker_id"):
+                     active_worker_ids.add(session["worker_id"])
         
         # Connection Info
         stratum = stats.get("stratum", {})
@@ -130,18 +130,6 @@ class DashboardRenderer:
                  sync_state = "Synced"
              else:
                  sync_state = f"Syncing ({network.sync_remote_height})"
-
-        # Last Payout (using snapshot data to avoid additional lock acquisition)
-        total_paid = 0.0 
-        last_payout_time = "Never"
-        if payout_history:
-            last = payout_history[-1]
-            ts = float(last.get("time", 0.0) or 0.0)
-            if ts:
-                last_payout_time = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(ts))
-            
-            total_paid = sum(p.get('total_paid', 0) for p in payout_history) / COIN
-
 
         pending_rows = ""
         if not pending:
@@ -204,8 +192,6 @@ class DashboardRenderer:
         html = html.replace("{{ pool_hashrate }}", pool_hash_fmt)
         html = html.replace("{{ active_miners }}", str(active_miners))
         html = html.replace("{{ balance_total }}", f"{owed_total:.4f}")
-        html = html.replace("{{ total_paid }}", f"{total_paid:.4f}") 
-        html = html.replace("{{ last_payout_time }}", last_payout_time)
         html = html.replace("{{ block_height }}", str(best_height))
         html = html.replace("{{ stratum_url }}", stratum_url)
         html = html.replace("{{ stratum_host }}", connect_host)

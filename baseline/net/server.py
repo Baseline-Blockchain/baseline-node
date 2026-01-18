@@ -41,6 +41,7 @@ from .security import P2PSecurity
 from .sync import SyncManager
 
 MAINNET_NETWORK_ID = "baseline-mainnet-2025-12-28-r1"
+SNAPSHOT_TIMEOUT = 2.0
 
 
 class P2PServer:
@@ -381,6 +382,81 @@ class P2PServer:
             asyncio.create_task(coro)
         else:
             asyncio.run_coroutine_threadsafe(coro, self.loop)
+
+    def _call_on_loop(self, fn: Callable[[], Any], default: Any) -> Any:
+        loop = self.loop
+        if not loop:
+            try:
+                return fn()
+            except Exception:
+                return default
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            return fn()
+
+        async def _runner() -> Any:
+            return fn()
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(_runner(), loop)
+            return future.result(timeout=SNAPSHOT_TIMEOUT)
+        except Exception:
+            self.log.debug("Failed to capture P2P snapshot", exc_info=True)
+            return default
+
+    def snapshot_peers(self) -> list[dict[str, Any]]:
+        def _capture() -> list[dict[str, Any]]:
+            peers: list[dict[str, Any]] = []
+            for peer in self.peers.values():
+                peers.append(
+                    {
+                        "peer_id": peer.peer_id,
+                        "address": peer.address,
+                        "outbound": peer.outbound,
+                        "last_send": peer.last_send,
+                        "last_message": peer.last_message,
+                        "bytes_sent": peer.bytes_sent,
+                        "bytes_received": peer.bytes_received,
+                        "latency": peer.latency,
+                        "remote_version": peer.remote_version or {},
+                    }
+                )
+            return peers
+
+        return self._call_on_loop(_capture, [])
+
+    def snapshot_network_state(self) -> dict[str, Any]:
+        def _capture() -> dict[str, Any]:
+            connections = len(self.peers)
+            inbound = sum(1 for peer in self.peers.values() if not peer.outbound)
+            outbound = connections - inbound
+            localaddresses = [
+                {"address": addr.host, "port": addr.port, "score": 1}
+                for addr in list(self.known_addresses.values())[:5]
+            ]
+            return {
+                "connections": connections,
+                "inbound": inbound,
+                "outbound": outbound,
+                "localaddresses": localaddresses,
+                "networkactive": not self._stop_event.is_set(),
+                "listen_host": self.host,
+                "listen_port": self.listen_port,
+            }
+
+        default = {
+            "connections": 0,
+            "inbound": 0,
+            "outbound": 0,
+            "localaddresses": [],
+            "networkactive": False,
+            "listen_host": self.host,
+            "listen_port": self.listen_port,
+        }
+        return self._call_on_loop(_capture, default)
 
     def request_block(self, block_hash: str) -> bool:
         """
