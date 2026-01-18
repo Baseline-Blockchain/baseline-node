@@ -194,6 +194,46 @@ class StateDB:
                 );
                 CREATE INDEX IF NOT EXISTS address_utxos_address_idx
                     ON address_utxos(address);
+
+                CREATE TABLE IF NOT EXISTS address_balances (
+                    address TEXT PRIMARY KEY,
+                    balance INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS address_balances_balance_idx
+                    ON address_balances(balance DESC);
+
+                CREATE TRIGGER IF NOT EXISTS address_utxos_ai
+                AFTER INSERT ON address_utxos
+                BEGIN
+                    INSERT INTO address_balances(address, balance)
+                    VALUES (NEW.address, NEW.amount)
+                    ON CONFLICT(address) DO UPDATE SET
+                        balance = balance + NEW.amount;
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS address_utxos_ad
+                AFTER DELETE ON address_utxos
+                BEGIN
+                    UPDATE address_balances
+                    SET balance = balance - OLD.amount
+                    WHERE address = OLD.address;
+                    DELETE FROM address_balances
+                    WHERE address = OLD.address AND balance <= 0;
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS address_utxos_au
+                AFTER UPDATE OF amount, address ON address_utxos
+                BEGIN
+                    UPDATE address_balances
+                    SET balance = balance - OLD.amount
+                    WHERE address = OLD.address;
+                    INSERT INTO address_balances(address, balance)
+                    VALUES (NEW.address, NEW.amount)
+                    ON CONFLICT(address) DO UPDATE SET
+                        balance = balance + NEW.amount;
+                    DELETE FROM address_balances
+                    WHERE address = OLD.address AND balance <= 0;
+                END;
                 CREATE TABLE IF NOT EXISTS tx_index (
                     txid TEXT PRIMARY KEY,
                     block_hash TEXT NOT NULL,
@@ -801,7 +841,35 @@ class StateDB:
                 header = self.get_header(best_hash)
                 if header is None:
                     raise StateDBError("Best tip header missing from headers table")
+            self._ensure_address_balances()
             self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+
+    def _ensure_address_balances(self) -> None:
+        row = self._conn.execute(
+            "SELECT value FROM meta WHERE key='address_balances_ready'"
+        ).fetchone()
+        if row and row["value"] == "1":
+            return
+        has_balance = self._conn.execute(
+            "SELECT 1 FROM address_balances LIMIT 1"
+        ).fetchone()
+        if not has_balance:
+            has_utxos = self._conn.execute(
+                "SELECT 1 FROM address_utxos LIMIT 1"
+            ).fetchone()
+            if has_utxos:
+                self._conn.execute(
+                    """
+                    INSERT INTO address_balances(address, balance)
+                    SELECT address, COALESCE(SUM(amount), 0) AS balance
+                    FROM address_utxos
+                    GROUP BY address
+                    """
+                )
+        self._conn.execute(
+            "INSERT INTO meta(key, value) VALUES('address_balances_ready', '1') "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+        )
 
     def vacuum(self) -> None:
         self._ensure_open()
@@ -880,36 +948,58 @@ class StateDB:
         self._ensure_open()
         if not addresses:
             return 0, 0, 0, 0
-        placeholders = ",".join("?" for _ in addresses)
-        params = tuple(addresses)
+        addr_list = list(addresses)
+        placeholders = ",".join("?" for _ in addr_list)
         conn = self._reader_conn()
-        rows = conn.execute(
-            f"""
-            SELECT au.amount AS amount, au.height AS height, COALESCE(u.coinbase, 0) AS coinbase
-            FROM address_utxos au
-            LEFT JOIN utxos u ON au.txid = u.txid AND au.vout = u.vout
-            WHERE au.address IN ({placeholders})
-            """,
-            params,
-        ).fetchall()
-        received = conn.execute(
-            f"SELECT COALESCE(SUM(amount), 0) as total FROM address_history WHERE address IN ({placeholders})",
-            params,
-        ).fetchone()["total"]
-        balance = sum(int(row["amount"]) for row in rows)
-        matured = balance
+        balance = 0
+        matured = 0
         immature = 0
         if tip_height is not None and maturity is not None:
-            matured = 0
+            threshold = int(tip_height) - int(maturity)
+            row = conn.execute(
+                f"""
+                SELECT
+                    COALESCE(SUM(au.amount), 0) AS balance,
+                    COALESCE(
+                        SUM(
+                            CASE
+                                WHEN COALESCE(u.coinbase, 0) = 1 AND au.height > ? THEN 0
+                                ELSE au.amount
+                            END
+                        ),
+                        0
+                    ) AS matured,
+                    COALESCE(
+                        SUM(
+                            CASE
+                                WHEN COALESCE(u.coinbase, 0) = 1 AND au.height > ? THEN au.amount
+                                ELSE 0
+                            END
+                        ),
+                        0
+                    ) AS immature
+                FROM address_utxos au
+                LEFT JOIN utxos u ON au.txid = u.txid AND au.vout = u.vout
+                WHERE au.address IN ({placeholders})
+                """,
+                (threshold, threshold, *addr_list),
+            ).fetchone()
+            balance = int(row["balance"] or 0)
+            matured = int(row["matured"] or 0)
+            immature = int(row["immature"] or 0)
+        else:
+            row = conn.execute(
+                f"SELECT COALESCE(SUM(amount), 0) AS balance FROM address_utxos WHERE address IN ({placeholders})",
+                tuple(addr_list),
+            ).fetchone()
+            balance = int(row["balance"] or 0)
+            matured = balance
             immature = 0
-            for row in rows:
-                amount = int(row["amount"])
-                is_coinbase = bool(row["coinbase"])
-                height = int(row["height"])
-                if is_coinbase and tip_height - height < maturity:
-                    immature += amount
-                else:
-                    matured += amount
+        received_row = conn.execute(
+            f"SELECT COALESCE(SUM(amount), 0) as total FROM address_history WHERE address IN ({placeholders})",
+            tuple(addr_list),
+        ).fetchone()
+        received = int(received_row["total"] or 0)
         return int(balance or 0), int(received or 0), int(matured or 0), int(immature or 0)
 
     def get_address_txids(
@@ -956,7 +1046,7 @@ class StateDB:
     def get_rich_list(self, limit: int = 25, offset: int = 0) -> list[dict[str, Any]]:
         """Return the richest addresses by current UTXO balance.
 
-        This derives balances from the address UTXO index (address_utxos).
+        This derives balances from the address_balances aggregate table.
         """
         self._ensure_open()
         limit = max(1, int(limit))
@@ -964,10 +1054,9 @@ class StateDB:
         conn = self._reader_conn()
         rows = conn.execute(
             """
-            SELECT address, COALESCE(SUM(amount), 0) AS balance_liners
-            FROM address_utxos
-            GROUP BY address
-            ORDER BY balance_liners DESC
+            SELECT address, balance AS balance_liners
+            FROM address_balances
+            ORDER BY balance DESC
             LIMIT ? OFFSET ?
             """,
             (limit, offset),
