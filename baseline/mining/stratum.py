@@ -139,15 +139,17 @@ class StratumSession:
         
         if self.user_agent and self.user_agent.startswith("baseline-miner"):
              prev_hash_hex = job.template.prev_hash
+             merkle_branches = [branch[::-1].hex() for branch in job.template.merkle_branches]
         else:
              prev_hash_hex = bytes.fromhex(job.template.prev_hash)[::-1].hex()
+             merkle_branches = [branch.hex() for branch in job.template.merkle_branches]
 
         params = [
             job.job_id,
             prev_hash_hex,
             job.template.coinb1.hex(),
             job.template.coinb2.hex(),
-            [branch[::-1].hex() for branch in job.template.merkle_branches],
+            merkle_branches,
             f"{job.template.version:08x}",
             f"{job.template.bits:08x}",
             f"{job.template.timestamp:08x}",
