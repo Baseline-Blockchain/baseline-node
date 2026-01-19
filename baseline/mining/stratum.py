@@ -75,6 +75,7 @@ class StratumSession:
         self.share_times: deque[float] = deque(maxlen=MAX_VARDIFF_SAMPLES)
         # Allow an immediate first vardiff adjustment once enough shares are observed.
         self.last_diff_update = 0.0
+        self.user_agent: str | None = None
 
     async def run(self) -> None:
         try:
@@ -135,9 +136,15 @@ class StratumSession:
     async def send_job(self, job: TemplateJob, clean: bool) -> None:
         if not self.authorized:
             return
+        
+        if self.user_agent and self.user_agent.startswith("baseline-miner"):
+             prev_hash_hex = job.template.prev_hash
+        else:
+             prev_hash_hex = bytes.fromhex(job.template.prev_hash)[::-1].hex()
+
         params = [
             job.job_id,
-            job.template.prev_hash,
+            prev_hash_hex,
             job.template.coinb1.hex(),
             job.template.coinb2.hex(),
             [branch[::-1].hex() for branch in job.template.merkle_branches],
@@ -339,10 +346,9 @@ class StratumServer:
             await session.send_error(msg_id, 24, "already subscribed")
             return
         user_agent = str(params[0]) if params else ""
-        if user_agent != REQUIRED_USER_AGENT:
-            await session.send_error(msg_id, 20, "unsupported user agent")
-            await session.close()
-            return
+        # We allow any user agent now, but we use it to determine behavior
+        session.user_agent = user_agent
+        
         result = [
             [["mining.set_difficulty", str(session.session_id)], ["mining.notify", str(session.session_id)]],
             session.extranonce1.hex(),
