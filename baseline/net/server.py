@@ -1106,7 +1106,8 @@ class P2PServer:
                     self._on_block_connected(height)
 
                 exclude = {source_peer.peer_id} if source_peer else None
-                await self.broadcast_inv("block", orphan_hash, exclude=exclude)
+                if not self.sync.sync_active:
+                    await self.broadcast_inv("block", orphan_hash, exclude=exclude)
 
     async def handle_addr(self, _peer: Peer, _message: dict[str, Any]) -> None:
         return
