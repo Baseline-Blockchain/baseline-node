@@ -137,12 +137,8 @@ class StratumSession:
         if not self.authorized:
             return
         
-        if self.user_agent and self.user_agent.startswith("baseline-miner"):
-             prev_hash_hex = job.template.prev_hash
-             merkle_branches = [branch[::-1].hex() for branch in job.template.merkle_branches]
-        else:
-             prev_hash_hex = bytes.fromhex(job.template.prev_hash)[::-1].hex()
-             merkle_branches = [branch.hex() for branch in job.template.merkle_branches]
+        prev_hash_hex = job.template.prev_hash
+        merkle_branches = [branch[::-1].hex() for branch in job.template.merkle_branches]
 
         params = [
             job.job_id,
