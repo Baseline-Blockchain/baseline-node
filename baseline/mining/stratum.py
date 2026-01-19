@@ -207,6 +207,18 @@ class StratumServer:
         self._last_template_time = 0.0
         self.global_shares: dict[int, float] = {}
         self.mempool.register_listener(self._on_mempool_tx)
+        
+        # Dashboard Cache
+        self._stats_cache: dict[str, object] = {
+            "sessions": 0,
+            "host": config.stratum.host,
+            "port": config.stratum.port,
+            "min_difficulty": config.stratum.min_difficulty,
+            "last_template_time": None,
+            "last_template_age": None,
+            "pool_hashrate": 0.0,
+        }
+        self._sessions_cache: list[dict[str, object]] = []
 
     def next_session_id(self) -> int:
         self._session_seq += 1
@@ -268,6 +280,7 @@ class StratumServer:
             asyncio.create_task(self._tip_monitor_loop(), name="stratum-tip"),
             asyncio.create_task(self._session_gc_loop(), name="stratum-gc"),
             asyncio.create_task(self._payout_flush_loop(), name="stratum-flush"),
+            asyncio.create_task(self._stats_updater(), name="stratum-stats"),
         ]
         self._need_clean = True
         self._template_event.set()
@@ -281,14 +294,22 @@ class StratumServer:
         with contextlib.suppress(Exception):
             await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
-        # Final flush on shutdown
-        await asyncio.to_thread(self.payouts.flush)
+        
+        # 1. Stop accepting new connections
         self.server.close()
         await self.server.wait_closed()
         self.server = None
-        for session in list(self.sessions.values()):
-            await session.close()
+
+        # 2. Close active sessions in parallel
+        # We copy values() to a list because closing them might trigger 
+        # the session execution loop to remove them from the dict.
+        if self.sessions:
+            close_tasks = [asyncio.create_task(s.close()) for s in list(self.sessions.values())]
+            await asyncio.gather(*close_tasks, return_exceptions=True)
         self.sessions.clear()
+
+        # 3. Final flush on shutdown (after all shares are processed)
+        await asyncio.to_thread(self.payouts.flush)
 
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         session = StratumSession(self, reader, writer)
@@ -479,60 +500,60 @@ class StratumServer:
         hashes = total_work * 2.0
         return hashes / duration
 
-    def snapshot_stats(self) -> dict[str, object]:
-        def _capture() -> dict[str, object]:
-            now = time.time()
-            last_tpl = self._last_template_time
-            return {
-                "sessions": len(self.sessions),
-                "host": self.config.stratum.host,
-                "port": self.config.stratum.port,
-                "min_difficulty": self.config.stratum.min_difficulty,
-                "last_template_time": last_tpl,
-                "last_template_age": max(0.0, now - last_tpl) if last_tpl else None,
-                "pool_hashrate": self._estimate_pool_hashrate(600.0),
-            }
+    async def _stats_updater(self) -> None:
+        """Periodically update dashboard stats in background to avoid blocking renders."""
+        try:
+            while not self._stop_event.is_set():
+                await asyncio.sleep(1.0)
+                
+                # Update Stats
+                now = time.time()
+                last_tpl = self._last_template_time
+                self._stats_cache = {
+                    "sessions": len(self.sessions),
+                    "host": self.config.stratum.host,
+                    "port": self.config.stratum.port,
+                    "min_difficulty": self.config.stratum.min_difficulty,
+                    "last_template_time": last_tpl,
+                    "last_template_age": max(0.0, now - last_tpl) if last_tpl else None,
+                    "pool_hashrate": self._estimate_pool_hashrate(600.0),
+                }
 
-        default = {
-            "sessions": 0,
-            "host": self.config.stratum.host,
-            "port": self.config.stratum.port,
-            "min_difficulty": self.config.stratum.min_difficulty,
-            "last_template_time": None,
-            "last_template_age": None,
-            "pool_hashrate": 0.0,
-        }
-        return self._call_on_loop(_capture, default)
+                # Update Sessions
+                sessions_list = []
+                for session in list(self.sessions.values()):
+                    rate = 0.0
+                    if len(session.share_times) >= 2:
+                        elapsed = session.share_times[-1] - session.share_times[0]
+                        if elapsed > 0:
+                            rate = (len(session.share_times) - 1) / elapsed
+                    sessions_list.append(
+                        {
+                            "session_id": session.session_id,
+                            "worker_id": session.worker_id,
+                            "address": session.worker_address,
+                            "difficulty": session.difficulty,
+                            "last_activity": session.last_activity,
+                            "idle_seconds": max(0.0, now - session.last_activity),
+                            "stale_shares": session.stale_shares,
+                            "invalid_shares": session.invalid_shares,
+                            "authorized": session.authorized,
+                            "subscribed": session.subscribed,
+                            "share_rate_per_min": rate * 60 if rate else 0.0,
+                            "remote": session.address,
+                        }
+                    )
+                self._sessions_cache = sessions_list
+        except asyncio.CancelledError:
+            pass
+
+    def snapshot_stats(self) -> dict[str, object]:
+        return self._stats_cache
 
     def snapshot_sessions(self) -> list[dict[str, object]]:
-        def _capture() -> list[dict[str, object]]:
-            now = time.time()
-            sessions = []
-            for session in list(self.sessions.values()):
-                rate = 0.0
-                if len(session.share_times) >= 2:
-                    elapsed = session.share_times[-1] - session.share_times[0]
-                    if elapsed > 0:
-                        rate = (len(session.share_times) - 1) / elapsed
-                sessions.append(
-                    {
-                        "session_id": session.session_id,
-                        "worker_id": session.worker_id,
-                        "address": session.worker_address,
-                        "difficulty": session.difficulty,
-                        "last_activity": session.last_activity,
-                        "idle_seconds": max(0.0, now - session.last_activity),
-                        "stale_shares": session.stale_shares,
-                        "invalid_shares": session.invalid_shares,
-                        "authorized": session.authorized,
-                        "subscribed": session.subscribed,
-                        "share_rate_per_min": rate * 60 if rate else 0.0,
-                        "remote": session.address,
-                    }
-                )
-            return sessions
+        return self._sessions_cache
 
-        return self._call_on_loop(_capture, [])
+
 
     async def _record_share_success(self, session: StratumSession) -> None:
         now = time.time()
