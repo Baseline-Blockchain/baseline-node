@@ -1058,7 +1058,8 @@ class P2PServer:
                 self._schedule(self._refresh_best_tip_cache())
 
             if block_hash:
-                await self.broadcast_inv("block", block_hash, exclude={peer.peer_id})
+                if not self.sync.sync_active:
+                    await self.broadcast_inv("block", block_hash, exclude={peer.peer_id})
                 await self._process_orphans(block_hash, peer)
 
         if self.sync.sync_active and peer is self.sync.sync_peer:
