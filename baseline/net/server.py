@@ -1447,6 +1447,9 @@ class P2PServer:
         if self._stop_event.is_set():
             return
 
+        if obj_type == "block" and self.sync.sync_active:
+            return
+
         payload = protocol.inv_payload([{"type": obj_type, "hash": obj_hash}])
 
         for peer in list(self.peers.values()):
