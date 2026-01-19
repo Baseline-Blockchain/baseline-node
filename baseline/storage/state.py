@@ -206,6 +206,7 @@ class StateDB:
                     amount INTEGER NOT NULL,
                     height INTEGER NOT NULL,
                     script_pubkey BLOB NOT NULL,
+                    coinbase INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY(txid, vout)
                 );
                 CREATE INDEX IF NOT EXISTS address_utxos_address_idx
@@ -270,6 +271,26 @@ class StateDB:
                 CREATE INDEX IF NOT EXISTS block_metrics_height_idx ON block_metrics(height);
                 """
             )
+            # Migration: Add coinbase column to address_utxos if it doesn't exist
+            try:
+                self._conn.execute("ALTER TABLE address_utxos ADD COLUMN coinbase INTEGER NOT NULL DEFAULT 0")
+                # If we successfully added the column, we must backfill existing data to avoid treating coinbase as regular (mature)
+                self._conn.execute(
+                    """
+                    UPDATE address_utxos
+                    SET coinbase = 1
+                    WHERE EXISTS (
+                        SELECT 1 FROM utxos
+                        WHERE utxos.txid = address_utxos.txid
+                          AND utxos.vout = address_utxos.vout
+                          AND utxos.coinbase = 1
+                    )
+                    """
+                )
+            except sqlite3.OperationalError as e:
+                # This error typically means the column already exists
+                if "duplicate column name: coinbase" not in str(e):
+                    raise
 
     def _ensure_open(self) -> None:
         if self._closed:
@@ -1039,7 +1060,7 @@ class StateDB:
             return []
         placeholders = ",".join("?" for _ in addresses)
         query = (
-            "SELECT address, txid, vout, amount, height, script_pubkey "
+            "SELECT address, txid, vout, amount, height, script_pubkey, coinbase "
             f"FROM address_utxos WHERE address IN ({placeholders}) ORDER BY height DESC, txid DESC, vout DESC"
         )
         params: list[Any] = list(addresses)
@@ -1056,6 +1077,7 @@ class StateDB:
                 "amount": row["amount"],
                 "height": row["height"],
                 "script_pubkey": row["script_pubkey"],
+                "coinbase": bool(row["coinbase"]),
             }
             for row in rows
         ]
@@ -1081,12 +1103,12 @@ class StateDB:
             row = conn.execute(
                 f"""
                 SELECT
-                    COALESCE(SUM(au.amount), 0) AS balance,
+                    COALESCE(SUM(amount), 0) AS balance,
                     COALESCE(
                         SUM(
                             CASE
-                                WHEN COALESCE(u.coinbase, 0) = 1 AND au.height > ? THEN 0
-                                ELSE au.amount
+                                WHEN coinbase = 1 AND height > ? THEN 0
+                                ELSE amount
                             END
                         ),
                         0
@@ -1094,15 +1116,14 @@ class StateDB:
                     COALESCE(
                         SUM(
                             CASE
-                                WHEN COALESCE(u.coinbase, 0) = 1 AND au.height > ? THEN au.amount
+                                WHEN coinbase = 1 AND height > ? THEN amount
                                 ELSE 0
                             END
                         ),
                         0
                     ) AS immature
-                FROM address_utxos au
-                LEFT JOIN utxos u ON au.txid = u.txid AND au.vout = u.vout
-                WHERE au.address IN ({placeholders})
+                FROM address_utxos
+                WHERE address IN ({placeholders})
                 """,
                 (threshold, threshold, *addr_list),
             ).fetchone()
@@ -1524,13 +1545,14 @@ class StateDB:
             return
         conn.execute(
             """
-            INSERT INTO address_utxos(address, txid, vout, amount, height, script_pubkey)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO address_utxos(address, txid, vout, amount, height, script_pubkey, coinbase)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(txid, vout) DO UPDATE SET
                 address=excluded.address,
                 amount=excluded.amount,
                 height=excluded.height,
-                script_pubkey=excluded.script_pubkey
+                script_pubkey=excluded.script_pubkey,
+                coinbase=excluded.coinbase
             """,
             (
                 address,
@@ -1539,6 +1561,7 @@ class StateDB:
                 record.amount,
                 record.height,
                 record.script_pubkey,
+                1 if record.coinbase else 0,
             ),
         )
 
