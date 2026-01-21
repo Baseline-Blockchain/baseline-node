@@ -139,7 +139,7 @@ class DashboardRenderer:
         else:
             sorted_payments = sorted(
                 payout_history, key=lambda entry: float(entry.get("time") or 0.0), reverse=True
-            )
+            )[:5]
             for entry in sorted_payments:
                 txid = entry.get("txid", "")
                 short_tx = f"{txid[:8]}...{txid[-8:]}" if txid else "unknown"
@@ -152,9 +152,14 @@ class DashboardRenderer:
                 else:
                     time_label = "unknown"
 
+                tx_link = (
+                    f"<a class='hash' href='https://explorer.baseline.cash/tx/{txid}' target='_blank'>{short_tx}</a>"
+                    if txid
+                    else short_tx
+                )
                 payout_rows += (
                     f"<tr>"
-                    f"<td><span class='hash'>{short_tx}</span></td>"
+                    f"<td>{tx_link}</td>"
                     f"<td>{total_paid:.4f}</td>"
                     f"<td>{payees_count}</td>"
                     f"<td>{time_label}</td>"
@@ -191,10 +196,18 @@ class DashboardRenderer:
                 name = w.get('worker_id', 'unknown')
                 address = w.get('address', 'unknown')
                 short_addr = f"{address[:8]}...{address[-8:]}" if len(address) > 16 else address
+                address_link = (
+                    f"<a class='hash' href='https://explorer.baseline.cash/address/{address}' target='_blank'>{short_addr}</a>"
+                    if address
+                    else short_addr
+                )
                 mature = w.get('balance_liners', 0) / COIN
                 immature = worker_immature.get(name, 0) / COIN
-                
-                workers_rows += f"<tr><td>{name}</td><td><span class='hash'>{short_addr}</span></td><td>{immature:.8f}</td><td>{mature:.8f}</td></tr>"
+
+                workers_rows += (
+                    f"<tr><td>{name}</td><td>{address_link}</td>"
+                    f"<td>{immature:.8f}</td><td>{mature:.8f}</td></tr>"
+                )
 
         # --- Replacement ---
         html = self._base_html_cache

@@ -72,21 +72,25 @@
                 <span>Workers ({{ active_miners }})</span>
                 <span class="summary-arrow" aria-hidden="true"></span>
             </summary>
+            <p class="muted" style="padding: 0 1.5rem 1rem;">
+                "Pending Balance" includes shares that are still maturing (20 blocks), while "Available Balance" is paid out after reaching the minimum payout threshold.
+            </p>
             <div class="table-scroll">
                 <table>
                     <thead>
-                        <tr>
-                            <th>Worker Name</th>
-                            <th>Address</th>
-                            <th>Immature Balance</th>
-                            <th>Mature Balance</th>
-                        </tr>
+                    <tr>
+                        <th>Worker Name</th>
+                        <th>Address</th>
+                        <th>Pending Balance</th>
+                        <th>Available Balance</th>
+                    </tr>
                     </thead>
                     <tbody>
                         {{ workers_rows }}
                     </tbody>
                 </table>
             </div>
+            
         </details>
 
         <h2 class="section-title">Recent Payouts</h2>
@@ -97,7 +101,7 @@
                         <th>Transaction</th>
                         <th>Total Paid (BLINE)</th>
                         <th>Payees</th>
-                        <th>Time</th>
+                        <th>Time (UTC)</th>
                     </tr>
                 </thead>
                 <tbody>
