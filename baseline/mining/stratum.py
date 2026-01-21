@@ -114,6 +114,14 @@ class StratumSession:
             else:
                 self.server.log.exception("Stratum session close failed")
 
+    def abort_transport(self) -> None:
+        transport = getattr(self.writer, "transport", None)
+        if not transport:
+            return
+        if transport.is_closing():
+            return
+        transport.abort()
+
     async def send_response(self, msg_id: int | str | None, result: object) -> None:
         payload = {"id": msg_id, "result": result, "error": None}
         await self._send(payload)
@@ -308,13 +316,31 @@ class StratumServer:
         # 2. Close active sessions in parallel
         # We copy values() to a list because closing them might trigger 
         # the session execution loop to remove them from the dict.
-        if self.sessions:
-            close_tasks = [asyncio.create_task(s.close()) for s in list(self.sessions.values())]
-            await asyncio.gather(*close_tasks, return_exceptions=True)
-        self.sessions.clear()
+        await self._shutdown_sessions()
 
         # 3. Final flush on shutdown (after all shares are processed)
         await asyncio.to_thread(self.payouts.flush)
+
+    async def _shutdown_sessions(self) -> None:
+        if not self.sessions:
+            return
+        tasks = [
+            asyncio.create_task(self._close_session_with_timeout(session))
+            for session in list(self.sessions.values())
+        ]
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self.sessions.clear()
+
+    async def _close_session_with_timeout(self, session: StratumSession) -> None:
+        try:
+            await asyncio.wait_for(session.close(), timeout=3.0)
+        except asyncio.TimeoutError:
+            self.log.warning(
+                "Stratum session %s close timed out, aborting transport", session.session_id
+            )
+            session.abort_transport()
+        except Exception:
+            self.log.debug("Failed to close stratum session %s cleanly", session.session_id, exc_info=True)
 
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         session = StratumSession(self, reader, writer)
