@@ -267,25 +267,44 @@ class P2PServer:
         for task in self._tasks:
             task.cancel()
 
-        # 3) Cancel peer tasks (peer.run)
+        # 3) Close all peers in parallel with a timeout-aware helper.
+        await self._shutdown_peers()
+
+        # 4) Cancel peer tasks (peer.run)
         for task in list(self.peer_tasks):
             task.cancel()
 
-        # 4) Close all peers (idempotent)
-        close_peers = [peer.close() for peer in list(self.peers.values())]
-
-        # 5) Await everything, but don't deadlock shutdown
+        # 5) Await remaining tasks to avoid dangling references.
         async def _drain() -> None:
-            await asyncio.gather(*close_peers, return_exceptions=True)
             await asyncio.gather(*self._tasks, return_exceptions=True)
             await asyncio.gather(*list(self.peer_tasks), return_exceptions=True)
 
         try:
             await asyncio.wait_for(_drain(), timeout=10.0)
         except TimeoutError:
-            self.log.warning("Shutdown timed out; forcing exit with pending tasks")
+            self.log.warning("Shutdown drain timed out; forcing exit with pending tasks")
 
         self._save_known_addresses()
+
+    async def _shutdown_peers(self) -> None:
+        if not self.peers:
+            return
+        tasks = [asyncio.create_task(self._close_peer_with_timeout(peer)) for peer in list(self.peers.values())]
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _close_peer_with_timeout(self, peer: "Peer") -> None:
+        try:
+            await asyncio.wait_for(peer.close(), timeout=3.0)
+        except asyncio.TimeoutError:
+            self.log.warning(
+                "Peer %s close timed out; aborting transport",
+                peer.peer_id,
+            )
+            transport = getattr(peer.writer, "transport", None)
+            if transport and not transport.is_closing():
+                transport.abort()
+        except Exception:
+            self.log.debug("Failed to close peer %s cleanly", peer.peer_id, exc_info=True)
 
     async def _handle_inbound(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         if self._stop_event.is_set():
