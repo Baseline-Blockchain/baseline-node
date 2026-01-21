@@ -8,137 +8,6 @@
     <link rel="icon" href="data:image/png;base64,{{ logo_b64 }}" type="image/png">
     <style>
         /* CSS_INJECTION_POINT */
-
-        /* Dashboard specific overrides */
-        .dashboard-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-            gap: 1.5rem;
-            margin-bottom: 2rem;
-        }
-
-        .stat-card {
-            background: var(--panel);
-            padding: 1.5rem;
-            border-radius: 12px;
-            border: 1px solid rgba(255, 255, 255, 0.05);
-            transition: transform 0.2s, box-shadow 0.2s;
-        }
-
-        .stat-card:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
-            border-color: rgba(71, 194, 255, 0.2);
-        }
-
-        .stat-label {
-            color: var(--muted);
-            font-size: 0.9rem;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            margin-bottom: 0.5rem;
-        }
-
-        .stat-value {
-            font-size: 1.8rem;
-            font-weight: 700;
-            color: var(--text);
-        }
-
-        .stat-sub {
-            font-size: 0.85rem;
-            color: var(--accent);
-            margin-top: 0.25rem;
-        }
-
-        .section-title {
-            margin: 2rem 0 1rem;
-            font-size: 1.3rem;
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-        }
-
-        .connection-info {
-            background: rgba(71, 194, 255, 0.1);
-            border: 1px solid rgba(71, 194, 255, 0.2);
-            padding: 1.5rem;
-            border-radius: 12px;
-            margin-bottom: 2rem;
-            color: var(--text);
-            text-align: left;
-        }
-
-        .connection-info h3 {
-            margin-top: 0;
-            color: var(--accent);
-            margin-bottom: 1rem;
-        }
-
-        .connection-detail {
-            display: flex;
-            gap: 1rem;
-            margin-bottom: 0.5rem;
-            font-family: monospace;
-            font-size: 1.1em;
-        }
-
-        .detail-label {
-            color: var(--muted);
-            width: 140px;
-        }
-
-        .empty-state {
-            color: var(--muted);
-            font-style: italic;
-            padding: 1rem;
-            text-align: center;
-        }
-
-        /* Documentation section styles */
-        .doc-section {
-            background: var(--panel);
-            padding: 2rem;
-            border-radius: 12px;
-            margin-top: 3rem;
-            border: 1px solid rgba(255, 255, 255, 0.05);
-        }
-
-        .doc-section h2 {
-            margin-top: 0;
-            color: var(--text);
-            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-            padding-bottom: 0.5rem;
-            margin-bottom: 1.5rem;
-        }
-
-        .code-block {
-            background: #000;
-            padding: 1rem;
-            border-radius: 6px;
-            font-family: monospace;
-            overflow-x: auto;
-            color: #dcdcdc;
-            margin: 1rem 0;
-            border: 1px solid rgba(255, 255, 255, 0.1);
-        }
-
-        .code-comment {
-            color: #6a9955;
-        }
-
-        .nav-link {
-            color: var(--text);
-            text-decoration: none;
-            padding: 0.5rem 1rem;
-            border-radius: 6px;
-            transition: background 0.2s;
-            font-weight: 500;
-        }
-
-        .nav-link:hover {
-            background: rgba(255, 255, 255, 0.1);
-        }
     </style>
 </head>
 
@@ -198,36 +67,41 @@
         </div>
 
 
-        <h2 class="section-title">Workers</h2>
-        <div class="table-scroll">
-            <table>
-                <thead>
-                    <tr>
-                        <th>Worker Name</th>
-                        <th>Address</th>
-                        <th>Immature Balance</th>
-                        <th>Mature Balance</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {{ workers_rows }}
-                </tbody>
-            </table>
-        </div>
+        <details class="worker-details">
+            <summary>
+                <span>Workers ({{ active_miners }})</span>
+                <span class="summary-arrow" aria-hidden="true"></span>
+            </summary>
+            <div class="table-scroll">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Worker Name</th>
+                            <th>Address</th>
+                            <th>Immature Balance</th>
+                            <th>Mature Balance</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {{ workers_rows }}
+                    </tbody>
+                </table>
+            </div>
+        </details>
 
-        <h2 class="section-title">Pending Blocks</h2>
+        <h2 class="section-title">Recent Payouts</h2>
         <div class="table-scroll">
             <table>
                 <thead>
                     <tr>
-                        <th>Height</th>
-                        <th>Block Hash</th>
-                        <th>Reward</th>
-                        <th>Maturity</th>
+                        <th>Transaction</th>
+                        <th>Total Paid (BLINE)</th>
+                        <th>Payees</th>
+                        <th>Time</th>
                     </tr>
                 </thead>
                 <tbody>
-                    {{ pending_rows }}
+                    {{ payouts_rows }}
                 </tbody>
             </table>
         </div>

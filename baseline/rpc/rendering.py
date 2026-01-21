@@ -1,5 +1,6 @@
 import base64
 import os
+from datetime import datetime
 from typing import Any
 
 from ..core.tx import COIN
@@ -53,6 +54,7 @@ class DashboardRenderer:
         # Extract data from snapshot
         pending = snapshot["pending_blocks"]
         matured = snapshot["matured_utxos"]
+        payout_history = snapshot.get("payout_history", [])
 
         # Build entries from workers snapshot
         entries = []
@@ -131,24 +133,33 @@ class DashboardRenderer:
              else:
                  sync_state = f"Syncing ({network.sync_remote_height})"
 
-        pending_rows = ""
-        if not pending:
-            pending_rows = "<tr><td colspan='4' class='empty-state'>No pending blocks</td></tr>"
-        if pending:
-             for blk in pending:
-                 h = blk.get('height')
-                 txid = blk.get('txid', '')
-                 shorth = f"{txid[:8]}...{txid[-8:]}" if txid else "unknown"
-                 reward = (blk.get('distributable', 0) or 0) / COIN
-                 # Maturity check
-                 maturity_blocks = int(stats.get("coinbase_maturity", 0) or 0)
-                 matures_in = "-"
-                 if best_height and maturity_blocks:
-                     confirms = max(0, best_height - int(h))
-                     left = max(0, maturity_blocks - confirms)
-                     matures_in = f"{left} blocks" if left > 0 else "Mature"
-                 
-                 pending_rows += f"<tr><td>{h}</td><td><span class='hash'>{shorth}</span></td><td>{reward:.4f}</td><td>{matures_in}</td></tr>"
+        payout_rows = ""
+        if not payout_history:
+            payout_rows = "<tr><td colspan='4' class='empty-state'>No payouts yet</td></tr>"
+        else:
+            sorted_payments = sorted(
+                payout_history, key=lambda entry: float(entry.get("time") or 0.0), reverse=True
+            )
+            for entry in sorted_payments:
+                txid = entry.get("txid", "")
+                short_tx = f"{txid[:8]}...{txid[-8:]}" if txid else "unknown"
+                total_paid = (int(entry.get("total_paid", 0) or 0)) / COIN
+                payees = entry.get("payees", [])
+                payees_count = len(payees)
+                timestamp = entry.get("time")
+                if timestamp:
+                    time_label = datetime.fromtimestamp(float(timestamp)).strftime("%Y-%m-%d %H:%M:%S")
+                else:
+                    time_label = "unknown"
+
+                payout_rows += (
+                    f"<tr>"
+                    f"<td><span class='hash'>{short_tx}</span></td>"
+                    f"<td>{total_paid:.4f}</td>"
+                    f"<td>{payees_count}</td>"
+                    f"<td>{time_label}</td>"
+                    f"</tr>"
+                )
 
         # Calculate Immature Balances
         worker_immature = {}
@@ -201,7 +212,7 @@ class DashboardRenderer:
         
         # Tables
         html = html.replace("{{ workers_rows }}", workers_rows)
-        html = html.replace("{{ pending_rows }}", pending_rows)
+        html = html.replace("{{ payouts_rows }}", payout_rows)
         
         # Meta
         html = html.replace("{{ pool_fee }}", str(pool_fee))
