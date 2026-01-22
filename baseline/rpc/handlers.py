@@ -492,12 +492,35 @@ class RPCHandlers(WalletRPCMixin):
 
         results = []
         for block_hash, height, work in tips:
-            status = "active" if block_hash == best_hash else "valid-fork"
+            if block_hash == best_hash:
+                results.append({
+                    "height": height,
+                    "hash": block_hash,
+                    "branchlen": 0,
+                    "status": "active",
+                })
+                continue
+            
+            # Calculate branch length for forks
+            # Walk backwards until we find a block that is on the main chain (status=0)
+            branchlen = 0
+            curr = block_hash
+            while True:
+                header = self.state_db.get_header(curr)
+                if not header:
+                    break
+                if header.status == 0:
+                    break
+                branchlen += 1
+                if header.prev_hash is None:
+                    break
+                curr = header.prev_hash
+                
             results.append({
                 "height": height,
                 "hash": block_hash,
-                "branchlen": 0,
-                "status": status,
+                "branchlen": branchlen,
+                "status": "valid-fork",
             })
         return results
 
