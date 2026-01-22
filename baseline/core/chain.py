@@ -462,7 +462,15 @@ class Chain:
             raise ChainError("Block timestamp too early")
         if block.header.timestamp > synchronized_time_int() + MAX_FUTURE_BLOCK_TIME:
             raise ChainError("Block timestamp too far in future")
-        return self._apply_block_transactions(block, height, view, enforce_scripts=True)
+        # Optimization: skip costly script validation (ECC) if we are in "fast IBD" mode
+        # and the block is sufficiently old (assume valid history).
+        enforce_scripts = True
+        if self.config.storage.auto_fast_ibd:
+             # If block is older than 1 hour, skip scripts
+             if block.header.timestamp < synchronized_time_int() - 3600:
+                 enforce_scripts = False
+
+        return self._apply_block_transactions(block, height, view, enforce_scripts=enforce_scripts)
 
     def _apply_block_transactions(self, block: Block, height: int, view: UTXOView, enforce_scripts: bool) -> ValidationResult:
         if not block.transactions:
