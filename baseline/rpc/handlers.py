@@ -97,6 +97,7 @@ class RPCHandlers(WalletRPCMixin):
             "getpoolpayoutpreview": self.getpoolpayoutpreview,
             "getstratumsessions": self.getstratumsessions,
             "poolreconcile": self.poolreconcile,
+            "getchaintips": self.getchaintips,
         }
         if self.wallet:
             self._methods.update(self._wallet_method_map())
@@ -483,6 +484,22 @@ class RPCHandlers(WalletRPCMixin):
             "pruned": False,
             "warnings": []
         }
+
+    def getchaintips(self) -> list[dict[str, Any]]:
+        tips = self.state_db.list_chain_tips()
+        best = self.state_db.get_best_tip()
+        best_hash = best[0] if best else None
+
+        results = []
+        for block_hash, height, work in tips:
+            status = "active" if block_hash == best_hash else "valid-fork"
+            results.append({
+                "height": height,
+                "hash": block_hash,
+                "branchlen": 0,
+                "status": status,
+            })
+        return results
 
     def getnetworkinfo(self) -> dict[str, Any]:
         snapshot = None
