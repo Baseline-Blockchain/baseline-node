@@ -558,6 +558,29 @@ class RPCTestCase(unittest.TestCase):
         self.assertEqual(stats["height"], 0)
         self.assertGreaterEqual(stats["txouts"], 1)
 
+    def test_getcirculatingsupply_returns_values(self) -> None:
+        stats = self.handlers.dispatch("getcirculatingsupply", [])
+        expected = [
+            "height",
+            "maturity",
+            "circulating_liners",
+            "circulating",
+            "total_liners",
+            "total",
+            "immature_liners",
+            "immature",
+        ]
+        for field in expected:
+            self.assertIn(field, stats)
+        self.assertEqual(stats["maturity"], self.config.mining.coinbase_maturity)
+        self.assertGreaterEqual(stats["total_liners"], 0)
+        self.assertGreaterEqual(stats["circulating_liners"], 0)
+        self.assertEqual(stats["immature_liners"], 0)
+        self.assertEqual(stats["total_liners"], stats["circulating_liners"])
+        self.assertAlmostEqual(stats["total"], stats["total_liners"] / COIN)
+        self.assertAlmostEqual(stats["circulating"], stats["circulating_liners"] / COIN)
+        self.assertAlmostEqual(stats["immature"], stats["immature_liners"] / COIN)
+
     def test_getrawtransaction_reports_fee_and_values(self) -> None:
         dest = self.handlers.dispatch("getnewaddress", [])
         tx = self._build_payment_tx(dest, 49 * COIN)

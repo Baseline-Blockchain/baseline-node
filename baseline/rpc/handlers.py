@@ -90,6 +90,7 @@ class RPCHandlers(WalletRPCMixin):
             "getpeerinfo": self.getpeerinfo,
             "uptime": self.uptime,
             "gettxoutsetinfo": self.gettxoutsetinfo,
+            "getcirculatingsupply": self.getcirculatingsupply,
             "getpoolstats": self.getpoolstats,
             "getpoolworkers": self.getpoolworkers,
             "getpoolpendingblocks": self.getpoolpendingblocks,
@@ -845,6 +846,25 @@ class RPCHandlers(WalletRPCMixin):
                 stats.pop("muhash", None)
                 stats.pop("hash_serialized_2", None)
         return stats
+
+    def getcirculatingsupply(self) -> dict[str, Any]:
+        tip = self.state_db.get_best_tip()
+        best_height = tip[1] if tip else 0
+        maturity = self.chain.config.mining.coinbase_maturity
+        totals = self.state_db.get_circulating_supply()
+        total_liners = totals["total_liners"]
+        circulating_liners = total_liners
+        immature_liners = 0
+        return {
+            "height": best_height,
+            "maturity": maturity,
+            "circulating_liners": circulating_liners,
+            "circulating": circulating_liners / COIN,
+            "total_liners": total_liners,
+            "total": total_liners / COIN,
+            "immature_liners": immature_liners,
+            "immature": immature_liners / COIN,
+        }
 
     # Pool / Stratum helpers ------------------------------------------------------
 

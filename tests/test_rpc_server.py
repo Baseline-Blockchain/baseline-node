@@ -21,6 +21,14 @@ class DummyHandlers:
         return self.result
 
 
+class SupplyHandlers(DummyHandlers):
+    def __init__(self):
+        super().__init__(result={"status": "ok"})
+
+    def getcirculatingsupply(self) -> dict[str, float]:
+        return {"circulating": 12.5, "total": 20.0}
+
+
 class RPCServerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self) -> None:
         if getattr(self, "server", None):
@@ -73,6 +81,31 @@ class RPCServerTests(unittest.IsolatedAsyncioTestCase):
         await writer.wait_closed()
         return status_code, body_bytes
 
+    async def _http_get(self, path: str) -> tuple[int, bytes]:
+        reader, writer = await asyncio.open_connection(self._rpc_host, self._rpc_port)
+        request = (
+            f"GET {path} HTTP/1.1\r\n"
+            f"Host: {self._rpc_host}:{self._rpc_port}\r\n"
+            "\r\n"
+        ).encode("utf-8")
+        writer.write(request)
+        await writer.drain()
+        status_line = await reader.readline()
+        status_parts = status_line.decode("utf-8").split()
+        status_code = int(status_parts[1])
+        headers: dict[str, str] = {}
+        while True:
+            line = await reader.readline()
+            if line in (b"\r\n", b"\n", b""):
+                break
+            name, value = line.decode("utf-8").split(":", 1)
+            headers[name.strip().lower()] = value.strip()
+        content_length = int(headers.get("content-length", "0"))
+        body_bytes = await reader.readexactly(content_length) if content_length else b""
+        writer.close()
+        await writer.wait_closed()
+        return status_code, body_bytes
+
     async def test_rate_limit_returns_429(self) -> None:
         handler = DummyHandlers()
         await self._start_server(handler, max_requests_per_minute=1, rate_limit_exempt_loopback=False)
@@ -91,3 +124,14 @@ class RPCServerTests(unittest.IsolatedAsyncioTestCase):
         response = json.loads(body.decode("utf-8"))
         self.assertIsNotNone(response["error"])
         self.assertIn("timed out", response["error"]["message"])
+
+    async def test_supply_endpoint_returns_payload(self) -> None:
+        handler = SupplyHandlers()
+        await self._start_server(handler)
+        status, body = await self._http_get("/supply")
+        self.assertEqual(status, 200)
+        payload = json.loads(body.decode("utf-8"))
+        self.assertEqual(payload["circulating_supply"], 12.5)
+        self.assertEqual(payload["total_supply"], 20.0)
+        self.assertEqual(payload["max_supply"], 300_000_000)
+        self.assertEqual(payload["maximum_supply"], 300_000_000)

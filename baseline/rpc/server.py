@@ -26,6 +26,7 @@ from .rendering import DashboardRenderer
 
 RPC_SLOW_CALL_SECONDS = 1.0
 RPC_INFLIGHT_SNAPSHOT_LIMIT = 6
+MAXIMUM_SUPPLY = 300_000_000
 
 
 class _TokenBucket:
@@ -94,6 +95,7 @@ class RPCServer:
             "estimatesmartfee",
             "getmempoolinfo",
             "sendrawtransaction",
+            "getcirculatingsupply",
             "listscheduledtx",
             "getschedule",
             "getpoolstats",
@@ -171,7 +173,17 @@ class RPCServer:
                                 headers.get("host")
                             )
                         else:
-                             panel = self._render_pool_panel(parsed_path, headers.get("host"))
+                            panel = self._render_pool_panel(parsed_path, headers.get("host"))
+                        content_type = "text/html; charset=utf-8"
+                    elif path == "/supply":
+                        if self._executor:
+                            panel = await loop.run_in_executor(
+                                self._executor,
+                                self._render_supply_json,
+                            )
+                        else:
+                            panel = self._render_supply_json()
+                        content_type = "application/json; charset=utf-8"
                     else:
                         # Status panel is also somewhat heavy
                         if self._executor:
@@ -181,6 +193,7 @@ class RPCServer:
                             )
                         else:
                             panel = self._render_status_panel()
+                        content_type = "text/plain; charset=utf-8"
 
                     await self._write_response(
                         writer,
@@ -188,7 +201,7 @@ class RPCServer:
                         b"OK",
                         panel,
                         keep_alive=client_keep_alive,
-                        content_type="text/html; charset=utf-8" if path == "/pool" else "text/plain; charset=utf-8",
+                        content_type=content_type,
                     )
                     if not client_keep_alive:
                         break
@@ -532,6 +545,25 @@ class RPCServer:
             content_lines.append(f"| {line.ljust(box_width)} |")
         panel = "\n".join([border, title_line, border] + content_lines + [border])
         return panel.encode("utf-8")
+
+    def _render_supply_json(self) -> bytes:
+        handler = getattr(self.handlers, "getcirculatingsupply", None)
+        if not callable(handler):
+            payload = {"error": "supply unavailable"}
+            return json.dumps(payload).encode("utf-8")
+        try:
+            stats = handler()
+        except Exception as exc:  # pragma: no cover - defensive
+            self.log.debug("supply endpoint failed: %s", exc)
+            payload = {"error": "supply unavailable"}
+            return json.dumps(payload).encode("utf-8")
+        payload = {
+            "circulating_supply": stats.get("circulating", 0),
+            "total_supply": stats.get("total", 0),
+            "max_supply": MAXIMUM_SUPPLY,
+            "maximum_supply": MAXIMUM_SUPPLY,
+        }
+        return json.dumps(payload).encode("utf-8")
 
     def _render_pool_panel(self, parsed_path, request_host: str | None = None) -> bytes:
         return self.dashboard_renderer.render(self.handlers, parsed_path.path, request_host)

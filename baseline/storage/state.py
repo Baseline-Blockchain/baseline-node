@@ -363,6 +363,33 @@ class StateDB:
             return default
         return row["value"]
 
+    def _get_total_supply_meta(self, conn: sqlite3.Connection | None = None) -> int | None:
+        if conn is None:
+            conn = self._reader_conn()
+        row = conn.execute("SELECT value FROM meta WHERE key='total_supply_liners'").fetchone()
+        if row is None:
+            return None
+        try:
+            return int(row["value"])
+        except Exception:
+            return None
+
+    def _set_total_supply_meta(self, conn: sqlite3.Connection, total: int) -> None:
+        conn.execute(
+            "INSERT INTO meta(key, value) VALUES('total_supply_liners', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (str(int(total)),),
+        )
+
+    def _ensure_total_supply_meta(self, conn: sqlite3.Connection) -> int:
+        existing = self._get_total_supply_meta(conn)
+        if existing is not None:
+            return existing
+        row = conn.execute("SELECT COALESCE(SUM(amount), 0) AS total FROM utxos").fetchone()
+        total = int(row["total"] or 0)
+        self._set_total_supply_meta(conn, total)
+        return total
+
     def store_header(self, header: HeaderData) -> None:
         self._ensure_open()
         self._enqueue_write(
@@ -722,6 +749,13 @@ class StateDB:
     def add_utxo(self, record: UTXORecord) -> None:
         self._ensure_open()
         with self.transaction() as conn:
+            total_supply = self._ensure_total_supply_meta(conn)
+            row = conn.execute(
+                "SELECT amount FROM utxos WHERE txid=? AND vout=?",
+                (record.txid, record.vout),
+            ).fetchone()
+            prior_amount = int(row["amount"] or 0) if row else 0
+            delta = int(record.amount) - prior_amount
             conn.execute(
                 """
                 INSERT INTO utxos(txid, vout, amount, script_pubkey, height, coinbase)
@@ -742,12 +776,22 @@ class StateDB:
                 ),
             )
             self._upsert_address_utxo(conn, record)
+            if delta:
+                self._set_total_supply_meta(conn, max(0, total_supply + delta))
 
     def remove_utxo(self, txid: str, vout: int) -> bool:
         self._ensure_open()
         with self.transaction() as conn:
+            total_supply = self._ensure_total_supply_meta(conn)
+            row = conn.execute(
+                "SELECT amount FROM utxos WHERE txid=? AND vout=?",
+                (txid, vout),
+            ).fetchone()
             cur = conn.execute("DELETE FROM utxos WHERE txid=? AND vout=?", (txid, vout))
             conn.execute("DELETE FROM address_utxos WHERE txid=? AND vout=?", (txid, vout))
+            if row:
+                amount = int(row["amount"] or 0)
+                self._set_total_supply_meta(conn, max(0, total_supply - amount))
             return cur.rowcount > 0
 
     def get_utxo(self, txid: str, vout: int) -> UTXORecord | None:
@@ -834,6 +878,61 @@ class StateDB:
         }
         return stats
 
+    def get_circulating_supply(
+        self,
+        *,
+        tip_height: int | None = None,
+        maturity: int | None = None,
+    ) -> dict[str, int]:
+        """Return total/matured/immature supply from the UTXO set (liners)."""
+        self._ensure_open()
+        if tip_height is not None and maturity is not None:
+            conn = self._reader_conn()
+            threshold = int(tip_height) - int(maturity)
+            row = conn.execute(
+                """
+                SELECT
+                    COALESCE(SUM(amount), 0) AS total,
+                    COALESCE(
+                        SUM(
+                            CASE
+                                WHEN coinbase = 1 AND height > ? THEN 0
+                                ELSE amount
+                            END
+                        ),
+                        0
+                    ) AS matured,
+                    COALESCE(
+                        SUM(
+                            CASE
+                                WHEN coinbase = 1 AND height > ? THEN amount
+                                ELSE 0
+                            END
+                        ),
+                        0
+                    ) AS immature
+                FROM utxos
+                """,
+                (threshold, threshold),
+            ).fetchone()
+            total = int(row["total"] or 0)
+            matured = int(row["matured"] or 0)
+            immature = int(row["immature"] or 0)
+        else:
+            total = self._get_total_supply_meta()
+            if total is None:
+                conn = self._reader_conn()
+                row = conn.execute("SELECT COALESCE(SUM(amount), 0) AS total FROM utxos").fetchone()
+                total = int(row["total"] or 0)
+                self.set_meta("total_supply_liners", str(total))
+            matured = total
+            immature = 0
+        return {
+            "total_liners": total,
+            "matured_liners": matured,
+            "immature_liners": immature,
+        }
+
     def apply_utxo_changes(
         self,
         spent: Sequence[tuple[str, int]],
@@ -841,6 +940,16 @@ class StateDB:
     ) -> None:
         self._ensure_open()
         with self.transaction() as conn:
+            total_supply = self._ensure_total_supply_meta(conn)
+            spent_sum = 0
+            for txid, vout in spent:
+                row = conn.execute(
+                    "SELECT amount FROM utxos WHERE txid=? AND vout=?",
+                    (txid, vout),
+                ).fetchone()
+                if row:
+                    spent_sum += int(row["amount"] or 0)
+            created_sum = sum(int(utxo.amount) for utxo in created)
             for txid, vout in spent:
                 conn.execute("DELETE FROM utxos WHERE txid=? AND vout=?", (txid, vout))
                 conn.execute("DELETE FROM address_utxos WHERE txid=? AND vout=?", (txid, vout))
@@ -865,6 +974,9 @@ class StateDB:
                     ),
                 )
                 self._upsert_address_utxo(conn, utxo)
+            if spent_sum or created_sum:
+                new_total = max(0, total_supply + created_sum - spent_sum)
+                self._set_total_supply_meta(conn, new_total)
 
     def run_startup_checks(self) -> None:
         self._ensure_open()
