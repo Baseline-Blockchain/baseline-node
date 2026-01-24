@@ -142,17 +142,74 @@ def point_add(p: tuple[int, int], q: tuple[int, int]) -> tuple[int, int]:
     return x_r, y_r
 
 
+_JACOBIAN_INFINITY = (0, 1, 0)
+
+
+def _jacobian_double(point: tuple[int, int, int]) -> tuple[int, int, int]:
+    x, y, z = point
+    if z == 0 or y == 0:
+        return _JACOBIAN_INFINITY
+    y_sq = (y * y) % SECP_P
+    s = (4 * x * y_sq) % SECP_P
+    m = (3 * x * x) % SECP_P
+    x_r = (m * m - 2 * s) % SECP_P
+    y_fourth = (y_sq * y_sq) % SECP_P
+    y_r = (m * (s - x_r) - 8 * y_fourth) % SECP_P
+    z_r = (2 * y * z) % SECP_P
+    return x_r, y_r, z_r
+
+
+def _jacobian_add(p: tuple[int, int, int], q: tuple[int, int, int]) -> tuple[int, int, int]:
+    x1, y1, z1 = p
+    x2, y2, z2 = q
+    if z1 == 0:
+        return q
+    if z2 == 0:
+        return p
+    z1_sq = (z1 * z1) % SECP_P
+    z2_sq = (z2 * z2) % SECP_P
+    u1 = (x1 * z2_sq) % SECP_P
+    u2 = (x2 * z1_sq) % SECP_P
+    s1 = (y1 * z2 * z2_sq) % SECP_P
+    s2 = (y2 * z1 * z1_sq) % SECP_P
+    h = (u2 - u1) % SECP_P
+    r = (s2 - s1) % SECP_P
+    if h == 0:
+        if r == 0:
+            return _jacobian_double(p)
+        return _JACOBIAN_INFINITY
+    h_sq = (h * h) % SECP_P
+    h_cu = (h * h_sq) % SECP_P
+    v = (u1 * h_sq) % SECP_P
+    x_r = (r * r - h_cu - 2 * v) % SECP_P
+    y_r = (r * (v - x_r) - s1 * h_cu) % SECP_P
+    z_r = (h * z1 * z2) % SECP_P
+    return x_r, y_r, z_r
+
+
+def _jacobian_to_affine(point: tuple[int, int, int]) -> tuple[int, int] | None:
+    x, y, z = point
+    if z == 0:
+        return None
+    z_inv = pow(z, SECP_P - 2, SECP_P)
+    z_inv_sq = (z_inv * z_inv) % SECP_P
+    x_r = (x * z_inv_sq) % SECP_P
+    y_r = (y * z_inv_sq * z_inv) % SECP_P
+    return x_r, y_r
+
+
 def scalar_mul(k: int, point: tuple[int, int] = G) -> tuple[int, int]:
     if k % SECP_N == 0 or point is None:
         return None
-    result = None
-    addend = point
+    k %= SECP_N
+    result = _JACOBIAN_INFINITY
+    addend = (point[0], point[1], 1)
     while k:
         if k & 1:
-            result = point_add(result, addend)
-        addend = point_add(addend, addend)
+            result = _jacobian_add(result, addend)
+        addend = _jacobian_double(addend)
         k >>= 1
-    return result
+    return _jacobian_to_affine(result)
 
 
 def generate_pubkey(privkey: int, compressed: bool = True) -> bytes:
@@ -274,6 +331,9 @@ def sign(msg_hash: bytes, privkey: int) -> bytes:
 def verify(msg_hash: bytes, signature: bytes, pubkey: bytes) -> bool:
     try:
         r, s = decode_der(signature)
+    except CryptoError:
+        return False
+    try:
         point = public_key_from_bytes(pubkey)
     except CryptoError:
         return False
