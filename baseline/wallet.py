@@ -9,6 +9,7 @@ import hmac
 import json
 import logging
 import secrets
+import subprocess
 import threading
 import time
 from collections.abc import Callable, Sequence
@@ -91,6 +92,7 @@ class WalletManager:
         block_store: BlockStore,
         mempool: Mempool,
         network: P2PServer | None = None,
+        wallet_notify: str | None = None,
     ):
         self.path = path
         self.state_db = state_db
@@ -99,6 +101,7 @@ class WalletManager:
         self.network = network
         self.log = logging.getLogger("baseline.wallet")
         self.lock = threading.RLock()
+        self.wallet_notify = wallet_notify.strip() if wallet_notify else None
         self._wallet_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="WalletWriter")
         self._sync_lock = threading.Lock()
         self._unlocked_seed: bytes | None = None
@@ -790,6 +793,20 @@ class WalletManager:
             if new_output == output_value:
                 return tx, fee
             output_value = new_output
+
+    def _run_walletnotify(self, txid: str) -> None:
+        cmd = self.wallet_notify
+        if not cmd:
+            return
+        if "%s" in cmd:
+            cmd = cmd.replace("%s", txid)
+        else:
+            cmd = f"{cmd} {txid}"
+        try:
+            subprocess.Popen(cmd, shell=True)
+        except Exception as exc:  # noqa: BLE001
+            self.log.warning("walletnotify failed for %s: %s", txid, exc)
+
     def _record_transaction(
         self,
         txid: str,
@@ -816,8 +833,12 @@ class WalletManager:
             "comment_to": comment_to or "",
         }
         with self.lock:
-            self.data.setdefault("transactions", {})[txid] = entry
+            txs = self.data.setdefault("transactions", {})
+            existed = txid in txs
+            txs[txid] = entry
             self._save()
+        if not existed:
+            self._run_walletnotify(txid)
 
     def sync_chain(
         self,
@@ -916,15 +937,15 @@ class WalletManager:
                 if delta == 0:
                     continue
                 category = "receive" if delta > 0 else "send"
-                entry = txs.get(txid)
+                existing = txs.get(txid)
                 timestamp = header.timestamp
-                fee = entry.get("fee") if entry else None
-                comment = entry.get("comment", "") if entry else ""
-                comment_to = entry.get("comment_to", "") if entry else ""
+                fee = existing.get("fee") if existing else None
+                comment = existing.get("comment", "") if existing else ""
+                comment_to = existing.get("comment_to", "") if existing else ""
                 txs[txid] = {
                     "amount": delta,
                     "category": category,
-                    "addresses": addresses or (entry.get("addresses") if entry else []),
+                    "addresses": addresses or (existing.get("addresses") if existing else []),
                     "time": timestamp,
                     "blockhash": header.hash,
                     "height": height,
@@ -932,6 +953,8 @@ class WalletManager:
                     "comment": comment,
                     "comment_to": comment_to,
                 }
+                if existing is None or existing.get("height") != height or existing.get("blockhash") != header.hash:
+                    self._run_walletnotify(txid)
                 if self._mark_schedule_confirmed(txid, height, header.hash):
                     dirty = True
             self.data["processed_height"] = height

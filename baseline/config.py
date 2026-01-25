@@ -233,6 +233,7 @@ class NodeConfig:
     ntp: NTPConfig = field(default_factory=NTPConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
     data_dir: Path = field(default_factory=default_data_dir)
+    walletnotify: str | None = None
     log_file: Path | None = None
 
     def ensure_data_layout(self) -> None:

@@ -57,6 +57,12 @@ The node writes `wallet/wallet.json` under the data dir and exposes it over JSON
 baseline-wallet --config config.json --help
 ```
 
+Optional wallet notify hook: set `walletnotify` in `config.json` to run a command whenever the wallet sees a transaction or its confirmation status changes. Use `%s` for the txid.
+
+```json
+"walletnotify": "curl -X POST https://exchange.example/walletnotify?txid=%s"
+```
+
 ## Mining
 
 ### 1. Create the pool payout key

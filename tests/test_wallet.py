@@ -213,6 +213,41 @@ class WalletTests(unittest.TestCase):
         self.assertEqual(synced_entry["comment"], "gift memo")
         self.assertEqual(synced_entry["comment_to"], "friend")
 
+    def test_walletnotify_runs_for_new_and_confirmed_tx(self) -> None:
+        wallet = self._create_wallet(
+            self.wallet_path,
+            self.state_db,
+            self.block_store,
+            self.mempool,
+            wallet_notify="echo %s",
+        )
+        notified: list[str] = []
+
+        def _record_notify(txid: str) -> None:
+            notified.append(txid)
+
+        wallet._run_walletnotify = _record_notify  # type: ignore[method-assign]
+        source_addr = wallet.get_new_address("source")
+        dest_addr = wallet.get_new_address("dest")
+        utxo = UTXORecord(
+            txid="ab" * 32,
+            vout=0,
+            amount=10 * COIN,
+            script_pubkey=script_from_address(source_addr),
+            height=0,
+            coinbase=False,
+        )
+        self.state_db.add_utxo(utxo)
+        txid = wallet.send_to_address(dest_addr, 1)
+        self.assertEqual(notified, [txid])
+
+        self._mine_transaction_into_block(txid)
+        wallet.sync_chain()
+        self.assertEqual(notified, [txid, txid])
+
+        wallet.sync_chain()
+        self.assertEqual(notified, [txid, txid])
+
     def test_create_scheduled_transaction_records_entry(self) -> None:
         wallet = self._create_wallet(self.wallet_path, self.state_db, self.block_store, self.mempool)
         source_addr = wallet.get_new_address("source")

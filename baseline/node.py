@@ -373,7 +373,14 @@ class BaselineNode:
             return
         wallet_path = self.config.data_dir / "wallet" / "wallet.json"
         wallet_path.parent.mkdir(parents=True, exist_ok=True)
-        self.wallet = WalletManager(wallet_path, self.state_db, self.block_store, self.mempool, self.network)
+        self.wallet = WalletManager(
+            wallet_path,
+            self.state_db,
+            self.block_store,
+            self.mempool,
+            self.network,
+            wallet_notify=self.config.walletnotify,
+        )
         await asyncio.to_thread(self.wallet.sync_chain, self._wallet_should_abort)
         self.wallet.start_background_sync(self._wallet_should_abort)
         self.wallet.request_sync()
