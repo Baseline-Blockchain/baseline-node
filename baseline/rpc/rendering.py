@@ -205,7 +205,8 @@ class DashboardRenderer:
                 immature = worker_immature.get(name, 0) / COIN
 
                 workers_rows += (
-                    f"<tr><td>{name}</td><td>{address_link}</td>"
+                    f"<tr data-address=\"{address}\" data-worker=\"{name}\">"
+                    f"<td>{name}</td><td>{address_link}</td>"
                     f"<td>{immature:.8f}</td><td>{mature:.8f}</td></tr>"
                 )
 

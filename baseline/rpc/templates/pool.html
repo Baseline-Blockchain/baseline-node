@@ -75,8 +75,19 @@
             <p class="muted" style="padding: 0 1.5rem 1rem;">
                 "Pending Balance" includes shares that are still maturing (20 blocks), while "Available Balance" is paid out after reaching the minimum payout threshold.
             </p>
+            <div class="worker-filter">
+                <label class="filter-label" for="address-filter">Address filter</label>
+                <div class="filter-controls">
+                    <input id="address-filter" type="search" placeholder="Paste or type a wallet address" autocomplete="off" spellcheck="false">
+                    <button class="filter-clear" type="button" id="address-filter-clear">Clear</button>
+                </div>
+                <div class="filter-meta">
+                    <span class="filter-hint">Matches update as you type.</span>
+                    <span class="filter-count" id="address-filter-count"></span>
+                </div>
+            </div>
             <div class="table-scroll">
-                <table>
+                <table id="workers-table">
                     <thead>
                     <tr>
                         <th>Worker Name</th>
@@ -87,6 +98,9 @@
                     </thead>
                     <tbody>
                         {{ workers_rows }}
+                        <tr class="empty-state filter-empty" data-filter-empty="true" style="display: none;">
+                            <td colspan="4">No matching workers</td>
+                        </tr>
                     </tbody>
                 </table>
             </div>
@@ -138,6 +152,85 @@ baseline-miner --gpu --host <span style="color: var(--accent);">{{ stratum_host 
     <footer>
         <p>Powered by Baseline Node v{{ node_version }}</p>
     </footer>
+    <script>
+        (() => {
+            const filterInput = document.getElementById("address-filter");
+            const clearButton = document.getElementById("address-filter-clear");
+            const countLabel = document.getElementById("address-filter-count");
+            const table = document.getElementById("workers-table");
+            const paramKey = "address";
+
+            if (!filterInput || !table) {
+                return;
+            }
+
+            const rows = Array.from(table.querySelectorAll("tbody tr"));
+            const dataRows = rows.filter((row) => row.dataset.address);
+            const filterEmptyRow = table.querySelector("tbody tr[data-filter-empty='true']");
+
+            const applyUrlFilter = () => {
+                const params = new URLSearchParams(window.location.search);
+                const initial = params.get(paramKey);
+                if (initial) {
+                    filterInput.value = initial;
+                }
+            };
+
+            const syncUrl = (query) => {
+                const url = new URL(window.location.href);
+                if (query) {
+                    url.searchParams.set(paramKey, query);
+                } else {
+                    url.searchParams.delete(paramKey);
+                }
+                window.history.replaceState({}, "", url);
+            };
+
+            const updateFilter = () => {
+                const query = filterInput.value.trim().toLowerCase();
+                let matches = 0;
+
+                dataRows.forEach((row) => {
+                    const address = (row.dataset.address || "").toLowerCase();
+                    const match = !query || address.includes(query);
+                    row.style.display = match ? "" : "none";
+                    if (match) {
+                        matches += 1;
+                    }
+                });
+
+                if (filterEmptyRow) {
+                    const showEmpty = query && dataRows.length > 0 && matches === 0;
+                    filterEmptyRow.style.display = showEmpty ? "" : "none";
+                }
+
+                if (countLabel) {
+                    countLabel.textContent =
+                        query && dataRows.length > 0
+                            ? `${matches} match${matches === 1 ? "" : "es"}`
+                            : "";
+                }
+
+                if (clearButton) {
+                    clearButton.disabled = !query;
+                }
+
+                syncUrl(query);
+            };
+
+            applyUrlFilter();
+            filterInput.addEventListener("input", updateFilter);
+            if (clearButton) {
+                clearButton.addEventListener("click", () => {
+                    filterInput.value = "";
+                    filterInput.focus();
+                    updateFilter();
+                });
+            }
+
+            updateFilter();
+        })();
+    </script>
 </body>
 
 </html>
