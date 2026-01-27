@@ -24,7 +24,7 @@ from .core.block import Block
 from .core.tx import COIN, Transaction, TxInput, TxOutput
 from .mempool import Mempool, MempoolError
 from .net.server import P2PServer
-from .policy import MIN_RELAY_FEE_RATE, required_fee
+from .policy import MAX_STANDARD_TX_SIZE, MIN_RELAY_FEE_RATE, required_fee
 from .storage import BlockStore, StateDB
 
 
@@ -529,6 +529,118 @@ class WalletManager:
             comment_to=comment_to,
         )
         return tx.txid()
+
+    def sweep_utxos(
+        self,
+        dest_address: str,
+        *,
+        max_inputs: int = 200,
+        min_conf: int = 1,
+        fee: int | None = None,
+        fee_rate: int = MIN_RELAY_FEE_RATE,
+        from_addresses: Sequence[str] | None = None,
+        broadcast: bool = True,
+    ) -> dict[str, object]:
+        max_inputs = int(max_inputs)
+        min_conf = int(min_conf)
+        if max_inputs <= 0:
+            raise ValueError("max_inputs must be > 0")
+        if min_conf < 0:
+            raise ValueError("min_conf must be >= 0")
+        if fee is not None and fee < 0:
+            raise ValueError("Fee must be >= 0")
+        if fee_rate <= 0:
+            raise ValueError("fee_rate must be > 0")
+
+        unspent = self.list_unspent(min_conf=min_conf)
+        entries = self.data.get("addresses", {})
+        allowed_set: set[str] | None = None
+        if from_addresses:
+            allowed_set = set()
+            for addr in from_addresses:
+                meta = entries.get(addr)
+                if meta is None:
+                    raise ValueError(f"Address {addr} not found in wallet")
+                if meta.get("watch_only"):
+                    raise ValueError(f"Address {addr} is watch-only and cannot spend")
+                allowed_set.add(addr)
+
+        spendable: list[dict[str, object]] = []
+        for entry in unspent:
+            meta = entries.get(entry["address"])
+            if not meta or meta.get("watch_only"):
+                continue
+            if allowed_set and entry["address"] not in allowed_set:
+                continue
+            spendable.append(entry)
+
+        if not spendable:
+            raise ValueError("No spendable inputs")
+
+        spendable.sort(key=lambda item: int(item.get("amount_liners") or coins_to_liners(item["amount"])))
+        selected = spendable[:max_inputs]
+        total_in = sum(int(entry.get("amount_liners") or coins_to_liners(entry["amount"])) for entry in selected)
+        if total_in <= 0:
+            raise ValueError("Selected inputs have no value")
+
+        estimated_size = 10 + len(selected) * 148 + 34
+        if estimated_size > MAX_STANDARD_TX_SIZE:
+            raise ValueError("Transaction exceeds standard size limit; lower max_inputs")
+
+        fee_liners = fee if fee is not None else required_fee(estimated_size, fee_rate)
+        output_value = total_in - fee_liners
+        if output_value <= 0:
+            raise ValueError("Selected inputs do not cover fee")
+
+        inputs = [
+            TxInput(
+                prev_txid=entry["txid"],
+                prev_vout=entry["vout"],
+                script_sig=b"",
+                sequence=0xFFFFFFFF,
+            )
+            for entry in selected
+        ]
+        outputs = [TxOutput(value=output_value, script_pubkey=script_from_address(dest_address))]
+        tx = Transaction(version=1, inputs=inputs, outputs=outputs, lock_time=0)
+        self._sign_transaction(tx, selected)
+
+        # Recalculate fee based on actual serialized size.
+        size = len(tx.serialize())
+        fee_liners = fee if fee is not None else required_fee(size, fee_rate)
+        output_value = total_in - fee_liners
+        if output_value <= 0:
+            raise ValueError("Selected inputs do not cover fee")
+        tx.outputs[0].value = output_value
+        self._sign_transaction(tx, selected)
+
+        if broadcast:
+            try:
+                self.mempool.accept_transaction(tx, peer_id="wallet")
+            except MempoolError as exc:
+                raise ValueError(f"Transaction rejected: {exc}") from exc
+            # Net wallet delta is just the fee (self-transfer).
+            self._record_transaction(
+                tx.txid(),
+                amount=-fee_liners,
+                category="send",
+                addresses=[dest_address],
+                blockhash=None,
+                height=None,
+                fee=fee_liners,
+            )
+
+        return {
+            "txid": tx.txid(),
+            "hex": tx.serialize().hex(),
+            "inputs": len(selected),
+            "total_in_liners": total_in,
+            "fee_liners": fee_liners,
+            "output_liners": output_value,
+            "size": size,
+            "max_inputs": max_inputs,
+            "min_conf": min_conf,
+        }
 
     def _serialize_schedule_entry(self, entry: dict[str, object]) -> dict[str, object]:
         result: dict[str, object] = dict(entry)

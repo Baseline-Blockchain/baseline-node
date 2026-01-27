@@ -58,6 +58,17 @@ def build_parser() -> argparse.ArgumentParser:
     send.add_argument("--fee", type=float, help="Custom absolute fee in BLINE (overrides fee rate)")
     send.add_argument("--feerate", type=float, help="Custom fee rate in BLINE/kB (defaults to node min relay)")
 
+    sweep = sub.add_parser("sweep", help="Consolidate UTXOs into a single output")
+    sweep.add_argument("address", help="Destination address (usually your own)")
+    sweep.add_argument("--max-inputs", type=int, default=200, help="Max inputs to include (default: 200)")
+    sweep.add_argument("--minconf", type=int, help="Minimum confirmations to spend (defaults to coinbase maturity)")
+    sweep.add_argument("--from-address", action="append", dest="from_addresses", help="Restrict inputs to this address (repeatable)")
+    sweep.add_argument("--fee", type=float, help="Custom absolute fee in BLINE (overrides fee rate)")
+    sweep.add_argument("--feerate", type=float, help="Custom fee rate in BLINE/kB (defaults to node min relay)")
+    sweep.add_argument("--passphrase", help="Wallet passphrase (omit to be prompted)")
+    sweep.add_argument("--unlock-time", type=int, default=90, help="Seconds to keep wallet unlocked for signing")
+    sweep.add_argument("--no-broadcast", action="store_true", help="Build tx but do not broadcast")
+
     tx = sub.add_parser("tx", help="Inspect a wallet transaction")
     tx.add_argument("txid")
 
@@ -200,6 +211,23 @@ def main() -> None:
                 params.extend(["", "", options])
             txid = client.call("sendtoaddress", params)
             print(txid)
+            if unlocked:
+                client.call("walletlock")
+        elif args.command == "sweep":
+            unlocked = maybe_unlock_for_signing(client, args.passphrase, args.unlock_time)
+            options: dict[str, Any] = {"maxinputs": args.max_inputs}
+            if args.minconf is not None:
+                options["minconf"] = args.minconf
+            if args.from_addresses:
+                options["fromaddresses"] = args.from_addresses
+            if args.fee is not None:
+                options["fee"] = args.fee
+            elif args.feerate is not None:
+                options["feerate"] = args.feerate
+            if args.no_broadcast:
+                options["broadcast"] = False
+            result = client.call("sweeputxos", [args.address, options])
+            print(json.dumps(result, indent=2))
             if unlocked:
                 client.call("walletlock")
         elif args.command == "tx":

@@ -1171,9 +1171,10 @@ class StateDB:
         if not addresses:
             return []
         placeholders = ",".join("?" for _ in addresses)
+        # Prefer larger UTXOs first to reduce paging for spend selection.
         query = (
             "SELECT address, txid, vout, amount, height, script_pubkey, coinbase "
-            f"FROM address_utxos WHERE address IN ({placeholders}) ORDER BY height DESC, txid DESC, vout DESC"
+            f"FROM address_utxos WHERE address IN ({placeholders}) ORDER BY amount DESC, height DESC, txid DESC, vout DESC"
         )
         params: list[Any] = list(addresses)
         if limit is not None:

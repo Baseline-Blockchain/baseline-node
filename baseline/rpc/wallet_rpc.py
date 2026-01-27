@@ -8,6 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from ..core.tx import COIN
 from ..policy import MIN_RELAY_FEE_RATE
 from ..wallet import WalletError, WalletLockedError, WalletManager, coins_to_liners
 from .errors import RPCError
@@ -27,6 +28,7 @@ class WalletRPCMixin:
             "listunspent": self.listunspent,
             "getreceivedbyaddress": self.getreceivedbyaddress,
             "sendtoaddress": self.sendtoaddress,
+            "sweeputxos": self.sweeputxos,
             "createscheduledtx": self.createscheduledtx,
             "listscheduledtx": self.listscheduledtx,
             "getschedule": self.getschedule,
@@ -116,6 +118,43 @@ class WalletRPCMixin:
                 comment_to=comment_to,
             )
         )
+
+    def sweeputxos(self, address: str, options: dict[str, Any] | None = None) -> dict[str, Any]:
+        opts = options or {}
+        max_inputs = int(opts.get("maxinputs", 200))
+        min_conf = opts.get("minconf")
+        if min_conf is None:
+            chain = getattr(self, "chain", None)
+            if chain is not None and getattr(chain, "config", None):
+                min_conf = int(chain.config.mining.coinbase_maturity)
+            else:
+                min_conf = 1
+        fee_override = opts.get("fee")
+        feerate_override = opts.get("feerate")
+        from_addresses = opts.get("fromaddresses")
+        broadcast = bool(opts.get("broadcast", True))
+
+        fee_liners = coins_to_liners(fee_override) if fee_override is not None else None
+        fee_rate_liners = (
+            coins_to_liners(feerate_override) if feerate_override is not None else MIN_RELAY_FEE_RATE
+        )
+        result = self._wallet_call(
+            lambda w: w.sweep_utxos(
+                address,
+                max_inputs=max_inputs,
+                min_conf=int(min_conf),
+                fee=fee_liners,
+                fee_rate=fee_rate_liners,
+                from_addresses=from_addresses,
+                broadcast=broadcast,
+            )
+        )
+        return {
+            **result,
+            "total_in": result["total_in_liners"] / COIN,
+            "fee": result["fee_liners"] / COIN,
+            "output": result["output_liners"] / COIN,
+        }
 
     def createscheduledtx(
         self,

@@ -116,6 +116,34 @@ class RPCTestCase(unittest.TestCase):
         tx.validate_basic()
         return tx
 
+    def _build_split_tx(self, address: str, outputs: int, fee: int = MIN_RELAY_FEE_RATE) -> Transaction:
+        if outputs <= 0:
+            raise ValueError("outputs must be > 0")
+        genesis_tx = self.chain.genesis_block.transactions[0]
+        input_value = genesis_tx.outputs[0].value
+        if fee >= input_value:
+            raise ValueError("fee exceeds input value")
+        per_output = (input_value - fee) // outputs
+        if per_output <= 0:
+            raise ValueError("output value too small")
+        dest_script = script_from_address(address)
+        tx_outputs = [TxOutput(value=per_output, script_pubkey=dest_script) for _ in range(outputs - 1)]
+        remainder = input_value - fee - per_output * (outputs - 1)
+        tx_outputs.append(TxOutput(value=remainder, script_pubkey=dest_script))
+        tx = Transaction(
+            version=1,
+            inputs=[TxInput(prev_txid=genesis_tx.txid(), prev_vout=0, script_sig=b"", sequence=0xFFFFFFFF)],
+            outputs=tx_outputs,
+            lock_time=0,
+        )
+        source_script = genesis_tx.outputs[0].script_pubkey
+        sighash = tx.signature_hash(0, source_script, 0x01)
+        signature = crypto.sign(sighash, GENESIS_PRIVKEY) + b"\x01"
+        script_sig = bytes([len(signature)]) + signature + bytes([len(GENESIS_PUBKEY)]) + GENESIS_PUBKEY
+        tx.inputs[0].script_sig = script_sig
+        tx.validate_basic()
+        return tx
+
     def _make_coinbase(self, height: int) -> Transaction:
         height_bytes = height.to_bytes((height.bit_length() + 7) // 8 or 1, "little")
         script_sig = len(height_bytes).to_bytes(1, "little") + height_bytes + b"\x01"
@@ -277,6 +305,17 @@ class RPCTestCase(unittest.TestCase):
         self.assertLess(tx_info["amount"], 0)
         entries = self.handlers.dispatch("listtransactions", ["*", 5, 0, False])
         self.assertTrue(any(item["txid"] == txid for item in entries))
+
+    def test_wallet_sweeputxos_via_rpc(self) -> None:
+        source_address = self.handlers.dispatch("getnewaddress", ["sweep-source"])
+        split_tx = self._build_split_tx(source_address, outputs=5)
+        self._mine_block(self.chain.genesis_hash, [split_tx])
+        self.wallet.sync_chain()
+        dest_address = self.handlers.dispatch("getnewaddress", ["sweep-dest"])
+        result = self.handlers.dispatch("sweeputxos", [dest_address, {"maxinputs": 3, "minconf": 1, "broadcast": True}])
+        self.assertEqual(result["inputs"], 3)
+        self.assertGreater(result["output_liners"], 0)
+        self.assertTrue(self.mempool.contains(result["txid"]))
 
     def test_scheduled_transaction_rpc_flow(self) -> None:
         recv_address = self.handlers.dispatch("getnewaddress", [])
